@@ -20,6 +20,24 @@ interface UserProfile {
   unit_id?: string;
 }
 
+// Decode JWT payload without verification (we just need metadata)
+function decodeJwtPayload(jwt: string): { ref?: string; role?: string } | null {
+  try {
+    const parts = jwt.split('.');
+    if (parts.length !== 3) return null;
+    const payload = JSON.parse(atob(parts[1]));
+    return { ref: payload.ref, role: payload.role };
+  } catch {
+    return null;
+  }
+}
+
+// Extract project ref from Supabase URL
+function extractProjectRef(url: string): string | null {
+  const match = url.match(/https?:\/\/([a-z0-9]+)\.supabase\.co/i);
+  return match ? match[1] : null;
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -28,12 +46,39 @@ serve(async (req) => {
 
   try {
     // Use service role key to bypass RLS on FrostGuard profiles table
-    const frostguardServiceKey = Deno.env.get('FROSTGUARD_SERVICE_ROLE_KEY');
+    const frostguardServiceKey = Deno.env.get('FROSTGUARD_SERVICE_ROLE_KEY')?.trim();
     if (!frostguardServiceKey) {
       console.error('FROSTGUARD_SERVICE_ROLE_KEY not configured');
       return new Response(
-        JSON.stringify({ success: false, error: 'FROSTGUARD_SERVICE_ROLE_KEY not configured' }),
+        JSON.stringify({ success: false, error: 'FROSTGUARD_SERVICE_ROLE_KEY not configured. Add it in Lovable Cloud secrets.' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Validate key format
+    const keyPayload = decodeJwtPayload(frostguardServiceKey);
+    if (!keyPayload) {
+      console.error('FROSTGUARD_SERVICE_ROLE_KEY is not a valid JWT');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Invalid key format',
+          details: 'FROSTGUARD_SERVICE_ROLE_KEY does not look like a Supabase API key. Paste the service_role key from your FrostGuard project settings.'
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Validate role
+    if (keyPayload.role !== 'service_role') {
+      console.error(`Key role is "${keyPayload.role}", expected "service_role"`);
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Wrong key type',
+          details: `Key role is "${keyPayload.role}". You need the service_role key (not anon) to bypass RLS.`
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -53,7 +98,21 @@ serve(async (req) => {
       if (match) baseUrl = match[1];
     }
 
-    console.log(`Searching FrostGuard users at ${baseUrl}, search term: "${searchTerm || ''}" (using service role key)`);
+    // Validate key matches URL project
+    const urlRef = extractProjectRef(baseUrl);
+    if (urlRef && keyPayload.ref && urlRef !== keyPayload.ref) {
+      console.error(`Key ref "${keyPayload.ref}" doesn't match URL ref "${urlRef}"`);
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Project mismatch',
+          details: `The service_role key belongs to project "${keyPayload.ref}" but the URL points to project "${urlRef}". Make sure both are from the same FrostGuard project.`
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`Searching FrostGuard users at ${baseUrl} (ref: ${urlRef}), search term: "${searchTerm || ''}", key ref: ${keyPayload.ref}`);
 
     const frostguardClient = createClient(baseUrl, frostguardServiceKey);
 
