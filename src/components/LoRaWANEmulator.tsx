@@ -159,40 +159,29 @@ export default function LoRaWANEmulator() {
     };
 
     try {
-      // Send to external webhook if configured
-      if (webhookConfig.enabled && webhookConfig.targetUrl) {
-        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
-        
-        try {
-          const response = await fetch(webhookConfig.targetUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(ttnPayload),
-          });
-          
-          if (response.ok) {
-            addLog('webhook', `📤 TTN payload sent to ${webhookConfig.targetUrl.split('/').pop()}`);
-          } else {
-            addLog('error', `❌ Webhook failed: ${response.status}`);
-          }
-        } catch (err: any) {
-          addLog('error', `❌ Webhook error: ${err.message}`);
-        }
-      }
+      // Build TTN payload
+      const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
 
-      // Send to local database if configured
-      if (webhookConfig.sendToLocal || !webhookConfig.enabled) {
-        const { error } = await supabase.functions.invoke('ingest-readings', {
-          body: {
-            type: 'sensor_reading',
-            data: {
-              device_serial: device.devEui,
-              ...payload,
-            },
-          },
+      // Send to external webhook if configured, otherwise use local ttn-webhook
+      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const response = await fetch(webhookConfig.targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ttnPayload),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Webhook returned ${response.status}`);
+        }
+        addLog('webhook', `📤 TTN payload sent to external webhook`);
+      } else {
+        // Use local ttn-webhook function
+        const { error } = await supabase.functions.invoke('ttn-webhook', {
+          body: ttnPayload,
         });
 
         if (error) throw error;
+        addLog('webhook', `📤 Sent via local ttn-webhook`);
       }
 
       setReadingCount(prev => prev + 1);
@@ -237,40 +226,29 @@ export default function LoRaWANEmulator() {
     };
 
     try {
-      // Send to external webhook if configured
-      if (webhookConfig.enabled && webhookConfig.targetUrl) {
-        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
-        
-        try {
-          const response = await fetch(webhookConfig.targetUrl, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(ttnPayload),
-          });
-          
-          if (response.ok) {
-            addLog('webhook', `📤 Door event sent via TTN webhook`);
-          } else {
-            addLog('error', `❌ Webhook failed: ${response.status}`);
-          }
-        } catch (err: any) {
-          addLog('error', `❌ Webhook error: ${err.message}`);
-        }
-      }
+      // Build TTN payload
+      const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
 
-      // Send to local database if configured
-      if (webhookConfig.sendToLocal || !webhookConfig.enabled) {
-        const { error } = await supabase.functions.invoke('ingest-readings', {
-          body: {
-            type: 'door_event',
-            data: {
-              device_serial: device.devEui,
-              ...payload,
-            },
-          },
+      // Send to external webhook if configured, otherwise use local ttn-webhook
+      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const response = await fetch(webhookConfig.targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ttnPayload),
+        });
+        
+        if (!response.ok) {
+          throw new Error(`Webhook returned ${response.status}`);
+        }
+        addLog('webhook', `📤 Door event sent via external webhook`);
+      } else {
+        // Use local ttn-webhook function
+        const { error } = await supabase.functions.invoke('ttn-webhook', {
+          body: ttnPayload,
         });
 
         if (error) throw error;
+        addLog('webhook', `📤 Door event sent via local ttn-webhook`);
       }
 
       addLog('door', `🚪 Door ${doorStatus === 'open' ? 'OPENED' : 'CLOSED'} - Battery: ${battery.toFixed(0)}%`);

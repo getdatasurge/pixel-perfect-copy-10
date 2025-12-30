@@ -2,3 +2,6 @@ project_id = "jyxzaagcirhbdzvofkom"
 
 [functions.ingest-readings]
 verify_jwt = false
+
+[functions.ttn-webhook]
+verify_jwt = false
