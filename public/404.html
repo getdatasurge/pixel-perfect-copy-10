@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Redirecting...</title>
+    <script>
+      // Single Page App 404 fallback for static hosting (e.g., Lovable, GitHub Pages)
+      // Redirects any 404 to the root with the path as a hash route
+      var path = window.location.pathname;
+      var search = window.location.search;
+      var hash = window.location.hash;
+
+      // Build the redirect URL with hash routing
+      var redirectUrl = window.location.origin + '/#' + path;
+      if (search) redirectUrl += search;
+      if (hash) redirectUrl += hash;
+
+      window.location.replace(redirectUrl);
+    </script>
+    <noscript>
+      <meta http-equiv="refresh" content="0; url=/" />
+    </noscript>
+  </head>
+  <body>
+    <p>Redirecting...</p>
+  </body>
+</html>
