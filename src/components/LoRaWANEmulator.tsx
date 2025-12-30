@@ -8,20 +8,31 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Settings, Activity, FileText } from 'lucide-react';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
+import GatewayConfig from './emulator/GatewayConfig';
+import WebhookSettings from './emulator/WebhookSettings';
+import DeviceManager from './emulator/DeviceManager';
+import QRCodeModal from './emulator/QRCodeModal';
+import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
+import { 
+  GatewayConfig as GatewayConfigType, 
+  LoRaWANDevice, 
+  WebhookConfig, 
+  createGateway, 
+  createDevice,
+  buildTTNPayload 
+} from '@/lib/ttn-payload';
 
 interface LogEntry {
   id: string;
   timestamp: Date;
-  type: 'temp' | 'door' | 'info' | 'error';
+  type: 'temp' | 'door' | 'info' | 'error' | 'webhook';
   message: string;
 }
 
-interface TempSensorConfig {
-  deviceSerial: string;
-  unitId: string;
+interface TempSensorState {
   minTemp: number;
   maxTemp: number;
   humidity: number;
@@ -30,31 +41,58 @@ interface TempSensorConfig {
   intervalSeconds: number;
 }
 
-interface DoorSensorConfig {
+interface DoorSensorState {
   enabled: boolean;
-  deviceSerial: string;
-  unitId: string;
   batteryLevel: number;
   signalStrength: number;
   doorOpen: boolean;
   intervalSeconds: number;
 }
 
-const generateSerial = () => `EMU-${Math.random().toString(36).substring(2, 8).toUpperCase()}`;
-
 export default function LoRaWANEmulator() {
   const [isRunning, setIsRunning] = useState(false);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [currentTemp, setCurrentTemp] = useState<number | null>(null);
   const [readingCount, setReadingCount] = useState(0);
+  const [qrDevice, setQrDevice] = useState<LoRaWANDevice | null>(null);
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  const [tempConfig, setTempConfig] = useState<TempSensorConfig>({
-    deviceSerial: generateSerial(),
-    unitId: 'UNIT-001',
-    minTemp: 32,
+  // Gateway and device management
+  const [gateways, setGateways] = useState<GatewayConfigType[]>(() => [createGateway('Primary Gateway')]);
+  const [devices, setDevices] = useState<LoRaWANDevice[]>(() => {
+    const gateway = createGateway('Primary Gateway');
+    return [
+      createDevice('Temp Sensor 1', 'temperature', gateway.id),
+      createDevice('Door Sensor 1', 'door', gateway.id),
+    ];
+  });
+
+  // Initialize devices with correct gateway ID
+  useEffect(() => {
+    if (gateways.length > 0 && devices.length > 0) {
+      const defaultGatewayId = gateways[0].id;
+      const needsUpdate = devices.some(d => !gateways.find(g => g.id === d.gatewayId));
+      if (needsUpdate) {
+        setDevices(devices.map(d => ({
+          ...d,
+          gatewayId: gateways.find(g => g.id === d.gatewayId)?.id || defaultGatewayId,
+        })));
+      }
+    }
+  }, [gateways]);
+
+  // Webhook configuration
+  const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>({
+    enabled: false,
+    targetUrl: '',
+    applicationId: 'cold-chain-app',
+    sendToLocal: true,
+  });
+
+  const [tempState, setTempState] = useState<TempSensorState>({
+    minTemp: 35,
     maxTemp: 40,
     humidity: 45,
     batteryLevel: 95,
@@ -62,10 +100,8 @@ export default function LoRaWANEmulator() {
     intervalSeconds: 60,
   });
 
-  const [doorConfig, setDoorConfig] = useState<DoorSensorConfig>({
+  const [doorState, setDoorState] = useState<DoorSensorState>({
     enabled: true,
-    deviceSerial: generateSerial(),
-    unitId: 'UNIT-001',
     batteryLevel: 90,
     signalStrength: -70,
     doorOpen: false,
@@ -82,32 +118,82 @@ export default function LoRaWANEmulator() {
     setLogs(prev => [entry, ...prev].slice(0, 100));
   }, []);
 
+  const getActiveDevice = useCallback((type: 'temperature' | 'door') => {
+    return devices.find(d => d.type === type);
+  }, [devices]);
+
+  const getActiveGateway = useCallback((device?: LoRaWANDevice) => {
+    if (!device) return gateways.find(g => g.isOnline);
+    return gateways.find(g => g.id === device.gatewayId && g.isOnline);
+  }, [gateways]);
+
   const sendTempReading = useCallback(async () => {
-    const temp = tempConfig.minTemp + Math.random() * (tempConfig.maxTemp - tempConfig.minTemp);
-    const humidity = tempConfig.humidity + (Math.random() - 0.5) * 5;
-    const battery = Math.max(0, tempConfig.batteryLevel - Math.random() * 0.1);
-    const signal = tempConfig.signalStrength + (Math.random() - 0.5) * 10;
+    const device = getActiveDevice('temperature');
+    const gateway = getActiveGateway(device);
+    
+    if (!device) {
+      addLog('error', '❌ No temperature sensor configured');
+      return;
+    }
+    
+    if (!gateway) {
+      addLog('error', '❌ No online gateway available');
+      return;
+    }
+
+    const temp = tempState.minTemp + Math.random() * (tempState.maxTemp - tempState.minTemp);
+    const humidity = tempState.humidity + (Math.random() - 0.5) * 5;
+    const battery = Math.max(0, tempState.batteryLevel - Math.random() * 0.1);
+    const signal = tempState.signalStrength + (Math.random() - 0.5) * 10;
 
     setCurrentTemp(temp);
-    setTempConfig(prev => ({ ...prev, batteryLevel: battery }));
+    setTempState(prev => ({ ...prev, batteryLevel: battery }));
+
+    const payload = {
+      temperature: Math.round(temp * 10) / 10,
+      humidity: Math.round(humidity * 10) / 10,
+      battery_level: Math.round(battery),
+      signal_strength: Math.round(signal),
+      unit_id: device.name,
+      reading_type: 'scheduled',
+    };
 
     try {
-      const { error } = await supabase.functions.invoke('ingest-readings', {
-        body: {
-          type: 'sensor_reading',
-          data: {
-            device_serial: tempConfig.deviceSerial,
-            temperature: Math.round(temp * 10) / 10,
-            humidity: Math.round(humidity * 10) / 10,
-            battery_level: Math.round(battery),
-            signal_strength: Math.round(signal),
-            unit_id: tempConfig.unitId,
-            reading_type: 'scheduled',
-          },
-        },
-      });
+      // Send to external webhook if configured
+      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        
+        try {
+          const response = await fetch(webhookConfig.targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(ttnPayload),
+          });
+          
+          if (response.ok) {
+            addLog('webhook', `📤 TTN payload sent to ${webhookConfig.targetUrl.split('/').pop()}`);
+          } else {
+            addLog('error', `❌ Webhook failed: ${response.status}`);
+          }
+        } catch (err: any) {
+          addLog('error', `❌ Webhook error: ${err.message}`);
+        }
+      }
 
-      if (error) throw error;
+      // Send to local database if configured
+      if (webhookConfig.sendToLocal || !webhookConfig.enabled) {
+        const { error } = await supabase.functions.invoke('ingest-readings', {
+          body: {
+            type: 'sensor_reading',
+            data: {
+              device_serial: device.devEui,
+              ...payload,
+            },
+          },
+        });
+
+        if (error) throw error;
+      }
 
       setReadingCount(prev => prev + 1);
       addLog('temp', `📡 Temp: ${temp.toFixed(1)}°F, Humidity: ${humidity.toFixed(1)}%, Battery: ${battery.toFixed(0)}%`);
@@ -119,32 +205,73 @@ export default function LoRaWANEmulator() {
         variant: 'destructive',
       });
     }
-  }, [tempConfig, addLog]);
+  }, [tempState, webhookConfig, addLog, getActiveDevice, getActiveGateway]);
 
   const sendDoorEvent = useCallback(async (status?: 'open' | 'closed') => {
-    if (!doorConfig.enabled) return;
+    if (!doorState.enabled) return;
 
-    const doorStatus = status ?? (doorConfig.doorOpen ? 'open' : 'closed');
-    const battery = Math.max(0, doorConfig.batteryLevel - Math.random() * 0.05);
-    const signal = doorConfig.signalStrength + (Math.random() - 0.5) * 10;
+    const device = getActiveDevice('door');
+    const gateway = getActiveGateway(device);
+    
+    if (!device) {
+      addLog('error', '❌ No door sensor configured');
+      return;
+    }
+    
+    if (!gateway) {
+      addLog('error', '❌ No online gateway available');
+      return;
+    }
 
-    setDoorConfig(prev => ({ ...prev, batteryLevel: battery }));
+    const doorStatus = status ?? (doorState.doorOpen ? 'open' : 'closed');
+    const battery = Math.max(0, doorState.batteryLevel - Math.random() * 0.05);
+    const signal = doorState.signalStrength + (Math.random() - 0.5) * 10;
+
+    setDoorState(prev => ({ ...prev, batteryLevel: battery }));
+
+    const payload = {
+      door_status: doorStatus,
+      battery_level: Math.round(battery),
+      signal_strength: Math.round(signal),
+      unit_id: device.name,
+    };
 
     try {
-      const { error } = await supabase.functions.invoke('ingest-readings', {
-        body: {
-          type: 'door_event',
-          data: {
-            device_serial: doorConfig.deviceSerial,
-            door_status: doorStatus,
-            battery_level: Math.round(battery),
-            signal_strength: Math.round(signal),
-            unit_id: doorConfig.unitId,
-          },
-        },
-      });
+      // Send to external webhook if configured
+      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        
+        try {
+          const response = await fetch(webhookConfig.targetUrl, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(ttnPayload),
+          });
+          
+          if (response.ok) {
+            addLog('webhook', `📤 Door event sent via TTN webhook`);
+          } else {
+            addLog('error', `❌ Webhook failed: ${response.status}`);
+          }
+        } catch (err: any) {
+          addLog('error', `❌ Webhook error: ${err.message}`);
+        }
+      }
 
-      if (error) throw error;
+      // Send to local database if configured
+      if (webhookConfig.sendToLocal || !webhookConfig.enabled) {
+        const { error } = await supabase.functions.invoke('ingest-readings', {
+          body: {
+            type: 'door_event',
+            data: {
+              device_serial: device.devEui,
+              ...payload,
+            },
+          },
+        });
+
+        if (error) throw error;
+      }
 
       addLog('door', `🚪 Door ${doorStatus === 'open' ? 'OPENED' : 'CLOSED'} - Battery: ${battery.toFixed(0)}%`);
     } catch (err: any) {
@@ -155,13 +282,13 @@ export default function LoRaWANEmulator() {
         variant: 'destructive',
       });
     }
-  }, [doorConfig, addLog]);
+  }, [doorState, webhookConfig, addLog, getActiveDevice, getActiveGateway]);
 
   const toggleDoor = useCallback(() => {
-    const newStatus = !doorConfig.doorOpen;
-    setDoorConfig(prev => ({ ...prev, doorOpen: newStatus }));
+    const newStatus = !doorState.doorOpen;
+    setDoorState(prev => ({ ...prev, doorOpen: newStatus }));
     sendDoorEvent(newStatus ? 'open' : 'closed');
-  }, [doorConfig.doorOpen, sendDoorEvent]);
+  }, [doorState.doorOpen, sendDoorEvent]);
 
   const startEmulation = useCallback(() => {
     setIsRunning(true);
@@ -169,17 +296,17 @@ export default function LoRaWANEmulator() {
 
     // Send initial readings
     sendTempReading();
-    if (doorConfig.enabled) {
+    if (doorState.enabled) {
       sendDoorEvent();
     }
 
     // Set up intervals
-    tempIntervalRef.current = setInterval(sendTempReading, tempConfig.intervalSeconds * 1000);
+    tempIntervalRef.current = setInterval(sendTempReading, tempState.intervalSeconds * 1000);
     
-    if (doorConfig.enabled) {
-      doorIntervalRef.current = setInterval(() => sendDoorEvent(), doorConfig.intervalSeconds * 1000);
+    if (doorState.enabled) {
+      doorIntervalRef.current = setInterval(() => sendDoorEvent(), doorState.intervalSeconds * 1000);
     }
-  }, [tempConfig.intervalSeconds, doorConfig, sendTempReading, sendDoorEvent, addLog]);
+  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog]);
 
   const stopEmulation = useCallback(() => {
     setIsRunning(false);
@@ -195,310 +322,357 @@ export default function LoRaWANEmulator() {
     };
   }, []);
 
-  const applyPreset = (preset: 'freezer' | 'fridge' | 'alert') => {
-    const presets = {
-      freezer: { minTemp: -10, maxTemp: 0, humidity: 30 },
-      fridge: { minTemp: 32, maxTemp: 40, humidity: 45 },
-      alert: { minTemp: 50, maxTemp: 60, humidity: 70 },
-    };
-    setTempConfig(prev => ({ ...prev, ...presets[preset] }));
-    addLog('info', `🎛️ Applied ${preset} preset`);
+  const applyScenario = (scenario: ScenarioConfig) => {
+    if (scenario.tempRange) {
+      setTempState(prev => ({
+        ...prev,
+        minTemp: scenario.tempRange!.min,
+        maxTemp: scenario.tempRange!.max,
+        humidity: scenario.humidity ?? prev.humidity,
+        batteryLevel: scenario.batteryLevel ?? prev.batteryLevel,
+        signalStrength: scenario.signalStrength ?? prev.signalStrength,
+      }));
+    }
+    if (scenario.doorBehavior === 'stuck-open') {
+      setDoorState(prev => ({ ...prev, doorOpen: true }));
+    }
+    addLog('info', `🎛️ Applied "${scenario.name}" scenario`);
+    toast({ title: 'Scenario applied', description: scenario.description });
   };
 
+  const tempDevice = getActiveDevice('temperature');
+  const doorDevice = getActiveDevice('door');
+
   return (
-    <Card className="w-full max-w-4xl mx-auto">
-      <CardHeader>
-        <div className="flex items-center justify-between">
-          <div>
-            <CardTitle className="flex items-center gap-2">
-              <Signal className="h-5 w-5" />
-              LoRaWAN Device Emulator
-            </CardTitle>
-            <CardDescription>Simulate refrigerator/freezer monitoring sensors</CardDescription>
+    <>
+      <Card className="w-full">
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle className="flex items-center gap-2">
+                <Signal className="h-5 w-5" />
+                LoRaWAN Ecosystem Emulator
+              </CardTitle>
+              <CardDescription>Simulate gateways, sensors, and TTN webhook payloads</CardDescription>
+            </div>
+            <div className="flex items-center gap-2">
+              <Badge variant={isRunning ? 'default' : 'secondary'}>
+                {isRunning ? 'Running' : 'Stopped'}
+              </Badge>
+              <Badge variant="outline">{readingCount} readings</Badge>
+              {webhookConfig.enabled && (
+                <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
+                  <Webhook className="h-3 w-3 mr-1" />
+                  Webhook
+                </Badge>
+              )}
+            </div>
           </div>
-          <div className="flex items-center gap-2">
-            <Badge variant={isRunning ? 'default' : 'secondary'}>
-              {isRunning ? 'Running' : 'Stopped'}
-            </Badge>
-            <Badge variant="outline">{readingCount} readings</Badge>
-          </div>
-        </div>
-      </CardHeader>
-      <CardContent>
-        <Tabs defaultValue="temp">
-          <TabsList className="grid w-full grid-cols-4">
-            <TabsTrigger value="temp" className="flex items-center gap-1">
-              <Thermometer className="h-4 w-4" />
-              Temp Sensor
-            </TabsTrigger>
-            <TabsTrigger value="door" className="flex items-center gap-1">
-              <DoorOpen className="h-4 w-4" />
-              Door Sensor
-            </TabsTrigger>
-            <TabsTrigger value="monitor" className="flex items-center gap-1">
-              <Activity className="h-4 w-4" />
-              Monitor
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="flex items-center gap-1">
-              <FileText className="h-4 w-4" />
-              Logs
-            </TabsTrigger>
-          </TabsList>
+        </CardHeader>
+        <CardContent>
+          <Tabs defaultValue="sensors">
+            <TabsList className="grid w-full grid-cols-6">
+              <TabsTrigger value="sensors" className="flex items-center gap-1">
+                <Thermometer className="h-4 w-4" />
+                Sensors
+              </TabsTrigger>
+              <TabsTrigger value="gateways" className="flex items-center gap-1">
+                <Radio className="h-4 w-4" />
+                Gateways
+              </TabsTrigger>
+              <TabsTrigger value="devices" className="flex items-center gap-1">
+                <Settings className="h-4 w-4" />
+                Devices
+              </TabsTrigger>
+              <TabsTrigger value="webhook" className="flex items-center gap-1">
+                <Webhook className="h-4 w-4" />
+                Webhook
+              </TabsTrigger>
+              <TabsTrigger value="monitor" className="flex items-center gap-1">
+                <Activity className="h-4 w-4" />
+                Monitor
+              </TabsTrigger>
+              <TabsTrigger value="logs" className="flex items-center gap-1">
+                <FileText className="h-4 w-4" />
+                Logs
+              </TabsTrigger>
+            </TabsList>
 
-          <TabsContent value="temp" className="space-y-4 mt-4">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label htmlFor="tempSerial">Device Serial</Label>
-                <Input
-                  id="tempSerial"
-                  value={tempConfig.deviceSerial}
-                  onChange={e => setTempConfig(prev => ({ ...prev, deviceSerial: e.target.value }))}
-                  disabled={isRunning}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label htmlFor="tempUnitId">Unit ID</Label>
-                <Input
-                  id="tempUnitId"
-                  value={tempConfig.unitId}
-                  onChange={e => setTempConfig(prev => ({ ...prev, unitId: e.target.value }))}
-                  disabled={isRunning}
-                />
-              </div>
-            </div>
-
-            <div className="space-y-2">
-              <Label>Temperature Range: {tempConfig.minTemp}°F - {tempConfig.maxTemp}°F</Label>
-              <div className="flex gap-4">
-                <Input
-                  type="number"
-                  value={tempConfig.minTemp}
-                  onChange={e => setTempConfig(prev => ({ ...prev, minTemp: Number(e.target.value) }))}
-                  disabled={isRunning}
-                  className="w-24"
-                />
-                <Slider
-                  value={[tempConfig.minTemp, tempConfig.maxTemp]}
-                  min={-20}
-                  max={80}
-                  step={1}
-                  onValueChange={([min, max]) => setTempConfig(prev => ({ ...prev, minTemp: min, maxTemp: max }))}
-                  disabled={isRunning}
-                  className="flex-1"
-                />
-                <Input
-                  type="number"
-                  value={tempConfig.maxTemp}
-                  onChange={e => setTempConfig(prev => ({ ...prev, maxTemp: Number(e.target.value) }))}
-                  disabled={isRunning}
-                  className="w-24"
-                />
-              </div>
-            </div>
-
-            <div className="grid grid-cols-2 gap-4">
-              <div className="space-y-2">
-                <Label>Humidity: {tempConfig.humidity}%</Label>
-                <Slider
-                  value={[tempConfig.humidity]}
-                  min={0}
-                  max={100}
-                  step={1}
-                  onValueChange={([v]) => setTempConfig(prev => ({ ...prev, humidity: v }))}
-                  disabled={isRunning}
-                />
-              </div>
-              <div className="space-y-2">
-                <Label>Interval: {tempConfig.intervalSeconds}s</Label>
-                <Slider
-                  value={[tempConfig.intervalSeconds]}
-                  min={5}
-                  max={300}
-                  step={5}
-                  onValueChange={([v]) => setTempConfig(prev => ({ ...prev, intervalSeconds: v }))}
-                  disabled={isRunning}
-                />
-              </div>
-            </div>
-
-            <div className="flex gap-2">
-              <Button variant="outline" size="sm" onClick={() => applyPreset('freezer')} disabled={isRunning}>
-                🧊 Freezer
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => applyPreset('fridge')} disabled={isRunning}>
-                🥶 Refrigerator
-              </Button>
-              <Button variant="outline" size="sm" onClick={() => applyPreset('alert')} disabled={isRunning}>
-                🔥 Alert Test
-              </Button>
-            </div>
-          </TabsContent>
-
-          <TabsContent value="door" className="space-y-4 mt-4">
-            <div className="flex items-center justify-between">
-              <Label htmlFor="doorEnabled">Enable Door Sensor</Label>
-              <Switch
-                id="doorEnabled"
-                checked={doorConfig.enabled}
-                onCheckedChange={enabled => setDoorConfig(prev => ({ ...prev, enabled }))}
-                disabled={isRunning}
-              />
-            </div>
-
-            {doorConfig.enabled && (
-              <>
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label htmlFor="doorSerial">Device Serial</Label>
+            <TabsContent value="sensors" className="space-y-6 mt-4">
+              {/* Temperature Sensor Config */}
+              <div className="space-y-4">
+                <h3 className="font-medium flex items-center gap-2">
+                  <Thermometer className="h-4 w-4" />
+                  Temperature Sensor Settings
+                </h3>
+                
+                <div className="space-y-2">
+                  <Label>Temperature Range: {tempState.minTemp}°F - {tempState.maxTemp}°F</Label>
+                  <div className="flex gap-4">
                     <Input
-                      id="doorSerial"
-                      value={doorConfig.deviceSerial}
-                      onChange={e => setDoorConfig(prev => ({ ...prev, deviceSerial: e.target.value }))}
+                      type="number"
+                      value={tempState.minTemp}
+                      onChange={e => setTempState(prev => ({ ...prev, minTemp: Number(e.target.value) }))}
                       disabled={isRunning}
+                      className="w-24"
                     />
-                  </div>
-                  <div className="space-y-2">
-                    <Label htmlFor="doorUnitId">Unit ID</Label>
-                    <Input
-                      id="doorUnitId"
-                      value={doorConfig.unitId}
-                      onChange={e => setDoorConfig(prev => ({ ...prev, unitId: e.target.value }))}
+                    <Slider
+                      value={[tempState.minTemp, tempState.maxTemp]}
+                      min={-20}
+                      max={80}
+                      step={1}
+                      onValueChange={([min, max]) => setTempState(prev => ({ ...prev, minTemp: min, maxTemp: max }))}
                       disabled={isRunning}
+                      className="flex-1"
+                    />
+                    <Input
+                      type="number"
+                      value={tempState.maxTemp}
+                      onChange={e => setTempState(prev => ({ ...prev, maxTemp: Number(e.target.value) }))}
+                      disabled={isRunning}
+                      className="w-24"
                     />
                   </div>
                 </div>
 
-                <div className="space-y-2">
-                  <Label>Status Interval: {doorConfig.intervalSeconds}s</Label>
-                  <Slider
-                    value={[doorConfig.intervalSeconds]}
-                    min={30}
-                    max={600}
-                    step={30}
-                    onValueChange={([v]) => setDoorConfig(prev => ({ ...prev, intervalSeconds: v }))}
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label>Humidity: {tempState.humidity}%</Label>
+                    <Slider
+                      value={[tempState.humidity]}
+                      min={0}
+                      max={100}
+                      step={1}
+                      onValueChange={([v]) => setTempState(prev => ({ ...prev, humidity: v }))}
+                      disabled={isRunning}
+                    />
+                  </div>
+                  <div className="space-y-2">
+                    <Label>Interval: {tempState.intervalSeconds}s</Label>
+                    <Slider
+                      value={[tempState.intervalSeconds]}
+                      min={5}
+                      max={300}
+                      step={5}
+                      onValueChange={([v]) => setTempState(prev => ({ ...prev, intervalSeconds: v }))}
+                      disabled={isRunning}
+                    />
+                  </div>
+                </div>
+              </div>
+
+              {/* Door Sensor Config */}
+              <div className="space-y-4 border-t pt-4">
+                <div className="flex items-center justify-between">
+                  <h3 className="font-medium flex items-center gap-2">
+                    <DoorOpen className="h-4 w-4" />
+                    Door Sensor Settings
+                  </h3>
+                  <Switch
+                    checked={doorState.enabled}
+                    onCheckedChange={enabled => setDoorState(prev => ({ ...prev, enabled }))}
                     disabled={isRunning}
                   />
                 </div>
 
-                <div className="flex items-center gap-4">
-                  <Button
-                    variant={doorConfig.doorOpen ? 'destructive' : 'outline'}
-                    onClick={toggleDoor}
-                    className="flex items-center gap-2"
-                  >
-                    {doorConfig.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
-                    {doorConfig.doorOpen ? 'Close Door' : 'Open Door'}
-                  </Button>
-                  <Badge variant={doorConfig.doorOpen ? 'destructive' : 'secondary'}>
-                    Door is {doorConfig.doorOpen ? 'OPEN' : 'CLOSED'}
-                  </Badge>
-                </div>
-              </>
-            )}
-          </TabsContent>
+                {doorState.enabled && (
+                  <>
+                    <div className="space-y-2">
+                      <Label>Status Interval: {doorState.intervalSeconds}s</Label>
+                      <Slider
+                        value={[doorState.intervalSeconds]}
+                        min={30}
+                        max={600}
+                        step={30}
+                        onValueChange={([v]) => setDoorState(prev => ({ ...prev, intervalSeconds: v }))}
+                        disabled={isRunning}
+                      />
+                    </div>
 
-          <TabsContent value="monitor" className="space-y-4 mt-4">
-            <div className="grid grid-cols-2 gap-4">
-              <Card>
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center gap-2">
-                    <Thermometer className="h-4 w-4" />
-                    Temperature Sensor
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="text-3xl font-bold">
-                    {currentTemp !== null ? `${currentTemp.toFixed(1)}°F` : '--'}
-                  </div>
-                  <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                    <span className="flex items-center gap-1">
-                      <Battery className="h-3 w-3" />
-                      {tempConfig.batteryLevel.toFixed(0)}%
-                    </span>
-                    <span className="flex items-center gap-1">
-                      <Signal className="h-3 w-3" />
-                      {tempConfig.signalStrength}dBm
-                    </span>
-                  </div>
-                  <div className="text-xs text-muted-foreground mt-1">
-                    Serial: {tempConfig.deviceSerial}
-                  </div>
-                </CardContent>
-              </Card>
+                    <div className="flex items-center gap-4">
+                      <Button
+                        variant={doorState.doorOpen ? 'destructive' : 'outline'}
+                        onClick={toggleDoor}
+                        className="flex items-center gap-2"
+                      >
+                        {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
+                        {doorState.doorOpen ? 'Close Door' : 'Open Door'}
+                      </Button>
+                      <Badge variant={doorState.doorOpen ? 'destructive' : 'secondary'}>
+                        Door is {doorState.doorOpen ? 'OPEN' : 'CLOSED'}
+                      </Badge>
+                    </div>
+                  </>
+                )}
+              </div>
 
-              {doorConfig.enabled && (
+              {/* Scenario Presets */}
+              <div className="border-t pt-4">
+                <ScenarioPresets onApply={applyScenario} disabled={isRunning} />
+              </div>
+            </TabsContent>
+
+            <TabsContent value="gateways" className="mt-4">
+              <GatewayConfig
+                gateways={gateways}
+                onGatewaysChange={setGateways}
+                disabled={isRunning}
+              />
+            </TabsContent>
+
+            <TabsContent value="devices" className="mt-4">
+              <DeviceManager
+                devices={devices}
+                gateways={gateways}
+                onDevicesChange={setDevices}
+                onShowQR={setQrDevice}
+                disabled={isRunning}
+              />
+            </TabsContent>
+
+            <TabsContent value="webhook" className="mt-4">
+              <WebhookSettings
+                config={webhookConfig}
+                onConfigChange={setWebhookConfig}
+                disabled={isRunning}
+              />
+            </TabsContent>
+
+            <TabsContent value="monitor" className="space-y-4 mt-4">
+              <div className="grid grid-cols-2 gap-4">
                 <Card>
                   <CardHeader className="pb-2">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      {doorConfig.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
-                      Door Sensor
+                      <Thermometer className="h-4 w-4" />
+                      Temperature Sensor
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className={`text-3xl font-bold ${doorConfig.doorOpen ? 'text-destructive' : 'text-green-500'}`}>
-                      {doorConfig.doorOpen ? 'OPEN' : 'CLOSED'}
+                    <div className="text-3xl font-bold">
+                      {currentTemp !== null ? `${currentTemp.toFixed(1)}°F` : '--'}
                     </div>
                     <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
                       <span className="flex items-center gap-1">
                         <Battery className="h-3 w-3" />
-                        {doorConfig.batteryLevel.toFixed(0)}%
+                        {tempState.batteryLevel.toFixed(0)}%
                       </span>
                       <span className="flex items-center gap-1">
                         <Signal className="h-3 w-3" />
-                        {doorConfig.signalStrength}dBm
+                        {tempState.signalStrength}dBm
                       </span>
                     </div>
-                    <div className="text-xs text-muted-foreground mt-1">
-                      Serial: {doorConfig.deviceSerial}
-                    </div>
+                    {tempDevice && (
+                      <div className="text-xs text-muted-foreground mt-1 font-mono">
+                        DevEUI: {tempDevice.devEui}
+                      </div>
+                    )}
                   </CardContent>
                 </Card>
-              )}
-            </div>
-          </TabsContent>
 
-          <TabsContent value="logs" className="mt-4">
-            <ScrollArea className="h-64 rounded-md border p-4">
-              {logs.length === 0 ? (
-                <div className="text-muted-foreground text-center py-8">No logs yet</div>
-              ) : (
-                <div className="space-y-1">
-                  {logs.map(log => (
-                    <div key={log.id} className="text-sm font-mono">
-                      <span className="text-muted-foreground">
-                        [{log.timestamp.toLocaleTimeString()}]
-                      </span>{' '}
-                      <span className={log.type === 'error' ? 'text-destructive' : ''}>
-                        {log.message}
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              )}
-            </ScrollArea>
-          </TabsContent>
-        </Tabs>
+                {doorState.enabled && (
+                  <Card>
+                    <CardHeader className="pb-2">
+                      <CardTitle className="text-sm flex items-center gap-2">
+                        {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
+                        Door Sensor
+                      </CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className={`text-3xl font-bold ${doorState.doorOpen ? 'text-destructive' : 'text-green-500'}`}>
+                        {doorState.doorOpen ? 'OPEN' : 'CLOSED'}
+                      </div>
+                      <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
+                        <span className="flex items-center gap-1">
+                          <Battery className="h-3 w-3" />
+                          {doorState.batteryLevel.toFixed(0)}%
+                        </span>
+                        <span className="flex items-center gap-1">
+                          <Signal className="h-3 w-3" />
+                          {doorState.signalStrength}dBm
+                        </span>
+                      </div>
+                      {doorDevice && (
+                        <div className="text-xs text-muted-foreground mt-1 font-mono">
+                          DevEUI: {doorDevice.devEui}
+                        </div>
+                      )}
+                    </CardContent>
+                  </Card>
+                )}
+              </div>
 
-        <div className="flex gap-2 mt-6">
-          {!isRunning ? (
-            <>
-              <Button onClick={startEmulation} className="flex items-center gap-2">
-                <Play className="h-4 w-4" />
-                Start Emulation
+              {/* Gateway Status */}
+              <Card>
+                <CardHeader className="pb-2">
+                  <CardTitle className="text-sm flex items-center gap-2">
+                    <Radio className="h-4 w-4" />
+                    Gateway Status
+                  </CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="flex flex-wrap gap-2">
+                    {gateways.map(gw => (
+                      <Badge key={gw.id} variant={gw.isOnline ? 'default' : 'secondary'}>
+                        {gw.name}: {gw.isOnline ? 'Online' : 'Offline'}
+                      </Badge>
+                    ))}
+                  </div>
+                </CardContent>
+              </Card>
+            </TabsContent>
+
+            <TabsContent value="logs" className="mt-4">
+              <ScrollArea className="h-64 rounded-md border p-4">
+                {logs.length === 0 ? (
+                  <div className="text-muted-foreground text-center py-8">No logs yet</div>
+                ) : (
+                  <div className="space-y-1">
+                    {logs.map(log => (
+                      <div key={log.id} className="text-sm font-mono">
+                        <span className="text-muted-foreground">
+                          [{log.timestamp.toLocaleTimeString()}]
+                        </span>{' '}
+                        <span className={
+                          log.type === 'error' ? 'text-destructive' : 
+                          log.type === 'webhook' ? 'text-green-500' : ''
+                        }>
+                          {log.message}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </ScrollArea>
+            </TabsContent>
+          </Tabs>
+
+          <div className="flex gap-2 mt-6">
+            {!isRunning ? (
+              <>
+                <Button onClick={startEmulation} className="flex items-center gap-2">
+                  <Play className="h-4 w-4" />
+                  Start Emulation
+                </Button>
+                <Button variant="outline" onClick={sendTempReading} className="flex items-center gap-2">
+                  <Zap className="h-4 w-4" />
+                  Single Reading
+                </Button>
+              </>
+            ) : (
+              <Button variant="destructive" onClick={stopEmulation} className="flex items-center gap-2">
+                <Square className="h-4 w-4" />
+                Stop Emulation
               </Button>
-              <Button variant="outline" onClick={sendTempReading} className="flex items-center gap-2">
-                <Zap className="h-4 w-4" />
-                Single Reading
-              </Button>
-            </>
-          ) : (
-            <Button variant="destructive" onClick={stopEmulation} className="flex items-center gap-2">
-              <Square className="h-4 w-4" />
-              Stop Emulation
-            </Button>
-          )}
-        </div>
-      </CardContent>
-    </Card>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      <QRCodeModal
+        device={qrDevice}
+        open={!!qrDevice}
+        onClose={() => setQrDevice(null)}
+      />
+    </>
   );
 }
