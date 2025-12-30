@@ -24,6 +24,7 @@ interface WebhookSettingsProps {
   config: WebhookConfig;
   onConfigChange: (config: WebhookConfig) => void;
   disabled?: boolean;
+  currentDevEui?: string;
 }
 
 const TTN_CLUSTERS = [
@@ -32,10 +33,11 @@ const TTN_CLUSTERS = [
   { value: 'au1', label: 'Australia 1 (au1.cloud.thethings.network)' },
 ];
 
-export default function WebhookSettings({ config, onConfigChange, disabled }: WebhookSettingsProps) {
+export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui }: WebhookSettingsProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [isTestingTTN, setIsTestingTTN] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [copiedDevEui, setCopiedDevEui] = useState(false);
 
   // Get the local ttn-webhook URL
   const localWebhookUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ttn-webhook`;
@@ -60,6 +62,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled }: We
     setCopied(true);
     setTimeout(() => setCopied(false), 2000);
     toast({ title: 'Copied', description: 'Webhook URL copied to clipboard' });
+  };
+
+  const copyDevEui = () => {
+    if (!currentDevEui) return;
+    navigator.clipboard.writeText(currentDevEui);
+    setCopiedDevEui(true);
+    setTimeout(() => setCopiedDevEui(false), 2000);
+    toast({ title: 'Copied', description: 'DevEUI copied - use this when registering in TTN Console' });
   };
 
   const useLocalWebhook = () => {
@@ -302,11 +312,48 @@ export default function WebhookSettings({ config, onConfigChange, disabled }: We
                 </div>
               </div>
 
-              <div className="bg-muted/50 rounded-lg p-3 flex items-start gap-2">
-                <AlertCircle className="h-4 w-4 mt-0.5 text-muted-foreground shrink-0" />
-                <div className="text-xs text-muted-foreground space-y-1">
-                  <p><strong>Devices must be registered in TTN</strong> with matching DevEUI for uplinks to succeed.</p>
-                  <p>The TTN API Key is stored securely in your backend secrets.</p>
+              {/* TTN Device Registration Helper */}
+              <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <AlertCircle className="h-4 w-4 mt-0.5 text-amber-600 shrink-0" />
+                  <div className="text-sm space-y-2">
+                    <p className="font-medium text-amber-700">Device Must Be Registered in TTN</p>
+                    <p className="text-xs text-muted-foreground">
+                      Before uplinks will succeed, register this device in TTN Console with the exact DevEUI shown below.
+                    </p>
+                  </div>
+                </div>
+                
+                {currentDevEui && (
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Current Temperature Sensor DevEUI</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={currentDevEui}
+                        readOnly
+                        className="font-mono text-sm bg-background"
+                      />
+                      <Button 
+                        variant="outline" 
+                        size="icon" 
+                        onClick={copyDevEui}
+                        title="Copy DevEUI for TTN registration"
+                      >
+                        {copiedDevEui ? <Check className="h-4 w-4 text-green-500" /> : <Copy className="h-4 w-4" />}
+                      </Button>
+                    </div>
+                  </div>
+                )}
+                
+                <div className="text-xs text-muted-foreground bg-background/50 rounded p-2 space-y-1">
+                  <p className="font-medium">TTN Registration Steps:</p>
+                  <ol className="list-decimal list-inside space-y-0.5 pl-1">
+                    <li>Go to TTN Console → Applications → {ttnConfig.applicationId || 'your-app'}</li>
+                    <li>Click "End devices" → "Register end device"</li>
+                    <li>Select "Enter end device specifics manually"</li>
+                    <li>Paste the DevEUI: <code className="bg-muted px-1 rounded">{currentDevEui || 'copy from above'}</code></li>
+                    <li>Complete registration with JoinEUI and AppKey from Devices tab</li>
+                  </ol>
                 </div>
               </div>
 
