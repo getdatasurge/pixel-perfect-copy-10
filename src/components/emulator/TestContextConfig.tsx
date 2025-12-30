@@ -1,18 +1,105 @@
+import { useState } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
-import { Building2, MapPin, Box, ExternalLink } from 'lucide-react';
-import { WebhookConfig } from '@/lib/ttn-payload';
+import { Button } from '@/components/ui/button';
+import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check } from 'lucide-react';
+import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from '@/hooks/use-toast';
 
 interface TestContextConfigProps {
   config: WebhookConfig;
   onConfigChange: (config: WebhookConfig) => void;
   disabled?: boolean;
+  gateways?: GatewayConfig[];
+  devices?: LoRaWANDevice[];
 }
 
-export default function TestContextConfig({ config, onConfigChange, disabled }: TestContextConfigProps) {
+export default function TestContextConfig({ 
+  config, 
+  onConfigChange, 
+  disabled,
+  gateways = [],
+  devices = []
+}: TestContextConfigProps) {
+  const [isSyncing, setIsSyncing] = useState(false);
+  const [lastSyncResult, setLastSyncResult] = useState<string | null>(null);
+
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
+    setLastSyncResult(null);
+  };
+
+  const canSync = config.testOrgId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
+
+  const syncAll = async () => {
+    if (!config.testOrgId || !config.frostguardApiUrl) {
+      toast({ 
+        title: 'Missing Configuration', 
+        description: 'Organization ID and FrostGuard API URL are required', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    if (gateways.length === 0 && devices.length === 0) {
+      toast({ 
+        title: 'Nothing to Sync', 
+        description: 'Add gateways or devices first', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    setIsSyncing(true);
+    setLastSyncResult(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
+        body: {
+          gateways: gateways.map(g => ({
+            id: g.id,
+            name: g.name,
+            eui: g.eui,
+            isOnline: g.isOnline,
+          })),
+          sensors: devices.map(d => ({
+            id: d.id,
+            name: d.name,
+            devEui: d.devEui,
+            type: d.type,
+            gatewayId: d.gatewayId,
+          })),
+          orgId: config.testOrgId,
+          siteId: config.testSiteId,
+          unitId: config.testUnitId,
+          frostguardApiUrl: config.frostguardApiUrl,
+        },
+      });
+
+      if (error) throw error;
+
+      const { results, summary } = data;
+      setLastSyncResult(summary);
+      
+      if (results.gateways.failed > 0 || results.sensors.failed > 0) {
+        const errors = [...results.gateways.errors, ...results.sensors.errors];
+        toast({ 
+          title: 'Sync Partial', 
+          description: `${summary}. Errors: ${errors.join(', ')}`, 
+          variant: 'destructive' 
+        });
+      } else {
+        toast({ title: 'Sync Complete', description: summary });
+      }
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
+      setLastSyncResult(null);
+    } finally {
+      setIsSyncing(false);
+    }
   };
 
   return (
@@ -110,6 +197,54 @@ export default function TestContextConfig({ config, onConfigChange, disabled }: 
             </p>
           </div>
         )}
+
+        <div className="border-t pt-4">
+          <div className="flex items-center justify-between">
+            <div>
+              <Label className="flex items-center gap-2">
+                <Cloud className="h-4 w-4 text-primary" />
+                Sync to Dashboard
+              </Label>
+              <p className="text-xs text-muted-foreground mt-1">
+                Register all gateways and sensors in FrostGuard
+              </p>
+            </div>
+            <Button
+              onClick={syncAll}
+              disabled={disabled || isSyncing || !canSync}
+              className="flex items-center gap-2"
+            >
+              {isSyncing ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Syncing...
+                </>
+              ) : lastSyncResult ? (
+                <>
+                  <Check className="h-4 w-4" />
+                  Synced
+                </>
+              ) : (
+                <>
+                  <Cloud className="h-4 w-4" />
+                  Sync All ({gateways.length} gateways, {devices.length} sensors)
+                </>
+              )}
+            </Button>
+          </div>
+          {lastSyncResult && (
+            <p className="text-xs text-green-600 mt-2">
+              ✓ {lastSyncResult}
+            </p>
+          )}
+          {!canSync && !disabled && (
+            <p className="text-xs text-muted-foreground mt-2">
+              {!config.testOrgId || !config.frostguardApiUrl 
+                ? 'Set Organization ID and FrostGuard API URL to enable sync'
+                : 'Add gateways or devices to sync'}
+            </p>
+          )}
+        </div>
       </CardContent>
     </Card>
   );
