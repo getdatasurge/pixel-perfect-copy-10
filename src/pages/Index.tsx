@@ -3,35 +3,10 @@ import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/ca
 import { Radio, Link2, ClipboardList, BarChart3 } from "lucide-react";
 
 const Index = () => {
-  const tools = [
-    {
-      title: "Device Emulator",
-      description: "Simulate LoRaWAN temperature, humidity, and door sensors with TTN-compatible payloads",
-      icon: Radio,
-      href: "/device-emulator",
-      available: true,
-    },
-    {
-      title: "TTN Integration",
-      description: "Configure The Things Network webhooks and application settings",
-      icon: Link2,
-      href: "#",
-      available: false,
-    },
-    {
-      title: "Sensor Registry",
-      description: "Manage registered sensors, gateways, and device provisioning",
-      icon: ClipboardList,
-      href: "#",
-      available: false,
-    },
-    {
-      title: "Test Dashboard",
-      description: "View test results, data flow validation, and multi-tenant isolation checks",
-      icon: BarChart3,
-      href: "#",
-      available: false,
-    },
+  const features = [
+    { icon: Link2, label: "TTN Integration" },
+    { icon: ClipboardList, label: "Device Management" },
+    { icon: BarChart3, label: "Test Dashboard" },
   ];
 
   return (
@@ -48,49 +23,37 @@ const Index = () => {
         </div>
       </div>
 
-      {/* Feature Cards */}
+      {/* Feature Card */}
       <div className="container mx-auto px-4 py-12">
-        <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
-          {tools.map((tool) => {
-            const Icon = tool.icon;
-            const content = (
-              <Card
-                className={`relative transition-all duration-200 ${
-                  tool.available
-                    ? "hover:border-primary hover:shadow-lg cursor-pointer"
-                    : "opacity-60 cursor-not-allowed"
-                }`}
-              >
-                {!tool.available && (
-                  <div className="absolute top-3 right-3">
-                    <span className="text-xs font-medium text-muted-foreground bg-muted px-2 py-1 rounded">
-                      Coming Soon
-                    </span>
-                  </div>
-                )}
-                <CardHeader className="space-y-4">
-                  <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
-                    <Icon className="w-6 h-6 text-primary" />
-                  </div>
-                  <div>
-                    <CardTitle className="text-lg">{tool.title}</CardTitle>
-                    <CardDescription className="mt-2">
-                      {tool.description}
-                    </CardDescription>
-                  </div>
-                </CardHeader>
-              </Card>
-            );
-
-            return tool.available ? (
-              <Link key={tool.title} to={tool.href}>
-                {content}
-              </Link>
-            ) : (
-              <div key={tool.title}>{content}</div>
-            );
-          })}
-        </div>
+        <Link to="/device-emulator">
+          <Card className="max-w-md mx-auto hover:border-primary hover:shadow-lg transition-all duration-200 cursor-pointer">
+            <CardHeader className="space-y-4">
+              <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                <Radio className="w-6 h-6 text-primary" />
+              </div>
+              <div>
+                <CardTitle className="text-lg">Device Emulator</CardTitle>
+                <CardDescription className="mt-2">
+                  Simulate LoRaWAN sensors, configure TTN webhooks, and test multi-tenant data flow
+                </CardDescription>
+              </div>
+              <div className="pt-2 border-t border-border">
+                <p className="text-xs text-muted-foreground mb-2">Includes:</p>
+                <div className="flex flex-wrap gap-2">
+                  {features.map((feature) => {
+                    const Icon = feature.icon;
+                    return (
+                      <span key={feature.label} className="inline-flex items-center gap-1 text-xs text-muted-foreground">
+                        <Icon className="w-3 h-3" />
+                        {feature.label}
+                      </span>
+                    );
+                  })}
+                </div>
+              </div>
+            </CardHeader>
+          </Card>
+        </Link>
       </div>
 
       {/* Footer */}
