@@ -7,6 +7,7 @@ import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTrian
 import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
+import UserSearchDialog from './UserSearchDialog';
 
 interface TestContextConfigProps {
   config: WebhookConfig;
@@ -155,6 +156,21 @@ export default function TestContextConfig({
           <p className="text-xs text-muted-foreground mt-1">
             Include organization context in payloads for multi-tenant testing with FrostGuard
           </p>
+        </div>
+
+        <div className="flex items-center gap-2 mb-2">
+          <UserSearchDialog
+            frostguardApiUrl={config.frostguardApiUrl}
+            onSelectUser={(user) => {
+              update({
+                testOrgId: user.organization_id || config.testOrgId,
+                testSiteId: user.site_id || config.testSiteId,
+                testUnitId: user.unit_id || config.testUnitId,
+              });
+            }}
+            disabled={disabled}
+          />
+          <span className="text-sm text-muted-foreground">Search users to auto-fill context</span>
         </div>
 
         <div className="grid gap-4 sm:grid-cols-3">
