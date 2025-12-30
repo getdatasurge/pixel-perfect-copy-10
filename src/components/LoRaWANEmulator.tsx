@@ -59,15 +59,47 @@ export default function LoRaWANEmulator() {
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
-  // Gateway and device management
-  const [gateways, setGateways] = useState<GatewayConfigType[]>(() => [createGateway('Primary Gateway')]);
+  // Storage keys for persistence
+  const STORAGE_KEY_DEVICES = 'lorawan-emulator-devices';
+  const STORAGE_KEY_GATEWAYS = 'lorawan-emulator-gateways';
+
+  // Gateway and device management with localStorage persistence
+  const [gateways, setGateways] = useState<GatewayConfigType[]>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_GATEWAYS);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        // Fall through to default
+      }
+    }
+    return [createGateway('Primary Gateway')];
+  });
+
   const [devices, setDevices] = useState<LoRaWANDevice[]>(() => {
-    const gateway = createGateway('Primary Gateway');
+    const saved = localStorage.getItem(STORAGE_KEY_DEVICES);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        // Fall through to default
+      }
+    }
+    const gateway = gateways[0] || createGateway('Primary Gateway');
     return [
       createDevice('Temp Sensor 1', 'temperature', gateway.id),
       createDevice('Door Sensor 1', 'door', gateway.id),
     ];
   });
+
+  // Persist devices and gateways to localStorage
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_DEVICES, JSON.stringify(devices));
+  }, [devices]);
+
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_GATEWAYS, JSON.stringify(gateways));
+  }, [gateways]);
 
   // Initialize devices with correct gateway ID
   useEffect(() => {
@@ -561,6 +593,7 @@ export default function LoRaWANEmulator() {
                 config={webhookConfig}
                 onConfigChange={setWebhookConfig}
                 disabled={isRunning}
+                currentDevEui={tempDevice?.devEui}
               />
             </TabsContent>
 

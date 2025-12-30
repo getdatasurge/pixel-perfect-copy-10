@@ -76,12 +76,12 @@ export default function DeviceManager({
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
-        <div>
-          <h3 className="text-lg font-medium">Devices</h3>
-          <p className="text-sm text-muted-foreground">
-            LoRaWAN devices with proper DevEUI/JoinEUI/AppKey credentials
-          </p>
-        </div>
+      <div>
+        <h3 className="text-lg font-medium">Devices</h3>
+        <p className="text-sm text-muted-foreground">
+          LoRaWAN devices with DevEUI/JoinEUI/AppKey credentials (persisted across sessions)
+        </p>
+      </div>
         <div className="flex gap-2">
           <Button 
             onClick={() => addDevice('temperature')} 
