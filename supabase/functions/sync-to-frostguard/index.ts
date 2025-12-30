@@ -65,8 +65,18 @@ serve(async (req) => {
       );
     }
 
+    // Normalize the URL - extract base URL if full path was provided
+    let baseUrl = frostguardApiUrl;
+    if (frostguardApiUrl.includes('/functions/')) {
+      const match = frostguardApiUrl.match(/^(https?:\/\/[^\/]+)/);
+      if (match) {
+        baseUrl = match[1];
+        console.log('Normalized FrostGuard URL from', frostguardApiUrl, 'to', baseUrl);
+      }
+    }
+
     // Create Supabase client for Freshtrack Pro
-    const frostguardClient = createClient(frostguardApiUrl, frostguardAnonKey);
+    const frostguardClient = createClient(baseUrl, frostguardAnonKey);
 
     const results = {
       gateways: { synced: 0, failed: 0, errors: [] as string[] },

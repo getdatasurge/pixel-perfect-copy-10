@@ -31,6 +31,19 @@ export default function TestContextConfig({
     setLastSyncResult(null);
   };
 
+  // Normalize FrostGuard URL - extract base URL if edge function URL is pasted
+  const handleFrostguardUrlChange = (value: string) => {
+    let normalizedUrl = value;
+    // Extract base URL if edge function URL is pasted
+    if (value.includes('/functions/')) {
+      const match = value.match(/^(https?:\/\/[^\/]+)/);
+      if (match) {
+        normalizedUrl = match[1];
+      }
+    }
+    update({ frostguardApiUrl: normalizedUrl || undefined });
+  };
+
   const canSync = config.testOrgId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
 
   const syncAll = async () => {
@@ -172,17 +185,17 @@ export default function TestContextConfig({
           <div className="space-y-2">
             <Label htmlFor="frostguardApiUrl" className="flex items-center gap-1">
               <ExternalLink className="h-3 w-3" />
-              FrostGuard API URL
+              FrostGuard Supabase URL
             </Label>
             <Input
               id="frostguardApiUrl"
-              placeholder="https://your-project.supabase.co"
+              placeholder="https://project-id.supabase.co"
               value={config.frostguardApiUrl || ''}
-              onChange={e => update({ frostguardApiUrl: e.target.value || undefined })}
+              onChange={e => handleFrostguardUrlChange(e.target.value)}
               disabled={disabled}
             />
             <p className="text-xs text-muted-foreground">
-              For syncing devices to FrostGuard sensor registry
+              Base Supabase URL (not edge function URL)
             </p>
           </div>
         </div>
