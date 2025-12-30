@@ -89,14 +89,15 @@ serve(async (req) => {
       
       for (const gateway of gateways) {
         try {
+          // Note: Using lora_gateways table with gateway_eui column (matching Freshtrack Pro schema)
           const { error } = await frostguardClient
-            .from('gateways')
+            .from('lora_gateways')
             .upsert({
               id: gateway.id,
               name: gateway.name,
-              eui: gateway.eui,
+              gateway_eui: gateway.eui,
               org_id: orgId,
-              status: gateway.isOnline ? 'online' : 'offline',
+              is_online: gateway.isOnline,
             }, { onConflict: 'id' });
 
           if (error) {
@@ -116,7 +117,7 @@ serve(async (req) => {
       }
     }
 
-    // Sync sensors
+    // Sync sensors (using lora_sensors table to match Freshtrack Pro schema)
     if (sensors && sensors.length > 0) {
       console.log(`Syncing ${sensors.length} sensors...`);
       
@@ -142,7 +143,7 @@ serve(async (req) => {
           }
 
           const { error } = await frostguardClient
-            .from('sensors')
+            .from('lora_sensors')
             .upsert(sensorData, { onConflict: 'id' });
 
           if (error) {
