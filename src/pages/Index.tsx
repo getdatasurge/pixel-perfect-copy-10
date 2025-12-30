@@ -1,3 +1,4 @@
+// FrostGuard Developer Tools - v1.0
 import { Link } from "react-router-dom";
 import { Card, CardHeader, CardTitle, CardDescription } from "@/components/ui/card";
 import { Radio, Link2, ClipboardList, BarChart3 } from "lucide-react";
