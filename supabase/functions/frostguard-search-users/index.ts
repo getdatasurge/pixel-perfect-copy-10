@@ -27,11 +27,12 @@ serve(async (req) => {
   }
 
   try {
-    const frostguardAnonKey = Deno.env.get('FROSTGUARD_ANON_KEY');
-    if (!frostguardAnonKey) {
-      console.error('FROSTGUARD_ANON_KEY not configured');
+    // Use service role key to bypass RLS on FrostGuard profiles table
+    const frostguardServiceKey = Deno.env.get('FROSTGUARD_SERVICE_ROLE_KEY');
+    if (!frostguardServiceKey) {
+      console.error('FROSTGUARD_SERVICE_ROLE_KEY not configured');
       return new Response(
-        JSON.stringify({ success: false, error: 'FROSTGUARD_ANON_KEY not configured' }),
+        JSON.stringify({ success: false, error: 'FROSTGUARD_SERVICE_ROLE_KEY not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -52,9 +53,9 @@ serve(async (req) => {
       if (match) baseUrl = match[1];
     }
 
-    console.log(`Searching FrostGuard users at ${baseUrl}, search term: "${searchTerm || ''}"`);
+    console.log(`Searching FrostGuard users at ${baseUrl}, search term: "${searchTerm || ''}" (using service role key)`);
 
-    const frostguardClient = createClient(baseUrl, frostguardAnonKey);
+    const frostguardClient = createClient(baseUrl, frostguardServiceKey);
 
     // Query profiles table with only columns that exist
     let query = frostguardClient
