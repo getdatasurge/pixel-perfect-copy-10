@@ -2,9 +2,10 @@ import { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, Loader2, User, Building2, MapPin, Box } from 'lucide-react';
+import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
+import { FunctionsHttpError, FunctionsRelayError, FunctionsFetchError } from '@supabase/supabase-js';
 
 interface UserProfile {
   id: string;
@@ -27,6 +28,7 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
   const [isLoading, setIsLoading] = useState(false);
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
+  const [lastError, setLastError] = useState<string | null>(null);
 
   const searchUsers = useCallback(async (term?: string) => {
     const searchValue = term ?? searchTerm;
@@ -41,6 +43,7 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
 
     setIsLoading(true);
     setHasSearched(true);
+    setLastError(null);
 
     try {
       const { data, error } = await supabase.functions.invoke('frostguard-search-users', {
@@ -50,16 +53,55 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
         },
       });
 
-      if (error) throw error;
+      if (error) {
+        // Parse the actual error from edge function
+        let errorMessage = 'Unknown error';
+        let errorDetails = '';
+
+        if (error instanceof FunctionsHttpError) {
+          try {
+            const errorData = await error.context.json();
+            errorMessage = errorData.error || 'Request failed';
+            errorDetails = errorData.details || '';
+          } catch {
+            errorMessage = error.message;
+          }
+        } else if (error instanceof FunctionsRelayError) {
+          errorMessage = 'Network relay error - check your connection';
+        } else if (error instanceof FunctionsFetchError) {
+          errorMessage = 'Failed to connect to backend';
+        } else {
+          errorMessage = error.message;
+        }
+
+        const fullError = errorDetails ? `${errorMessage}: ${errorDetails}` : errorMessage;
+        setLastError(fullError);
+        toast({
+          title: 'Search Failed',
+          description: fullError,
+          variant: 'destructive',
+        });
+        setUsers([]);
+        return;
+      }
 
       if (!data.success) {
-        throw new Error(data.error || 'Failed to search users');
+        const fullError = data.details ? `${data.error}: ${data.details}` : data.error;
+        setLastError(fullError);
+        toast({
+          title: 'Search Failed',
+          description: fullError,
+          variant: 'destructive',
+        });
+        setUsers([]);
+        return;
       }
 
       setUsers(data.users || []);
 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
+      setLastError(message);
       toast({
         title: 'Search Failed',
         description: message,
@@ -151,7 +193,12 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
           </div>
 
           <div className="max-h-64 overflow-y-auto space-y-2">
-            {users.length > 0 ? (
+            {isLoading ? (
+              <div className="flex items-center justify-center py-8 gap-2 text-muted-foreground">
+                <Loader2 className="h-4 w-4 animate-spin" />
+                Searching...
+              </div>
+            ) : users.length > 0 ? (
               users.map((user) => (
                 <button
                   key={user.id}
@@ -186,15 +233,21 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
                   </div>
                 </button>
               ))
-            ) : hasSearched && !isLoading ? (
+            ) : lastError ? (
+              <div className="text-center py-4 space-y-2">
+                <AlertCircle className="h-8 w-8 text-destructive mx-auto" />
+                <div className="text-sm text-destructive font-medium">Search failed</div>
+                <div className="text-xs text-muted-foreground px-4">{lastError}</div>
+              </div>
+            ) : hasSearched ? (
               <div className="text-center text-muted-foreground py-4">
                 No users found. Try a different search term.
               </div>
-            ) : !hasSearched ? (
+            ) : (
               <div className="text-center text-muted-foreground py-4">
                 Click search or press Enter to find users
               </div>
-            ) : null}
+            )}
           </div>
         </div>
       </DialogContent>
