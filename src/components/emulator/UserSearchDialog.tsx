@@ -1,5 +1,5 @@
-import { useState } from 'react';
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
+import { useState, useEffect, useCallback } from 'react';
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Search, Loader2, User, Building2, MapPin, Box } from 'lucide-react';
@@ -28,7 +28,8 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
   const [users, setUsers] = useState<UserProfile[]>([]);
   const [hasSearched, setHasSearched] = useState(false);
 
-  const searchUsers = async () => {
+  const searchUsers = useCallback(async (term?: string) => {
+    const searchValue = term ?? searchTerm;
     if (!frostguardApiUrl) {
       toast({
         title: 'Missing URL',
@@ -45,7 +46,7 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
       const { data, error } = await supabase.functions.invoke('frostguard-search-users', {
         body: {
           frostguardApiUrl,
-          searchTerm: searchTerm.trim() || undefined,
+          searchTerm: searchValue.trim() || undefined,
         },
       });
 
@@ -57,12 +58,6 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
 
       setUsers(data.users || []);
 
-      if (data.users?.length === 0) {
-        toast({
-          title: 'No Users Found',
-          description: searchTerm ? 'Try a different search term' : 'No users in the database',
-        });
-      }
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       toast({
@@ -74,7 +69,25 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
     } finally {
       setIsLoading(false);
     }
-  };
+  }, [frostguardApiUrl, searchTerm]);
+
+  // Auto-search with debounce when typing
+  useEffect(() => {
+    if (!open || !frostguardApiUrl) return;
+    
+    const debounceTimer = setTimeout(() => {
+      searchUsers(searchTerm);
+    }, 300);
+    
+    return () => clearTimeout(debounceTimer);
+  }, [searchTerm, open, frostguardApiUrl]);
+
+  // Load users when dialog opens
+  useEffect(() => {
+    if (open && frostguardApiUrl && !hasSearched) {
+      searchUsers('');
+    }
+  }, [open, frostguardApiUrl, hasSearched]);
 
   const handleSelect = (user: UserProfile) => {
     onSelectUser(user);
@@ -115,6 +128,9 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
             <User className="h-5 w-5" />
             Search FrostGuard Users
           </DialogTitle>
+          <DialogDescription>
+            Search for users to auto-fill organization context
+          </DialogDescription>
         </DialogHeader>
         
         <div className="space-y-4">
@@ -123,9 +139,9 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
               placeholder="Search by name or email..."
               value={searchTerm}
               onChange={(e) => setSearchTerm(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && searchUsers()}
+              onKeyDown={(e) => e.key === 'Enter' && searchUsers(searchTerm)}
             />
-            <Button onClick={searchUsers} disabled={isLoading}>
+            <Button onClick={() => searchUsers(searchTerm)} disabled={isLoading}>
               {isLoading ? (
                 <Loader2 className="h-4 w-4 animate-spin" />
               ) : (
