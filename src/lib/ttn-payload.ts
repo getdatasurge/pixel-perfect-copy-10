@@ -69,6 +69,23 @@ export interface WebhookConfig {
     message: string;
     timestamp: Date;
   };
+  // Multi-tenant test context
+  testOrgId?: string;
+  testSiteId?: string;
+  testUnitId?: string;
+  frostguardApiUrl?: string;
+}
+
+export interface TestResult {
+  id: string;
+  timestamp: Date;
+  deviceId: string;
+  deviceType: 'temperature' | 'door';
+  ttnStatus: 'success' | 'failed' | 'skipped';
+  webhookStatus: 'success' | 'failed' | 'pending';
+  dbStatus: 'inserted' | 'failed' | 'pending';
+  orgApplied: boolean;
+  error?: string;
 }
 
 // Generate a random 16-character hex string (8 bytes) for EUI

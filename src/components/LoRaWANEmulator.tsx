@@ -8,7 +8,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook, Cloud } from 'lucide-react';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook, Cloud, FlaskConical } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import GatewayConfig from './emulator/GatewayConfig';
@@ -16,10 +16,13 @@ import WebhookSettings from './emulator/WebhookSettings';
 import DeviceManager from './emulator/DeviceManager';
 import QRCodeModal from './emulator/QRCodeModal';
 import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
+import TestContextConfig from './emulator/TestContextConfig';
+import TestDashboard from './emulator/TestDashboard';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
   WebhookConfig, 
+  TestResult,
   createGateway, 
   createDevice,
   buildTTNPayload 
@@ -55,6 +58,7 @@ export default function LoRaWANEmulator() {
   const [currentTemp, setCurrentTemp] = useState<number | null>(null);
   const [readingCount, setReadingCount] = useState(0);
   const [qrDevice, setQrDevice] = useState<LoRaWANDevice | null>(null);
+  const [testResults, setTestResults] = useState<TestResult[]>([]);
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -62,6 +66,7 @@ export default function LoRaWANEmulator() {
   // Storage keys for persistence
   const STORAGE_KEY_DEVICES = 'lorawan-emulator-devices';
   const STORAGE_KEY_GATEWAYS = 'lorawan-emulator-gateways';
+  const STORAGE_KEY_WEBHOOK = 'lorawan-emulator-webhook';
 
   // Gateway and device management with localStorage persistence
   const [gateways, setGateways] = useState<GatewayConfigType[]>(() => {
@@ -115,13 +120,28 @@ export default function LoRaWANEmulator() {
     }
   }, [gateways]);
 
-  // Webhook configuration
-  const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>({
-    enabled: false,
-    targetUrl: '',
-    applicationId: 'frostguard',
-    sendToLocal: true,
+  // Webhook configuration with localStorage persistence
+  const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_WEBHOOK);
+    if (saved) {
+      try {
+        return JSON.parse(saved);
+      } catch {
+        // Fall through to default
+      }
+    }
+    return {
+      enabled: false,
+      targetUrl: '',
+      applicationId: 'frostguard',
+      sendToLocal: true,
+    };
   });
+
+  // Persist webhook config
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_WEBHOOK, JSON.stringify(webhookConfig));
+  }, [webhookConfig]);
 
   const [tempState, setTempState] = useState<TempSensorState>({
     minTemp: 35,
@@ -148,6 +168,15 @@ export default function LoRaWANEmulator() {
       message,
     };
     setLogs(prev => [entry, ...prev].slice(0, 100));
+  }, []);
+
+  const addTestResult = useCallback((result: Omit<TestResult, 'id' | 'timestamp'>) => {
+    const entry: TestResult = {
+      ...result,
+      id: `${Date.now()}-${Math.random()}`,
+      timestamp: new Date(),
+    };
+    setTestResults(prev => [entry, ...prev].slice(0, 50));
   }, []);
 
   const getActiveDevice = useCallback((type: 'temperature' | 'door') => {
@@ -181,13 +210,26 @@ export default function LoRaWANEmulator() {
     setCurrentTemp(temp);
     setTempState(prev => ({ ...prev, batteryLevel: battery }));
 
+    // Build payload with org context
     const payload = {
       temperature: Math.round(temp * 10) / 10,
       humidity: Math.round(humidity * 10) / 10,
       battery_level: Math.round(battery),
       signal_strength: Math.round(signal),
-      unit_id: device.name,
+      unit_id: webhookConfig.testUnitId || device.name,
       reading_type: 'scheduled',
+      // Multi-tenant context
+      org_id: webhookConfig.testOrgId || null,
+      site_id: webhookConfig.testSiteId || null,
+    };
+
+    let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
+      deviceId: device.id,
+      deviceType: 'temperature',
+      ttnStatus: 'skipped',
+      webhookStatus: 'pending',
+      dbStatus: 'pending',
+      orgApplied: !!webhookConfig.testOrgId,
     };
 
     try {
@@ -210,10 +252,14 @@ export default function LoRaWANEmulator() {
         if (error) throw error;
         if (data && !data.success) throw new Error(data.error || 'TTN API error');
         
+        testResult.ttnStatus = 'success';
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 Sent via TTN → ${ttnConfig.applicationId}`);
       } 
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        testResult.ttnStatus = 'skipped';
         const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
@@ -224,22 +270,30 @@ export default function LoRaWANEmulator() {
         if (!response.ok) {
           throw new Error(`Webhook returned ${response.status}`);
         }
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 TTN payload sent to external webhook`);
       } 
       // Default: use local ttn-webhook function
       else {
+        testResult.ttnStatus = 'skipped';
         const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const { error } = await supabase.functions.invoke('ttn-webhook', {
           body: ttnPayload,
         });
 
         if (error) throw error;
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 Sent via local ttn-webhook`);
       }
 
       setReadingCount(prev => prev + 1);
       addLog('temp', `📡 Temp: ${temp.toFixed(1)}°F, Humidity: ${humidity.toFixed(1)}%, Battery: ${battery.toFixed(0)}%`);
     } catch (err: any) {
+      testResult.webhookStatus = 'failed';
+      testResult.dbStatus = 'failed';
+      testResult.error = err.message;
       addLog('error', `❌ Failed to send temp reading: ${err.message}`);
       toast({
         title: 'Error sending reading',
@@ -247,7 +301,9 @@ export default function LoRaWANEmulator() {
         variant: 'destructive',
       });
     }
-  }, [tempState, webhookConfig, addLog, getActiveDevice, getActiveGateway]);
+
+    addTestResult(testResult);
+  }, [tempState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway]);
 
   const sendDoorEvent = useCallback(async (status?: 'open' | 'closed') => {
     if (!doorState.enabled) return;
@@ -271,11 +327,24 @@ export default function LoRaWANEmulator() {
 
     setDoorState(prev => ({ ...prev, batteryLevel: battery }));
 
+    // Build payload with org context
     const payload = {
       door_status: doorStatus,
       battery_level: Math.round(battery),
       signal_strength: Math.round(signal),
-      unit_id: device.name,
+      unit_id: webhookConfig.testUnitId || device.name,
+      // Multi-tenant context
+      org_id: webhookConfig.testOrgId || null,
+      site_id: webhookConfig.testSiteId || null,
+    };
+
+    let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
+      deviceId: device.id,
+      deviceType: 'door',
+      ttnStatus: 'skipped',
+      webhookStatus: 'pending',
+      dbStatus: 'pending',
+      orgApplied: !!webhookConfig.testOrgId,
     };
 
     try {
@@ -298,10 +367,14 @@ export default function LoRaWANEmulator() {
         if (error) throw error;
         if (data && !data.success) throw new Error(data.error || 'TTN API error');
         
+        testResult.ttnStatus = 'success';
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 Door event sent via TTN → ${ttnConfig.applicationId}`);
       }
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        testResult.ttnStatus = 'skipped';
         const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
@@ -312,21 +385,29 @@ export default function LoRaWANEmulator() {
         if (!response.ok) {
           throw new Error(`Webhook returned ${response.status}`);
         }
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 Door event sent via external webhook`);
       } 
       // Default: use local ttn-webhook function
       else {
+        testResult.ttnStatus = 'skipped';
         const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const { error } = await supabase.functions.invoke('ttn-webhook', {
           body: ttnPayload,
         });
 
         if (error) throw error;
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
         addLog('webhook', `📤 Door event sent via local ttn-webhook`);
       }
 
       addLog('door', `🚪 Door ${doorStatus === 'open' ? 'OPENED' : 'CLOSED'} - Battery: ${battery.toFixed(0)}%`);
     } catch (err: any) {
+      testResult.webhookStatus = 'failed';
+      testResult.dbStatus = 'failed';
+      testResult.error = err.message;
       addLog('error', `❌ Failed to send door event: ${err.message}`);
       toast({
         title: 'Error sending door event',
@@ -334,7 +415,9 @@ export default function LoRaWANEmulator() {
         variant: 'destructive',
       });
     }
-  }, [doorState, webhookConfig, addLog, getActiveDevice, getActiveGateway]);
+
+    addTestResult(testResult);
+  }, [doorState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway]);
 
   const toggleDoor = useCallback(() => {
     const newStatus = !doorState.doorOpen;
@@ -412,6 +495,11 @@ export default function LoRaWANEmulator() {
                 {isRunning ? 'Running' : 'Stopped'}
               </Badge>
               <Badge variant="outline">{readingCount} readings</Badge>
+              {webhookConfig.testOrgId && (
+                <Badge variant="outline" className="bg-purple-500/10 text-purple-600 border-purple-500/30">
+                  Org: {webhookConfig.testOrgId}
+                </Badge>
+              )}
               {webhookConfig.ttnConfig?.enabled && (
                 <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
                   <Cloud className="h-3 w-3 mr-1" />
@@ -429,7 +517,7 @@ export default function LoRaWANEmulator() {
         </CardHeader>
         <CardContent>
           <Tabs defaultValue="sensors">
-            <TabsList className="grid w-full grid-cols-6">
+            <TabsList className="grid w-full grid-cols-7">
               <TabsTrigger value="sensors" className="flex items-center gap-1">
                 <Thermometer className="h-4 w-4" />
                 Sensors
@@ -445,6 +533,10 @@ export default function LoRaWANEmulator() {
               <TabsTrigger value="webhook" className="flex items-center gap-1">
                 <Webhook className="h-4 w-4" />
                 Webhook
+              </TabsTrigger>
+              <TabsTrigger value="testing" className="flex items-center gap-1">
+                <FlaskConical className="h-4 w-4" />
+                Testing
               </TabsTrigger>
               <TabsTrigger value="monitor" className="flex items-center gap-1">
                 <Activity className="h-4 w-4" />
@@ -585,6 +677,7 @@ export default function LoRaWANEmulator() {
                 onDevicesChange={setDevices}
                 onShowQR={setQrDevice}
                 disabled={isRunning}
+                webhookConfig={webhookConfig}
               />
             </TabsContent>
 
@@ -594,6 +687,18 @@ export default function LoRaWANEmulator() {
                 onConfigChange={setWebhookConfig}
                 disabled={isRunning}
                 currentDevEui={tempDevice?.devEui}
+              />
+            </TabsContent>
+
+            <TabsContent value="testing" className="space-y-4 mt-4">
+              <TestContextConfig
+                config={webhookConfig}
+                onConfigChange={setWebhookConfig}
+                disabled={isRunning}
+              />
+              <TestDashboard
+                results={testResults}
+                onClearResults={() => setTestResults([])}
               />
             </TabsContent>
 
