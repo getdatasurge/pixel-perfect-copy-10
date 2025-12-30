@@ -268,7 +268,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled }: We
                   <Label htmlFor="ttnAppId">TTN Application ID</Label>
                   <Input
                     id="ttnAppId"
-                    placeholder="freshtrack-coldchain"
+                    placeholder="frostguard"
                     value={ttnConfig.applicationId}
                     onChange={e => updateTTN({ applicationId: e.target.value })}
                     disabled={disabled}
@@ -456,7 +456,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled }: We
               <Label htmlFor="appId">TTN Application ID (for payload)</Label>
               <Input
                 id="appId"
-                placeholder="cold-chain-app"
+                placeholder="frostguard"
                 value={config.applicationId}
                 onChange={e => update({ applicationId: e.target.value })}
                 disabled={disabled}

@@ -87,7 +87,7 @@ export default function LoRaWANEmulator() {
   const [webhookConfig, setWebhookConfig] = useState<WebhookConfig>({
     enabled: false,
     targetUrl: '',
-    applicationId: 'cold-chain-app',
+    applicationId: 'frostguard',
     sendToLocal: true,
   });
 
