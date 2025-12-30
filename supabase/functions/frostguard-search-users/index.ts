@@ -116,69 +116,44 @@ serve(async (req) => {
 
     const frostguardClient = createClient(baseUrl, frostguardServiceKey);
 
-    // Query profiles table with only columns that exist
-    let query = frostguardClient
-      .from('profiles')
-      .select('id, email, full_name, organization_id')
-      .limit(50);
+    // Use auth.admin.listUsers() since FrostGuard has no profiles/users tables
+    const { data: authData, error: authError } = await frostguardClient.auth.admin.listUsers();
 
-    // Add search filter if term provided
-    if (searchTerm && searchTerm.trim()) {
-      const term = `%${searchTerm.trim()}%`;
-      query = query.or(`email.ilike.${term},full_name.ilike.${term}`);
-    }
-
-    const { data: profiles, error: profilesError } = await query;
-
-    if (profilesError) {
-      console.error('Error querying profiles:', profilesError);
-      
-      // Try alternative table names if profiles doesn't exist
-      if (profilesError.code === '42P01' || profilesError.message?.includes('does not exist')) {
-        // Try 'users' table
-        const { data: users, error: usersError } = await frostguardClient
-          .from('users')
-          .select('id, email, name, organization_id, site_id, unit_id')
-          .limit(50);
-
-        if (usersError) {
-          console.error('Error querying users table:', usersError);
-          return new Response(
-            JSON.stringify({ 
-              success: false, 
-              error: 'Could not find profiles or users table in FrostGuard',
-              details: profilesError.message
-            }),
-            { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-          );
-        }
-
-        // Map users to profile format
-        const mappedUsers = (users || []).map((u: any) => ({
-          id: u.id,
-          email: u.email,
-          full_name: u.name,
-          organization_id: u.organization_id,
-          site_id: u.site_id,
-          unit_id: u.unit_id,
-        }));
-
-        return new Response(
-          JSON.stringify({ success: true, users: mappedUsers, source: 'users' }),
-          { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-        );
-      }
-
+    if (authError) {
+      console.error('Error listing users:', authError);
       return new Response(
-        JSON.stringify({ success: false, error: profilesError.message }),
+        JSON.stringify({ 
+          success: false, 
+          error: 'Failed to query FrostGuard users',
+          details: authError.message
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`Found ${profiles?.length || 0} users`);
+    // Map auth users to profile format, extracting metadata
+    let users = (authData.users || []).map(user => ({
+      id: user.id,
+      email: user.email || null,
+      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+      organization_id: user.user_metadata?.organization_id || null,
+      site_id: user.user_metadata?.site_id || null,
+      unit_id: user.user_metadata?.unit_id || null,
+    }));
+
+    // Apply search filter client-side
+    if (searchTerm && searchTerm.trim()) {
+      const term = searchTerm.trim().toLowerCase();
+      users = users.filter(u => 
+        u.email?.toLowerCase().includes(term) ||
+        u.full_name?.toLowerCase().includes(term)
+      );
+    }
+
+    console.log(`Found ${users.length} users`);
 
     return new Response(
-      JSON.stringify({ success: true, users: profiles || [], source: 'profiles' }),
+      JSON.stringify({ success: true, users, source: 'auth' }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
