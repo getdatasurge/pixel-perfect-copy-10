@@ -46,11 +46,24 @@ export interface LoRaWANDevice {
   gatewayId: string;
 }
 
+export interface TTNConfig {
+  enabled: boolean;
+  applicationId: string;
+  cluster: string; // e.g., 'eu1', 'nam1', 'au1'
+  lastStatus?: {
+    code: number;
+    message: string;
+    timestamp: Date;
+  };
+}
+
 export interface WebhookConfig {
   enabled: boolean;
   targetUrl: string;
   applicationId: string;
   sendToLocal: boolean;
+  // TTN integration config
+  ttnConfig?: TTNConfig;
   lastStatus?: {
     code: number;
     message: string;
