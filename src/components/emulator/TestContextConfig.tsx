@@ -1,9 +1,9 @@
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check } from 'lucide-react';
+import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -16,6 +16,8 @@ interface TestContextConfigProps {
   devices?: LoRaWANDevice[];
 }
 
+type SyncStatus = 'success' | 'partial' | 'failed' | null;
+
 export default function TestContextConfig({ 
   config, 
   onConfigChange, 
@@ -24,11 +26,23 @@ export default function TestContextConfig({
   devices = []
 }: TestContextConfigProps) {
   const [isSyncing, setIsSyncing] = useState(false);
-  const [lastSyncResult, setLastSyncResult] = useState<string | null>(null);
+  const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
+  const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
+
+  // Normalize saved URL on initial load
+  useEffect(() => {
+    if (config.frostguardApiUrl?.includes('/functions/')) {
+      const match = config.frostguardApiUrl.match(/^(https?:\/\/[^\/]+)/);
+      if (match && match[1] !== config.frostguardApiUrl) {
+        onConfigChange({ ...config, frostguardApiUrl: match[1] });
+      }
+    }
+  }, []); // Run once on mount
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
-    setLastSyncResult(null);
+    setSyncStatus(null);
+    setLastSyncSummary(null);
   };
 
   // Normalize FrostGuard URL - extract base URL if edge function URL is pasted
@@ -66,7 +80,8 @@ export default function TestContextConfig({
     }
 
     setIsSyncing(true);
-    setLastSyncResult(null);
+    setSyncStatus(null);
+    setLastSyncSummary(null);
 
     try {
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
@@ -93,23 +108,37 @@ export default function TestContextConfig({
 
       if (error) throw error;
 
-      const { results, summary } = data;
-      setLastSyncResult(summary);
+      const { success, results, summary } = data;
+      setLastSyncSummary(summary);
       
-      if (results.gateways.failed > 0 || results.sensors.failed > 0) {
+      const totalFailed = results.gateways.failed + results.sensors.failed;
+      const totalSynced = results.gateways.synced + results.sensors.synced;
+      
+      if (totalFailed > 0 && totalSynced > 0) {
+        setSyncStatus('partial');
         const errors = [...results.gateways.errors, ...results.sensors.errors];
         toast({ 
-          title: 'Sync Partial', 
-          description: `${summary}. Errors: ${errors.join(', ')}`, 
+          title: 'Partial Sync', 
+          description: `${summary}. Errors: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '...' : ''}`, 
+          variant: 'destructive' 
+        });
+      } else if (totalFailed > 0) {
+        setSyncStatus('failed');
+        const errors = [...results.gateways.errors, ...results.sensors.errors];
+        toast({ 
+          title: 'Sync Failed', 
+          description: errors.slice(0, 2).join('; '), 
           variant: 'destructive' 
         });
       } else {
+        setSyncStatus('success');
         toast({ title: 'Sync Complete', description: summary });
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
-      setLastSyncResult(null);
+      setSyncStatus('failed');
+      setLastSyncSummary(null);
     } finally {
       setIsSyncing(false);
     }
@@ -225,6 +254,7 @@ export default function TestContextConfig({
             <Button
               onClick={syncAll}
               disabled={disabled || isSyncing || !canSync}
+              variant={syncStatus === 'failed' ? 'destructive' : syncStatus === 'partial' ? 'outline' : 'default'}
               className="flex items-center gap-2"
             >
               {isSyncing ? (
@@ -232,10 +262,20 @@ export default function TestContextConfig({
                   <Loader2 className="h-4 w-4 animate-spin" />
                   Syncing...
                 </>
-              ) : lastSyncResult ? (
+              ) : syncStatus === 'success' ? (
                 <>
                   <Check className="h-4 w-4" />
                   Synced
+                </>
+              ) : syncStatus === 'partial' ? (
+                <>
+                  <AlertTriangle className="h-4 w-4" />
+                  Partial
+                </>
+              ) : syncStatus === 'failed' ? (
+                <>
+                  <AlertTriangle className="h-4 w-4" />
+                  Retry
                 </>
               ) : (
                 <>
@@ -245,9 +285,14 @@ export default function TestContextConfig({
               )}
             </Button>
           </div>
-          {lastSyncResult && (
+          {lastSyncSummary && syncStatus === 'success' && (
             <p className="text-xs text-green-600 mt-2">
-              ✓ {lastSyncResult}
+              ✓ {lastSyncSummary}
+            </p>
+          )}
+          {lastSyncSummary && syncStatus === 'partial' && (
+            <p className="text-xs text-yellow-600 mt-2">
+              ⚠ {lastSyncSummary}
             </p>
           )}
           {!canSync && !disabled && (

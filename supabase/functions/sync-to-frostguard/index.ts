@@ -83,21 +83,21 @@ serve(async (req) => {
       sensors: { synced: 0, failed: 0, errors: [] as string[] },
     };
 
-    // Sync gateways
+    // Sync gateways - use 'gateways' table (confirmed by PGRST205 hint)
     if (gateways && gateways.length > 0) {
-      console.log(`Syncing ${gateways.length} gateways...`);
+      console.log(`Syncing ${gateways.length} gateways to 'gateways' table...`);
       
       for (const gateway of gateways) {
         try {
-          // Note: Using lora_gateways table with gateway_eui column (matching Freshtrack Pro schema)
+          // Try with eui/status columns first (common naming)
           const { error } = await frostguardClient
-            .from('lora_gateways')
+            .from('gateways')
             .upsert({
               id: gateway.id,
               name: gateway.name,
-              gateway_eui: gateway.eui,
+              eui: gateway.eui,
               org_id: orgId,
-              is_online: gateway.isOnline,
+              status: gateway.isOnline ? 'online' : 'offline',
             }, { onConflict: 'id' });
 
           if (error) {
@@ -117,9 +117,9 @@ serve(async (req) => {
       }
     }
 
-    // Sync sensors (using lora_sensors table to match Freshtrack Pro schema)
+    // Sync sensors - use 'sensors' table, without gateway_id (column doesn't exist)
     if (sensors && sensors.length > 0) {
-      console.log(`Syncing ${sensors.length} sensors...`);
+      console.log(`Syncing ${sensors.length} sensors to 'sensors' table...`);
       
       for (const sensor of sensors) {
         try {
@@ -131,10 +131,7 @@ serve(async (req) => {
             org_id: orgId,
           };
 
-          // Add optional fields if provided
-          if (sensor.gatewayId) {
-            sensorData.gateway_id = sensor.gatewayId;
-          }
+          // Add optional fields if provided (but NOT gateway_id - column doesn't exist)
           if (siteId) {
             sensorData.site_id = siteId;
           }
@@ -143,7 +140,7 @@ serve(async (req) => {
           }
 
           const { error } = await frostguardClient
-            .from('lora_sensors')
+            .from('sensors')
             .upsert(sensorData, { onConflict: 'id' });
 
           if (error) {
