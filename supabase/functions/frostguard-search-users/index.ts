@@ -56,10 +56,10 @@ serve(async (req) => {
 
     const frostguardClient = createClient(baseUrl, frostguardAnonKey);
 
-    // Try to query profiles table - adjust columns based on what exists
+    // Query profiles table with only columns that exist
     let query = frostguardClient
       .from('profiles')
-      .select('id, email, full_name, organization_id, site_id, unit_id')
+      .select('id, email, full_name, organization_id')
       .limit(50);
 
     // Add search filter if term provided
