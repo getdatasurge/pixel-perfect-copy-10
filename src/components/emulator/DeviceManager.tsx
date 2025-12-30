@@ -5,9 +5,10 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw } from 'lucide-react';
-import { LoRaWANDevice, GatewayConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2 } from 'lucide-react';
+import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
 
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
@@ -15,6 +16,7 @@ interface DeviceManagerProps {
   onDevicesChange: (devices: LoRaWANDevice[]) => void;
   onShowQR: (device: LoRaWANDevice) => void;
   disabled?: boolean;
+  webhookConfig?: WebhookConfig;
 }
 
 export default function DeviceManager({ 
@@ -22,9 +24,11 @@ export default function DeviceManager({
   gateways, 
   onDevicesChange, 
   onShowQR,
-  disabled 
+  disabled,
+  webhookConfig
 }: DeviceManagerProps) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
+  const [ttnRegistering, setTtnRegistering] = useState<string | null>(null);
 
   const addDevice = (type: 'temperature' | 'door') => {
     const defaultGateway = gateways[0]?.id || '';
@@ -56,6 +60,37 @@ export default function DeviceManager({
     await navigator.clipboard.writeText(value);
     setCopiedField(fieldId);
     setTimeout(() => setCopiedField(null), 2000);
+  };
+
+  const registerInTTN = async (device: LoRaWANDevice) => {
+    const ttnConfig = webhookConfig?.ttnConfig;
+    if (!ttnConfig?.applicationId) {
+      toast({ title: 'Configure TTN', description: 'Set TTN Application ID in Webhook tab first', variant: 'destructive' });
+      return;
+    }
+
+    setTtnRegistering(device.id);
+    try {
+      const { data, error } = await supabase.functions.invoke('ttn-register-device', {
+        body: {
+          applicationId: ttnConfig.applicationId,
+          cluster: ttnConfig.cluster,
+          devEui: device.devEui,
+          joinEui: device.joinEui,
+          appKey: device.appKey,
+          deviceName: device.name,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.error || 'Registration failed');
+
+      toast({ title: 'Registered in TTN', description: `Device ${device.name} registered successfully` });
+    } catch (err: any) {
+      toast({ title: 'TTN Registration Failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setTtnRegistering(null);
+    }
   };
 
   const CopyButton = ({ value, fieldId }: { value: string; fieldId: string }) => (
@@ -152,6 +187,21 @@ export default function DeviceManager({
                   >
                     <QrCode className="h-4 w-4" />
                   </Button>
+                  {webhookConfig?.ttnConfig?.applicationId && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => registerInTTN(device)}
+                      disabled={disabled || ttnRegistering === device.id}
+                      title="Register in TTN"
+                    >
+                      {ttnRegistering === device.id ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <Radio className="h-4 w-4 text-blue-500" />
+                      )}
+                    </Button>
+                  )}
                   <Button
                     variant="ghost"
                     size="icon"

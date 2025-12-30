@@ -8,3 +8,6 @@ verify_jwt = false
 
 [functions.ttn-simulate]
 verify_jwt = false
+
+[functions.ttn-register-device]
+verify_jwt = false
