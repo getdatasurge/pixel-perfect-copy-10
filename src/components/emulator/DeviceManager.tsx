@@ -9,6 +9,7 @@ import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Ra
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
@@ -29,6 +30,10 @@ export default function DeviceManager({
 }: DeviceManagerProps) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [ttnRegistering, setTtnRegistering] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
+
+  const canSync = webhookConfig?.testOrgId && webhookConfig?.frostguardApiUrl;
 
   const addDevice = (type: 'temperature' | 'door') => {
     const defaultGateway = gateways[0]?.id || '';
@@ -41,10 +46,21 @@ export default function DeviceManager({
 
   const removeDevice = (id: string) => {
     onDevicesChange(devices.filter(d => d.id !== id));
+    setSyncedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const updateDevice = (id: string, updates: Partial<LoRaWANDevice>) => {
     onDevicesChange(devices.map(d => (d.id === id ? { ...d, ...updates } : d)));
+    // Mark as unsynced when changed
+    setSyncedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const regenerateCredentials = (id: string) => {
@@ -86,10 +102,52 @@ export default function DeviceManager({
       if (!data?.success) throw new Error(data?.error || 'Registration failed');
 
       toast({ title: 'Registered in TTN', description: `Device ${device.name} registered successfully` });
-    } catch (err: any) {
-      toast({ title: 'TTN Registration Failed', description: err.message, variant: 'destructive' });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      toast({ title: 'TTN Registration Failed', description: errorMessage, variant: 'destructive' });
     } finally {
       setTtnRegistering(null);
+    }
+  };
+
+  const syncDevice = async (device: LoRaWANDevice) => {
+    if (!webhookConfig?.testOrgId || !webhookConfig?.frostguardApiUrl) {
+      toast({ 
+        title: 'Configure Test Context', 
+        description: 'Set Organization ID and FrostGuard API URL in the Testing tab first', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    setSyncingId(device.id);
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
+        body: {
+          sensors: [{
+            id: device.id,
+            name: device.name,
+            devEui: device.devEui,
+            type: device.type,
+            gatewayId: device.gatewayId,
+          }],
+          orgId: webhookConfig.testOrgId,
+          siteId: webhookConfig.testSiteId,
+          unitId: webhookConfig.testUnitId,
+          frostguardApiUrl: webhookConfig.frostguardApiUrl,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.results?.sensors?.errors?.[0] || 'Sync failed');
+
+      setSyncedIds(prev => new Set(prev).add(device.id));
+      toast({ title: 'Sensor Synced', description: `${device.name} synced to dashboard` });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
+    } finally {
+      setSyncingId(null);
     }
   };
 
@@ -107,6 +165,48 @@ export default function DeviceManager({
       )}
     </Button>
   );
+
+  const SyncButton = ({ device }: { device: LoRaWANDevice }) => {
+    const isSyncing = syncingId === device.id;
+    const isSynced = syncedIds.has(device.id);
+
+    if (!canSync) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button variant="ghost" size="icon" disabled>
+                  <Cloud className="h-4 w-4 text-muted-foreground" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Set Organization ID and FrostGuard API URL in Testing tab to sync</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+
+    return (
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => syncDevice(device)}
+        disabled={disabled || isSyncing}
+        title="Sync to Dashboard"
+      >
+        {isSyncing ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : isSynced ? (
+          <Check className="h-4 w-4 text-green-500" />
+        ) : (
+          <Cloud className="h-4 w-4 text-primary" />
+        )}
+      </Button>
+    );
+  };
 
   return (
     <div className="space-y-4">
@@ -177,6 +277,11 @@ export default function DeviceManager({
                   <Badge variant="outline">
                     {device.type === 'temperature' ? 'Temperature' : 'Door'}
                   </Badge>
+                  {syncedIds.has(device.id) && (
+                    <Badge variant="outline" className="text-green-600 border-green-600">
+                      Synced
+                    </Badge>
+                  )}
                 </div>
                 <div className="flex gap-1">
                   <Button
@@ -202,6 +307,7 @@ export default function DeviceManager({
                       )}
                     </Button>
                   )}
+                  <SyncButton device={device} />
                   <Button
                     variant="ghost"
                     size="icon"

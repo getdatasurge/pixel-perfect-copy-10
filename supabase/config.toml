@@ -11,3 +11,6 @@ verify_jwt = false
 
 [functions.ttn-register-device]
 verify_jwt = false
+
+[functions.sync-to-frostguard]
+verify_jwt = false

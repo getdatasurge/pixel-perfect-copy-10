@@ -1,22 +1,29 @@
 import { useState } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { Radio, Plus, Trash2, Copy, Check } from 'lucide-react';
-import { GatewayConfig as GatewayConfigType, createGateway } from '@/lib/ttn-payload';
+import { Radio, Plus, Trash2, Copy, Check, Cloud, Loader2 } from 'lucide-react';
+import { GatewayConfig as GatewayConfigType, WebhookConfig, createGateway } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
+import { supabase } from '@/integrations/supabase/client';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 
 interface GatewayConfigProps {
   gateways: GatewayConfigType[];
   onGatewaysChange: (gateways: GatewayConfigType[]) => void;
   disabled?: boolean;
+  webhookConfig?: WebhookConfig;
 }
 
-export default function GatewayConfig({ gateways, onGatewaysChange, disabled }: GatewayConfigProps) {
+export default function GatewayConfig({ gateways, onGatewaysChange, disabled, webhookConfig }: GatewayConfigProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
+  const [syncingId, setSyncingId] = useState<string | null>(null);
+  const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
+
+  const canSync = webhookConfig?.testOrgId && webhookConfig?.frostguardApiUrl;
 
   const addGateway = () => {
     const newGateway = createGateway(`Gateway ${gateways.length + 1}`);
@@ -26,10 +33,21 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled }: 
 
   const removeGateway = (id: string) => {
     onGatewaysChange(gateways.filter(g => g.id !== id));
+    setSyncedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const updateGateway = (id: string, updates: Partial<GatewayConfigType>) => {
     onGatewaysChange(gateways.map(g => (g.id === id ? { ...g, ...updates } : g)));
+    // Mark as unsynced when changed
+    setSyncedIds(prev => {
+      const next = new Set(prev);
+      next.delete(id);
+      return next;
+    });
   };
 
   const copyEui = async (eui: string, id: string) => {
@@ -37,6 +55,82 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled }: 
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
     toast({ title: 'Copied', description: 'Gateway EUI copied to clipboard' });
+  };
+
+  const syncGateway = async (gateway: GatewayConfigType) => {
+    if (!webhookConfig?.testOrgId || !webhookConfig?.frostguardApiUrl) {
+      toast({ 
+        title: 'Configure Test Context', 
+        description: 'Set Organization ID and FrostGuard API URL in the Testing tab first', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    setSyncingId(gateway.id);
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
+        body: {
+          gateways: [gateway],
+          orgId: webhookConfig.testOrgId,
+          siteId: webhookConfig.testSiteId,
+          frostguardApiUrl: webhookConfig.frostguardApiUrl,
+        },
+      });
+
+      if (error) throw error;
+      if (!data?.success) throw new Error(data?.results?.gateways?.errors?.[0] || 'Sync failed');
+
+      setSyncedIds(prev => new Set(prev).add(gateway.id));
+      toast({ title: 'Gateway Synced', description: `${gateway.name} synced to dashboard` });
+    } catch (err: unknown) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
+    } finally {
+      setSyncingId(null);
+    }
+  };
+
+  const SyncButton = ({ gateway }: { gateway: GatewayConfigType }) => {
+    const isSyncing = syncingId === gateway.id;
+    const isSynced = syncedIds.has(gateway.id);
+
+    if (!canSync) {
+      return (
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <span>
+                <Button variant="ghost" size="icon" disabled>
+                  <Cloud className="h-4 w-4 text-muted-foreground" />
+                </Button>
+              </span>
+            </TooltipTrigger>
+            <TooltipContent>
+              <p>Set Organization ID and FrostGuard API URL in Testing tab to sync</p>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      );
+    }
+
+    return (
+      <Button
+        variant="ghost"
+        size="icon"
+        onClick={() => syncGateway(gateway)}
+        disabled={disabled || isSyncing}
+        title="Sync to Dashboard"
+      >
+        {isSyncing ? (
+          <Loader2 className="h-4 w-4 animate-spin" />
+        ) : isSynced ? (
+          <Check className="h-4 w-4 text-green-500" />
+        ) : (
+          <Cloud className="h-4 w-4 text-primary" />
+        )}
+      </Button>
+    );
   };
 
   return (
@@ -74,15 +168,23 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled }: 
                     <Badge variant={gateway.isOnline ? 'default' : 'secondary'}>
                       {gateway.isOnline ? 'Online' : 'Offline'}
                     </Badge>
+                    {syncedIds.has(gateway.id) && (
+                      <Badge variant="outline" className="text-green-600 border-green-600">
+                        Synced
+                      </Badge>
+                    )}
                   </div>
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    onClick={() => removeGateway(gateway.id)}
-                    disabled={disabled}
-                  >
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
+                  <div className="flex gap-1">
+                    <SyncButton gateway={gateway} />
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      onClick={() => removeGateway(gateway.id)}
+                      disabled={disabled}
+                    >
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    </Button>
+                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">

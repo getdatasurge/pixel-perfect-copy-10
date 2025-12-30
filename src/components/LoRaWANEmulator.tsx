@@ -667,6 +667,7 @@ export default function LoRaWANEmulator() {
                 gateways={gateways}
                 onGatewaysChange={setGateways}
                 disabled={isRunning}
+                webhookConfig={webhookConfig}
               />
             </TabsContent>
 
@@ -695,6 +696,8 @@ export default function LoRaWANEmulator() {
                 config={webhookConfig}
                 onConfigChange={setWebhookConfig}
                 disabled={isRunning}
+                gateways={gateways}
+                devices={devices}
               />
               <TestDashboard
                 results={testResults}
