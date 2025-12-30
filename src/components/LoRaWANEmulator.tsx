@@ -8,7 +8,7 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook } from 'lucide-react';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook, Cloud } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import GatewayConfig from './emulator/GatewayConfig';
@@ -159,11 +159,30 @@ export default function LoRaWANEmulator() {
     };
 
     try {
-      // Build TTN payload
-      const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+      const ttnConfig = webhookConfig.ttnConfig;
+      
+      // Route through TTN if enabled
+      if (ttnConfig?.enabled && ttnConfig.applicationId) {
+        const deviceId = `eui-${device.devEui.toLowerCase()}`;
+        
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
+          body: {
+            applicationId: ttnConfig.applicationId,
+            deviceId,
+            cluster: ttnConfig.cluster,
+            decodedPayload: payload,
+            fPort: 1, // Temperature readings on port 1
+          },
+        });
 
-      // Send to external webhook if configured, otherwise use local ttn-webhook
-      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error || 'TTN API error');
+        
+        addLog('webhook', `📤 Sent via TTN → ${ttnConfig.applicationId}`);
+      } 
+      // Send to external webhook if configured
+      else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -174,8 +193,10 @@ export default function LoRaWANEmulator() {
           throw new Error(`Webhook returned ${response.status}`);
         }
         addLog('webhook', `📤 TTN payload sent to external webhook`);
-      } else {
-        // Use local ttn-webhook function
+      } 
+      // Default: use local ttn-webhook function
+      else {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const { error } = await supabase.functions.invoke('ttn-webhook', {
           body: ttnPayload,
         });
@@ -226,11 +247,30 @@ export default function LoRaWANEmulator() {
     };
 
     try {
-      // Build TTN payload
-      const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+      const ttnConfig = webhookConfig.ttnConfig;
+      
+      // Route through TTN if enabled
+      if (ttnConfig?.enabled && ttnConfig.applicationId) {
+        const deviceId = `eui-${device.devEui.toLowerCase()}`;
+        
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
+          body: {
+            applicationId: ttnConfig.applicationId,
+            deviceId,
+            cluster: ttnConfig.cluster,
+            decodedPayload: payload,
+            fPort: 2, // Door events on port 2
+          },
+        });
 
-      // Send to external webhook if configured, otherwise use local ttn-webhook
-      if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        if (error) throw error;
+        if (data && !data.success) throw new Error(data.error || 'TTN API error');
+        
+        addLog('webhook', `📤 Door event sent via TTN → ${ttnConfig.applicationId}`);
+      }
+      // Send to external webhook if configured
+      else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -241,8 +281,10 @@ export default function LoRaWANEmulator() {
           throw new Error(`Webhook returned ${response.status}`);
         }
         addLog('webhook', `📤 Door event sent via external webhook`);
-      } else {
-        // Use local ttn-webhook function
+      } 
+      // Default: use local ttn-webhook function
+      else {
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
         const { error } = await supabase.functions.invoke('ttn-webhook', {
           body: ttnPayload,
         });
@@ -338,7 +380,13 @@ export default function LoRaWANEmulator() {
                 {isRunning ? 'Running' : 'Stopped'}
               </Badge>
               <Badge variant="outline">{readingCount} readings</Badge>
-              {webhookConfig.enabled && (
+              {webhookConfig.ttnConfig?.enabled && (
+                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
+                  <Cloud className="h-3 w-3 mr-1" />
+                  TTN
+                </Badge>
+              )}
+              {webhookConfig.enabled && !webhookConfig.ttnConfig?.enabled && (
                 <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
                   <Webhook className="h-3 w-3 mr-1" />
                   Webhook

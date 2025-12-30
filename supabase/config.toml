@@ -5,3 +5,6 @@ verify_jwt = false
 
 [functions.ttn-webhook]
 verify_jwt = false
+
+[functions.ttn-simulate]
+verify_jwt = false
