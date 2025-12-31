@@ -26,7 +26,7 @@ interface UseTTNSnapshotReturn {
   loading: boolean;
   error: string | null;
   errorCode: string | null;
-  fetchSnapshot: (orgId: string) => Promise<TTNSnapshot | null>;
+  fetchSnapshot: (userId: string, orgId?: string, siteId?: string) => Promise<TTNSnapshot | null>;
   clearSnapshot: () => void;
 }
 
@@ -36,16 +36,20 @@ export function useTTNSnapshot(): UseTTNSnapshotReturn {
   const [error, setError] = useState<string | null>(null);
   const [errorCode, setErrorCode] = useState<string | null>(null);
 
-  const fetchSnapshot = useCallback(async (orgId: string): Promise<TTNSnapshot | null> => {
+  const fetchSnapshot = useCallback(async (
+    userId: string,
+    orgId?: string,
+    siteId?: string
+  ): Promise<TTNSnapshot | null> => {
     setLoading(true);
     setError(null);
     setErrorCode(null);
 
     try {
-      console.log('[useTTNSnapshot] Fetching snapshot for org:', orgId);
+      console.log('[useTTNSnapshot] Fetching snapshot for user:', userId, 'org:', orgId);
 
       const { data, error: invokeError } = await supabase.functions.invoke('query-ttn-snapshot', {
-        body: { org_id: orgId },
+        body: { user_id: userId, org_id: orgId, site_id: siteId },
       });
 
       if (invokeError) {
