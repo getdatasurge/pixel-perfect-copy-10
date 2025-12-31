@@ -32,3 +32,6 @@ verify_jwt = false
 
 [functions.ttn-batch-provision]
 verify_jwt = false
+
+[functions.ttn-batch-register-gateways]
+verify_jwt = false

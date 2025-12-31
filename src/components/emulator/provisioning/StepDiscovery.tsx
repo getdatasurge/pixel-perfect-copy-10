@@ -5,26 +5,33 @@ import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Loader2, RefreshCw, CheckCircle2, AlertCircle, Clock } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { LoRaWANDevice, TTNConfig, generateTTNDeviceId } from '@/lib/ttn-payload';
+import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
+import { ProvisioningMode } from '../TTNProvisioningWizard';
 
 interface StepDiscoveryProps {
   devices: LoRaWANDevice[];
+  gateways?: GatewayConfig[];
   ttnConfig?: TTNConfig;
   deviceStatuses: Record<string, 'registered' | 'not_registered' | 'checking' | 'error'>;
   setDeviceStatuses: React.Dispatch<React.SetStateAction<Record<string, 'registered' | 'not_registered' | 'checking' | 'error'>>>;
   selectedDevices: string[];
   setSelectedDevices: React.Dispatch<React.SetStateAction<string[]>>;
+  mode?: ProvisioningMode;
 }
 
 export default function StepDiscovery({
   devices,
+  gateways = [],
   ttnConfig,
   deviceStatuses,
   setDeviceStatuses,
   selectedDevices,
   setSelectedDevices,
+  mode = 'devices',
 }: StepDiscoveryProps) {
   const [isChecking, setIsChecking] = useState(false);
+  const isGatewayMode = mode === 'gateways';
+  const items = isGatewayMode ? gateways : devices;
 
   const checkDeviceStatus = async (device: LoRaWANDevice): Promise<'registered' | 'not_registered' | 'error'> => {
     try {

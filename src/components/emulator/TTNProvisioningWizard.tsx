@@ -18,9 +18,11 @@ import StepResults from './provisioning/StepResults';
 import StepCompletion from './provisioning/StepCompletion';
 
 export interface ProvisionResult {
-  dev_eui: string;
+  dev_eui?: string;
+  eui?: string; // For gateways
   name: string;
-  ttn_device_id: string;
+  ttn_device_id?: string;
+  ttn_gateway_id?: string;
   status: 'created' | 'already_exists' | 'failed';
   error?: string;
 }
@@ -32,6 +34,8 @@ export interface ProvisioningSummary {
   total: number;
 }
 
+export type ProvisioningMode = 'devices' | 'gateways';
+
 interface TTNProvisioningWizardProps {
   open: boolean;
   onOpenChange: (open: boolean) => void;
@@ -39,15 +43,16 @@ interface TTNProvisioningWizardProps {
   gateways: GatewayConfig[];
   webhookConfig: WebhookConfig;
   onComplete: (results?: ProvisionResult[]) => void;
+  mode?: ProvisioningMode;
 }
 
 export type StepStatus = 'pending' | 'in_progress' | 'passed' | 'failed';
 
 const STEPS = [
   { id: 1, title: 'Connection Check', description: 'Validate TTN configuration' },
-  { id: 2, title: 'Discovery', description: 'Scan devices and check registration status' },
+  { id: 2, title: 'Discovery', description: 'Scan and check registration status' },
   { id: 3, title: 'Strategy', description: 'Review and confirm provisioning plan' },
-  { id: 4, title: 'Execution', description: 'Register devices in TTN' },
+  { id: 4, title: 'Execution', description: 'Register in TTN' },
   { id: 5, title: 'Results', description: 'Review registration results' },
   { id: 6, title: 'Complete', description: 'Provisioning finished' },
 ];
@@ -59,6 +64,7 @@ export default function TTNProvisioningWizard({
   gateways,
   webhookConfig,
   onComplete,
+  mode = 'devices',
 }: TTNProvisioningWizardProps) {
   const [currentStep, setCurrentStep] = useState(1);
   const [stepStatus, setStepStatus] = useState<Record<number, StepStatus>>({
@@ -167,12 +173,15 @@ export default function TTNProvisioningWizard({
 
   const progressPercent = ((currentStep - 1) / (STEPS.length - 1)) * 100;
 
+  const isGatewayMode = mode === 'gateways';
+  const entityLabel = isGatewayMode ? 'Gateways' : 'Devices';
+
   return (
     <Dialog open={open} onOpenChange={handleClose}>
       <DialogContent className="max-w-2xl max-h-[85vh] overflow-hidden flex flex-col">
         <DialogHeader>
           <DialogTitle className="flex items-center justify-between">
-            <span>Provision Devices to TTN</span>
+            <span>Provision {entityLabel} to TTN</span>
             <span className="text-sm font-normal text-muted-foreground">
               Step {currentStep} of {STEPS.length}
             </span>
@@ -224,26 +233,31 @@ export default function TTNProvisioningWizard({
           {currentStep === 2 && (
             <StepDiscovery
               devices={devices}
+              gateways={gateways}
               ttnConfig={ttnConfig}
               deviceStatuses={deviceStatuses}
               setDeviceStatuses={setDeviceStatuses}
               selectedDevices={selectedDevices}
               setSelectedDevices={setSelectedDevices}
+              mode={mode}
             />
           )}
 
           {currentStep === 3 && (
             <StepStrategy
               selectedDevices={devices.filter(d => selectedDevices.includes(d.id))}
+              selectedGateways={gateways.filter(g => selectedDevices.includes(g.id))}
               ttnConfig={ttnConfig}
               onConfirm={() => markStepPassed(3)}
               stepStatus={stepStatus[3]}
+              mode={mode}
             />
           )}
 
           {currentStep === 4 && (
             <StepExecution
               devices={devices.filter(d => selectedDevices.includes(d.id))}
+              gateways={gateways.filter(g => selectedDevices.includes(g.id))}
               ttnConfig={ttnConfig}
               orgId={orgId}
               isExecuting={isExecuting}
@@ -253,6 +267,7 @@ export default function TTNProvisioningWizard({
               results={provisionResults}
               setResults={setProvisionResults}
               setSummary={setProvisionSummary}
+              mode={mode}
             />
           )}
 

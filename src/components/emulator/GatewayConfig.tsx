@@ -18,10 +18,11 @@ interface GatewayConfigProps {
   disabled?: boolean;
   webhookConfig?: WebhookConfig;
   ttnConfigured?: boolean;
+  ttnProvisionedGateways?: Set<string>;
   onProvisionToTTN?: () => void;
 }
 
-export default function GatewayConfig({ gateways, onGatewaysChange, disabled, webhookConfig, ttnConfigured, onProvisionToTTN }: GatewayConfigProps) {
+export default function GatewayConfig({ gateways, onGatewaysChange, disabled, webhookConfig, ttnConfigured, ttnProvisionedGateways, onProvisionToTTN }: GatewayConfigProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
@@ -164,13 +165,14 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
           </p>
         </div>
         <div className="flex gap-2">
-          {/* Provision to TTN Button - Coming Soon */}
+          {/* Provision to TTN Button */}
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <span>
                   <Button
-                    disabled={true}
+                    onClick={onProvisionToTTN}
+                    disabled={!ttnConfigured || gateways.length === 0 || disabled}
                     size="sm"
                     variant="outline"
                     className="gap-1"
@@ -180,9 +182,15 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
                   </Button>
                 </span>
               </TooltipTrigger>
-              <TooltipContent>
-                <p>Gateway registration in TTN coming soon</p>
-              </TooltipContent>
+              {(!ttnConfigured || gateways.length === 0) && (
+                <TooltipContent>
+                  <p>
+                    {gateways.length === 0 
+                      ? 'Add gateways first' 
+                      : 'Configure TTN on Webhook tab and save settings first'}
+                  </p>
+                </TooltipContent>
+              )}
             </Tooltip>
           </TooltipProvider>
 
@@ -246,6 +254,12 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
                     <Badge variant={primaryGateway.isOnline ? 'default' : 'secondary'}>
                       {primaryGateway.isOnline ? 'Online' : 'Offline'}
                     </Badge>
+                    {ttnProvisionedGateways?.has(primaryGateway.eui) && (
+                      <Badge variant="outline" className="text-green-600 border-green-600 gap-1">
+                        <Radio className="h-3 w-3" />
+                        TTN
+                      </Badge>
+                    )}
                     {syncedIds.has(primaryGateway.id) && (
                       <Badge variant="outline" className="text-green-600 border-green-600">
                         Synced
@@ -343,6 +357,12 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
                             <span className="text-xs text-muted-foreground">
                               {gateway.isOnline ? 'Online' : 'Offline'}
                             </span>
+                            {ttnProvisionedGateways?.has(gateway.eui) && (
+                              <Badge variant="outline" className="text-green-600 border-green-600 text-xs gap-1">
+                                <Radio className="h-2 w-2" />
+                                TTN
+                              </Badge>
+                            )}
                           </div>
                         </TableCell>
                         <TableCell className="text-right">

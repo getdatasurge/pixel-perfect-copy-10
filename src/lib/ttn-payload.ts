@@ -180,6 +180,11 @@ export function normalizeDevEui(devEui: string): string | null {
   return cleaned;
 }
 
+// Normalize Gateway EUI (alias for normalizeDevEui - same format)
+export function normalizeGatewayEui(eui: string): string | null {
+  return normalizeDevEui(eui);
+}
+
 // Generate canonical TTN device_id from DevEUI
 // Format: sensor-{normalized_deveui}
 // Example: DevEUI "0F8FE95CABA665D4" -> "sensor-0f8fe95caba665d4"
@@ -189,6 +194,17 @@ export function generateTTNDeviceId(devEui: string): string {
     throw new Error(`Invalid DevEUI format: ${devEui}. Must be 16 hex characters.`);
   }
   return `sensor-${normalized}`;
+}
+
+// Generate canonical TTN gateway_id from Gateway EUI
+// Format: emu-gw-{normalized_eui}
+// Example: EUI "0F8FE95CABA665D4" -> "emu-gw-0f8fe95caba665d4"
+export function generateTTNGatewayId(eui: string): string {
+  const normalized = normalizeGatewayEui(eui);
+  if (!normalized) {
+    throw new Error(`Invalid Gateway EUI format: ${eui}. Must be 16 hex characters.`);
+  }
+  return `emu-gw-${normalized}`;
 }
 
 // Generate device ID from DevEUI (legacy - now defaults to 'sensor' prefix)

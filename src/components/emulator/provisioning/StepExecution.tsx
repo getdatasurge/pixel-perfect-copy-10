@@ -5,11 +5,12 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Loader2, CheckCircle2, XCircle, AlertCircle, Play } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
-import { LoRaWANDevice, TTNConfig, generateTTNDeviceId } from '@/lib/ttn-payload';
-import { ProvisionResult, ProvisioningSummary } from '../TTNProvisioningWizard';
+import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
+import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
 
 interface StepExecutionProps {
   devices: LoRaWANDevice[];
+  gateways?: GatewayConfig[];
   ttnConfig?: TTNConfig;
   orgId?: string;
   isExecuting: boolean;
@@ -19,10 +20,12 @@ interface StepExecutionProps {
   results: ProvisionResult[];
   setResults: React.Dispatch<React.SetStateAction<ProvisionResult[]>>;
   setSummary: React.Dispatch<React.SetStateAction<ProvisioningSummary>>;
+  mode?: ProvisioningMode;
 }
 
 export default function StepExecution({
   devices,
+  gateways = [],
   ttnConfig,
   orgId,
   isExecuting,
@@ -32,9 +35,12 @@ export default function StepExecution({
   results,
   setResults,
   setSummary,
+  mode = 'devices',
 }: StepExecutionProps) {
   const [currentDevice, setCurrentDevice] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const isGatewayMode = mode === 'gateways';
+  const items = isGatewayMode ? gateways : devices;
 
   const startProvisioning = async () => {
     setIsExecuting(true);
