@@ -101,15 +101,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     
     setIsLoading(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        console.log('No auth session, skipping settings load');
-        setIsLoading(false);
-        return;
-      }
-
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
         body: { action: 'load', org_id: orgId },
       });
 
@@ -152,31 +144,19 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
     setIsSaving(true);
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session?.access_token) {
-        toast({
-          title: 'Not Authenticated',
-          description: 'Please log in to save settings',
-          variant: 'destructive',
-        });
-        return;
-      }
-
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        headers: { Authorization: `Bearer ${session.access_token}` },
         body: {
           action: 'save',
           org_id: orgId,
           enabled: ttnEnabled,
           cluster: ttnCluster,
           application_id: ttnApplicationId,
-          api_key: ttnApiKey || undefined, // Only send if user entered new value
+          api_key: ttnApiKey || undefined,
           webhook_secret: ttnWebhookSecret || undefined,
         },
       });
 
       if (error) {
-        // Parse the JSON error if available
         const errorMsg = data?.error || error.message || 'Failed to save settings';
         toast({
           title: 'Save Failed',
@@ -191,13 +171,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           title: 'Settings Saved',
           description: 'TTN configuration saved successfully',
         });
-        // Update preview after save
         if (ttnApiKey) {
           setTtnApiKeyPreview(`****${ttnApiKey.slice(-4)}`);
-          setTtnApiKey(''); // Clear the input after save
+          setTtnApiKey('');
         }
-        
-        // Also update the local config for compatibility
         updateTTN({ 
           enabled: ttnEnabled, 
           applicationId: ttnApplicationId, 
@@ -227,8 +204,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       return;
     }
 
-    if (!ttnApiKey && !ttnApiKeyPreview) {
-      toast({ title: 'Missing Config', description: 'Enter TTN API Key first', variant: 'destructive' });
+    if (!ttnApiKey) {
+      toast({ title: 'Enter API Key', description: 'Enter your TTN API key to test the connection', variant: 'destructive' });
       return;
     }
 
@@ -236,39 +213,17 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     setTestResult(null);
     
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      
-      // Build request - use entered API key or indicate we want to use stored one
-      const requestBody: any = {
-        action: 'test',
-        org_id: orgId,
-        cluster: ttnCluster,
-        application_id: ttnApplicationId,
-        api_key: ttnApiKey, // User must enter key to test
-      };
-
-      if (!ttnApiKey) {
-        toast({ 
-          title: 'Enter API Key', 
-          description: 'Enter your TTN API key to test the connection', 
-          variant: 'destructive' 
-        });
-        setIsTestingTTN(false);
-        return;
-      }
-
-      const headers: Record<string, string> = {};
-      if (session?.access_token) {
-        headers['Authorization'] = `Bearer ${session.access_token}`;
-      }
-
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        headers,
-        body: requestBody,
+        body: {
+          action: 'test',
+          org_id: orgId,
+          cluster: ttnCluster,
+          application_id: ttnApplicationId,
+          api_key: ttnApiKey,
+        },
       });
 
       if (error) {
-        // Even on error, try to parse the response
         const result: TTNTestResult = {
           ok: false,
           requestId: data?.requestId || 'unknown',
@@ -277,7 +232,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           hint: data?.hint,
         };
         setTestResult(result);
-        
         toast({
           title: 'Connection Test Failed',
           description: result.error,
@@ -286,7 +240,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         return;
       }
 
-      // Process successful response
       const result: TTNTestResult = data;
       setTestResult(result);
 
