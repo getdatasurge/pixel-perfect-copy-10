@@ -3,7 +3,7 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-sync-secret',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
 };
 
 interface UserPayload {
@@ -27,19 +27,19 @@ serve(async (req) => {
   }
 
   try {
-    // Authenticate request using shared secret
-    const syncSecret = Deno.env.get('USER_SYNC_SECRET')?.trim();
-    if (!syncSecret) {
-      console.error('USER_SYNC_SECRET not configured');
+    // Authenticate request using PROJECT2_SYNC_API_KEY
+    const apiKey = Deno.env.get('PROJECT2_SYNC_API_KEY')?.trim();
+    if (!apiKey) {
+      console.error('PROJECT2_SYNC_API_KEY not configured');
       return new Response(
         JSON.stringify({ success: false, error: 'Sync endpoint not configured' }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    const requestSecret = req.headers.get('x-sync-secret');
-    if (!requestSecret || requestSecret !== syncSecret) {
-      console.error('Invalid or missing sync secret');
+    const requestApiKey = req.headers.get('x-api-key');
+    if (!requestApiKey || requestApiKey !== apiKey) {
+      console.error('Invalid or missing API key');
       return new Response(
         JSON.stringify({ success: false, error: 'Unauthorized' }),
         { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
