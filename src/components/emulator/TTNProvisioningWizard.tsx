@@ -38,7 +38,7 @@ interface TTNProvisioningWizardProps {
   devices: LoRaWANDevice[];
   gateways: GatewayConfig[];
   webhookConfig: WebhookConfig;
-  onComplete: () => void;
+  onComplete: (results?: ProvisionResult[]) => void;
 }
 
 export type StepStatus = 'pending' | 'in_progress' | 'passed' | 'failed';
@@ -161,7 +161,7 @@ export default function TTNProvisioningWizard({
   };
 
   const handleComplete = () => {
-    onComplete();
+    onComplete(provisionResults);
     onOpenChange(false);
   };
 

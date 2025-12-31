@@ -26,6 +26,7 @@ import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
 import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
 import TelemetryMonitor from './emulator/TelemetryMonitor';
+import TTNProvisioningWizard from './emulator/TTNProvisioningWizard';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -77,6 +78,23 @@ export default function LoRaWANEmulator() {
   const [qrDevice, setQrDevice] = useState<LoRaWANDevice | null>(null);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
   const [syncResults, setSyncResults] = useState<SyncResult[]>([]);
+  const [showProvisioningWizard, setShowProvisioningWizard] = useState(false);
+  
+  // Storage key for TTN provisioned devices
+  const STORAGE_KEY_TTN_PROVISIONED = 'lorawan-emulator-ttn-provisioned';
+  
+  // Track which devices have been provisioned to TTN
+  const [ttnProvisionedDevices, setTtnProvisionedDevices] = useState<Set<string>>(() => {
+    const saved = localStorage.getItem(STORAGE_KEY_TTN_PROVISIONED);
+    if (saved) {
+      try {
+        return new Set(JSON.parse(saved));
+      } catch {
+        return new Set();
+      }
+    }
+    return new Set();
+  });
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -160,6 +178,32 @@ export default function LoRaWANEmulator() {
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_WEBHOOK, JSON.stringify(webhookConfig));
   }, [webhookConfig]);
+
+  // Persist TTN provisioned devices
+  useEffect(() => {
+    localStorage.setItem(STORAGE_KEY_TTN_PROVISIONED, JSON.stringify([...ttnProvisionedDevices]));
+  }, [ttnProvisionedDevices]);
+
+  // Check if TTN is configured and ready
+  const isTTNConfigured = !!(
+    webhookConfig?.ttnConfig?.applicationId &&
+    webhookConfig?.ttnConfig?.enabled
+  );
+
+  // Handle provisioning wizard completion
+  const handleProvisioningComplete = useCallback((results?: Array<{ dev_eui: string; status: string }>) => {
+    if (results) {
+      const newProvisioned = new Set(ttnProvisionedDevices);
+      results.forEach(r => {
+        if (r.status === 'created' || r.status === 'already_exists') {
+          newProvisioned.add(r.dev_eui);
+        }
+      });
+      setTtnProvisionedDevices(newProvisioned);
+    }
+    setShowProvisioningWizard(false);
+    toast({ title: 'Provisioning Complete', description: 'Devices registered in TTN' });
+  }, [ttnProvisionedDevices]);
 
   const [tempState, setTempState] = useState<TempSensorState>({
     minTemp: 35,
@@ -728,6 +772,8 @@ export default function LoRaWANEmulator() {
               onGatewaysChange={setGateways}
               disabled={isRunning}
               webhookConfig={webhookConfig}
+              ttnConfigured={isTTNConfigured}
+              onProvisionToTTN={() => setShowProvisioningWizard(true)}
             />
           </TabsContent>
 
@@ -740,6 +786,9 @@ export default function LoRaWANEmulator() {
               onShowQR={setQrDevice}
               disabled={isRunning}
               webhookConfig={webhookConfig}
+              ttnConfigured={isTTNConfigured}
+              ttnProvisionedDevices={ttnProvisionedDevices}
+              onProvisionToTTN={() => setShowProvisioningWizard(true)}
             />
           </TabsContent>
 
@@ -971,6 +1020,15 @@ export default function LoRaWANEmulator() {
         device={qrDevice}
         open={!!qrDevice}
         onClose={() => setQrDevice(null)}
+      />
+
+      <TTNProvisioningWizard
+        open={showProvisioningWizard}
+        onOpenChange={setShowProvisioningWizard}
+        devices={devices}
+        gateways={gateways}
+        webhookConfig={webhookConfig}
+        onComplete={handleProvisioningComplete}
       />
     </div>
   );

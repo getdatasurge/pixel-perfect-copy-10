@@ -18,6 +18,9 @@ interface DeviceManagerProps {
   onShowQR: (device: LoRaWANDevice) => void;
   disabled?: boolean;
   webhookConfig?: WebhookConfig;
+  ttnConfigured?: boolean;
+  ttnProvisionedDevices?: Set<string>;
+  onProvisionToTTN?: () => void;
 }
 
 export default function DeviceManager({ 
@@ -26,7 +29,10 @@ export default function DeviceManager({
   onDevicesChange, 
   onShowQR,
   disabled,
-  webhookConfig
+  webhookConfig,
+  ttnConfigured,
+  ttnProvisionedDevices,
+  onProvisionToTTN
 }: DeviceManagerProps) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [ttnRegistering, setTtnRegistering] = useState<string | null>(null);
@@ -230,6 +236,34 @@ export default function DeviceManager({
           </p>
         </div>
         <div className="flex gap-2">
+          {/* Provision All to TTN Button */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    onClick={onProvisionToTTN}
+                    disabled={!ttnConfigured || devices.length === 0 || disabled}
+                    size="sm"
+                    className="gap-1"
+                  >
+                    <Radio className="h-4 w-4" />
+                    Provision All to TTN
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {(!ttnConfigured || devices.length === 0) && (
+                <TooltipContent>
+                  <p>
+                    {devices.length === 0 
+                      ? 'Add devices first' 
+                      : 'Configure TTN on Webhook tab and pass Test Connection first'}
+                  </p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+
           <Button 
             onClick={() => addDevice('temperature')} 
             disabled={disabled || gateways.length === 0} 
@@ -298,8 +332,14 @@ export default function DeviceManager({
                         {device.type === 'temperature' ? 'Temperature' : 'Door'}
                       </Badge>
                       <Badge variant="outline" className="text-xs">Class A</Badge>
+                      {ttnProvisionedDevices?.has(device.devEui) && (
+                        <Badge variant="outline" className="text-xs text-green-600 border-green-600 gap-1">
+                          <Radio className="h-3 w-3" />
+                          TTN
+                        </Badge>
+                      )}
                       {syncedIds.has(device.id) && (
-                        <Badge variant="outline" className="text-xs text-green-600 border-green-600">
+                        <Badge variant="outline" className="text-xs text-blue-600 border-blue-600">
                           Synced
                         </Badge>
                       )}

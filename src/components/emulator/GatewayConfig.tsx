@@ -17,9 +17,11 @@ interface GatewayConfigProps {
   onGatewaysChange: (gateways: GatewayConfigType[]) => void;
   disabled?: boolean;
   webhookConfig?: WebhookConfig;
+  ttnConfigured?: boolean;
+  onProvisionToTTN?: () => void;
 }
 
-export default function GatewayConfig({ gateways, onGatewaysChange, disabled, webhookConfig }: GatewayConfigProps) {
+export default function GatewayConfig({ gateways, onGatewaysChange, disabled, webhookConfig, ttnConfigured, onProvisionToTTN }: GatewayConfigProps) {
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
@@ -161,10 +163,34 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
             Emulated LoRaWAN gateways that receive sensor data
           </p>
         </div>
-        <Button onClick={addGateway} disabled={disabled} size="sm" className="gap-1">
-          <Plus className="h-4 w-4" />
-          Add Gateway
-        </Button>
+        <div className="flex gap-2">
+          {/* Provision to TTN Button - Coming Soon */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    disabled={true}
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                  >
+                    <Radio className="h-4 w-4" />
+                    Provision to TTN
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              <TooltipContent>
+                <p>Gateway registration in TTN coming soon</p>
+              </TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
+
+          <Button onClick={addGateway} disabled={disabled} size="sm" className="gap-1">
+            <Plus className="h-4 w-4" />
+            Add Gateway
+          </Button>
+        </div>
       </div>
 
       {gateways.length === 0 ? (
