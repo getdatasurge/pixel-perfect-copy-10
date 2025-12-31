@@ -3,6 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
@@ -40,6 +41,10 @@ export default function TestContextConfig({
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
   const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
+  
+  // Site dropdown options
+  const [availableSites, setAvailableSites] = useState<Array<{ id: string; name: string }>>([]);
+  const [isLoadingSites, setIsLoadingSites] = useState(false);
   
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
@@ -79,6 +84,48 @@ export default function TestContextConfig({
   useEffect(() => {
     fetchUserCount();
   }, []);
+
+  // Fetch available sites when org_id changes
+  useEffect(() => {
+    const fetchSitesForOrg = async () => {
+      if (!config.testOrgId) {
+        setAvailableSites([]);
+        return;
+      }
+      
+      setIsLoadingSites(true);
+      try {
+        const { data, error } = await supabase
+          .from('synced_users')
+          .select('source_site_id')
+          .eq('source_organization_id', config.testOrgId)
+          .not('source_site_id', 'is', null);
+        
+        if (error) {
+          console.error('Error fetching sites:', error);
+          setAvailableSites([]);
+          return;
+        }
+        
+        // Extract unique site IDs
+        const uniqueSiteIds = [...new Set(
+          data?.map(u => u.source_site_id).filter((id): id is string => !!id)
+        )];
+        
+        setAvailableSites(uniqueSiteIds.map(id => ({ 
+          id, 
+          name: `Site ${id.slice(0, 8)}...` // Truncate UUID for display
+        })));
+      } catch (err) {
+        console.error('Error fetching sites:', err);
+        setAvailableSites([]);
+      } finally {
+        setIsLoadingSites(false);
+      }
+    };
+    
+    fetchSitesForOrg();
+  }, [config.testOrgId]);
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
@@ -217,7 +264,7 @@ export default function TestContextConfig({
                           (results?.devices?.synced ?? results?.devices?.updated ?? 0);
       const allErrors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
       
-      // Build SyncResult for dashboard
+      // Build SyncResult for dashboard with synced entity details
       const buildSyncResult = (status: SyncStatus): SyncResult => ({
         id: crypto.randomUUID(),
         timestamp: new Date(),
@@ -238,6 +285,23 @@ export default function TestContextConfig({
         },
         errors: allErrors,
         summary: summary || '',
+        // Include synced entity details (sanitized - no app_key)
+        synced_entities: {
+          gateways: gateways.map(g => ({
+            id: g.id,
+            name: g.name,
+            eui: g.eui,
+            is_online: g.isOnline,
+          })),
+          devices: devices.map(d => ({
+            id: d.id,
+            name: d.name,
+            type: d.type,
+            dev_eui: d.devEui,
+            join_eui: d.joinEui,
+            gateway_id: d.gatewayId,
+          })),
+        },
       });
       
       if (totalFailed > 0 && totalSynced > 0) {
@@ -397,15 +461,33 @@ export default function TestContextConfig({
               <MapPin className="h-3 w-3" />
               Site ID
             </Label>
-            <Input
-              id="testSiteId"
-              placeholder="site_xyz789"
-              value={config.testSiteId || ''}
-              onChange={e => update({ testSiteId: e.target.value || undefined })}
-              disabled={disabled}
-            />
+            <Select
+              value={config.testSiteId || '__org_level__'}
+              onValueChange={(val) => update({ testSiteId: val === '__org_level__' ? undefined : val })}
+              disabled={disabled || !config.testOrgId || isLoadingSites}
+            >
+              <SelectTrigger id="testSiteId">
+                <SelectValue placeholder={
+                  !config.testOrgId 
+                    ? "Select org first" 
+                    : isLoadingSites 
+                      ? "Loading..." 
+                      : "Select site..."
+                } />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="__org_level__">Org-level (no site)</SelectItem>
+                {availableSites.map(site => (
+                  <SelectItem key={site.id} value={site.id}>{site.name}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
             <p className="text-xs text-muted-foreground">
-              Optional for sync
+              {availableSites.length > 0 
+                ? `${availableSites.length} site(s) available`
+                : config.testOrgId 
+                  ? 'No sites found for org'
+                  : 'Optional for sync'}
             </p>
           </div>
 

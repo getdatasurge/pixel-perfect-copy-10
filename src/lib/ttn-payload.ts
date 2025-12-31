@@ -144,6 +144,11 @@ export interface SyncResult {
   };
   errors: string[];
   summary: string;
+  // Synced entity details (sanitized - no app_key)
+  synced_entities?: {
+    gateways: Array<{ id: string; name: string; eui: string; is_online: boolean }>;
+    devices: Array<{ id: string; name: string; type: string; dev_eui: string; join_eui: string; gateway_id: string }>;
+  };
 }
 
 // Generate a random 16-character hex string (8 bytes) for EUI

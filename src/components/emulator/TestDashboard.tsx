@@ -4,10 +4,11 @@ import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { 
   CheckCircle2, XCircle, Clock, ArrowRight, 
   Radio, Webhook, Database, Building2, Trash2,
-  Thermometer, DoorOpen, ChevronDown, Cloud, AlertTriangle
+  Thermometer, DoorOpen, ChevronDown, Cloud, AlertTriangle, Eye
 } from 'lucide-react';
 import { TestResult, SyncResult } from '@/lib/ttn-payload';
 
@@ -19,6 +20,7 @@ interface TestDashboardProps {
 
 export default function TestDashboard({ results, syncResults = [], onClearResults }: TestDashboardProps) {
   const [errorsExpanded, setErrorsExpanded] = useState(false);
+  const [detailsExpanded, setDetailsExpanded] = useState(false);
   const [expandedSyncIds, setExpandedSyncIds] = useState<Set<string>>(new Set());
 
   const toggleSyncExpanded = (id: string) => {
@@ -205,6 +207,94 @@ export default function TestDashboard({ results, syncResults = [], onClearResult
             {/* Summary */}
             {latestSync.summary && (
               <p className="text-xs text-center text-muted-foreground">{latestSync.summary}</p>
+            )}
+
+            {/* Entity Details - Collapsible */}
+            {latestSync.synced_entities && (latestSync.synced_entities.gateways.length > 0 || latestSync.synced_entities.devices.length > 0) && (
+              <Collapsible open={detailsExpanded} onOpenChange={setDetailsExpanded}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="outline" size="sm" className="w-full flex items-center gap-2">
+                    <Eye className="h-4 w-4" />
+                    View Synced Entities
+                    <ChevronDown className={`h-4 w-4 transition-transform ${detailsExpanded ? 'rotate-180' : ''}`} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-3 space-y-3">
+                  {/* Gateways Table */}
+                  {latestSync.synced_entities.gateways.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                        <Radio className="h-3 w-3" />
+                        Gateways ({latestSync.synced_entities.gateways.length})
+                      </p>
+                      <div className="rounded-md border overflow-hidden">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-muted/50">
+                              <TableHead className="h-8 text-xs">Name</TableHead>
+                              <TableHead className="h-8 text-xs">EUI</TableHead>
+                              <TableHead className="h-8 text-xs">Status</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {latestSync.synced_entities.gateways.map(gw => (
+                              <TableRow key={gw.id}>
+                                <TableCell className="py-1 text-xs font-medium">{gw.name}</TableCell>
+                                <TableCell className="py-1 text-xs font-mono text-muted-foreground">{gw.eui}</TableCell>
+                                <TableCell className="py-1">
+                                  <Badge variant={gw.is_online ? "default" : "secondary"} className="text-xs">
+                                    {gw.is_online ? 'Online' : 'Offline'}
+                                  </Badge>
+                                </TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Devices Table */}
+                  {latestSync.synced_entities.devices.length > 0 && (
+                    <div>
+                      <p className="text-xs font-medium text-muted-foreground mb-2 flex items-center gap-1">
+                        <Thermometer className="h-3 w-3" />
+                        Devices ({latestSync.synced_entities.devices.length})
+                      </p>
+                      <div className="rounded-md border overflow-hidden">
+                        <Table>
+                          <TableHeader>
+                            <TableRow className="bg-muted/50">
+                              <TableHead className="h-8 text-xs">Name</TableHead>
+                              <TableHead className="h-8 text-xs">Type</TableHead>
+                              <TableHead className="h-8 text-xs">DevEUI</TableHead>
+                              <TableHead className="h-8 text-xs">JoinEUI</TableHead>
+                            </TableRow>
+                          </TableHeader>
+                          <TableBody>
+                            {latestSync.synced_entities.devices.map(dev => (
+                              <TableRow key={dev.id}>
+                                <TableCell className="py-1 text-xs font-medium">{dev.name}</TableCell>
+                                <TableCell className="py-1">
+                                  <Badge variant="outline" className="text-xs">
+                                    {dev.type === 'temperature' ? (
+                                      <span className="flex items-center gap-1"><Thermometer className="h-3 w-3" /> Temp</span>
+                                    ) : (
+                                      <span className="flex items-center gap-1"><DoorOpen className="h-3 w-3" /> Door</span>
+                                    )}
+                                  </Badge>
+                                </TableCell>
+                                <TableCell className="py-1 text-xs font-mono text-muted-foreground">{dev.dev_eui.slice(0, 8)}...</TableCell>
+                                <TableCell className="py-1 text-xs font-mono text-muted-foreground">{dev.join_eui.slice(0, 8)}...</TableCell>
+                              </TableRow>
+                            ))}
+                          </TableBody>
+                        </Table>
+                      </div>
+                    </div>
+                  )}
+                </CollapsibleContent>
+              </Collapsible>
             )}
 
             {/* Error Details */}
