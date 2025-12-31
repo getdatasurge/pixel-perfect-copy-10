@@ -601,7 +601,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                 <Button
                   size="sm"
                   onClick={saveSettings}
-                  disabled={disabled || isSaving || !orgId}
+                  disabled={disabled || isSaving || !orgId || (ttnEnabled && (!ttnApplicationId || (!ttnApiKey && !ttnApiKeyPreview)))}
                   className="flex items-center gap-1"
                 >
                   {isSaving ? (
@@ -612,6 +612,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   Save Settings
                 </Button>
               </div>
+
+              {ttnEnabled && (!ttnApplicationId || (!ttnApiKey && !ttnApiKeyPreview)) && (
+                <p className="text-xs text-amber-600">
+                  Enter Application ID and API Key to save settings
+                </p>
+              )}
 
               {!orgId && (
                 <Alert>
