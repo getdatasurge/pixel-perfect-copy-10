@@ -14,9 +14,7 @@ interface TTNSnapshotPanelProps {
   error: string | null;
   errorCode: string | null;
   onRefresh: () => void;
-  selectedUserId?: string;
   orgId?: string;
-  siteId?: string;
 }
 
 export function TTNSnapshotPanel({
@@ -25,13 +23,11 @@ export function TTNSnapshotPanel({
   error,
   errorCode,
   onRefresh,
-  selectedUserId,
   orgId,
-  siteId,
 }: TTNSnapshotPanelProps) {
   const [showDiagnostics, setShowDiagnostics] = React.useState(false);
 
-  if (!selectedUserId) {
+  if (!orgId) {
     return null;
   }
 
@@ -42,7 +38,7 @@ export function TTNSnapshotPanel({
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2 text-sm font-medium">
             <Cloud className="h-4 w-4 text-blue-500" />
-            TTN Settings from FrostGuard
+            TTN Settings
           </div>
           <Button
             variant="ghost"
@@ -60,13 +56,33 @@ export function TTNSnapshotPanel({
         {loading && (
           <div className="flex items-center gap-2 text-sm text-muted-foreground py-2">
             <Loader2 className="h-4 w-4 animate-spin" />
-            Loading TTN settings from FrostGuard...
+            Querying TTN settings...
           </div>
         )}
 
         {/* Snapshot Data */}
         {!loading && snapshot && (
           <div className="space-y-3">
+            {/* TTN Connection Status */}
+            <div className="flex items-center gap-2">
+              {snapshot.ttn_connected ? (
+                <Badge variant="default" className="bg-green-600 text-xs">
+                  <CheckCircle className="h-3 w-3 mr-1" />
+                  Connected to TTN
+                </Badge>
+              ) : (
+                <Badge variant="destructive" className="text-xs">
+                  <XCircle className="h-3 w-3 mr-1" />
+                  {snapshot.ttn_error || 'Not Connected'}
+                </Badge>
+              )}
+              {snapshot.ttn_device_count !== undefined && (
+                <Badge variant="secondary" className="text-xs">
+                  {snapshot.ttn_device_count} device{snapshot.ttn_device_count !== 1 ? 's' : ''}
+                </Badge>
+              )}
+            </div>
+
             <div className="grid grid-cols-2 gap-3 text-sm">
               <div>
                 <span className="text-muted-foreground">Cluster:</span>
@@ -74,14 +90,11 @@ export function TTNSnapshotPanel({
               </div>
               <div>
                 <span className="text-muted-foreground">Application:</span>
-                <span className="ml-2 font-mono">{snapshot.application_id}</span>
+                <span className="ml-2 font-mono">{snapshot.ttn_application_name || snapshot.application_id}</span>
               </div>
               <div>
                 <span className="text-muted-foreground">API Key:</span>
-                <span className="ml-2 font-mono">
-                  {snapshot.api_key_name ? `${snapshot.api_key_name} ` : ''}
-                  ****{snapshot.api_key_last4}
-                </span>
+                <span className="ml-2 font-mono">****{snapshot.api_key_last4}</span>
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-muted-foreground">Webhook:</span>
@@ -91,7 +104,7 @@ export function TTNSnapshotPanel({
               </div>
             </div>
 
-            {/* Connection Status */}
+            {/* Last Test Status */}
             {snapshot.last_test_at && (
               <div className="flex items-center gap-2 text-xs text-muted-foreground pt-1 border-t">
                 {snapshot.last_test_success ? (
@@ -99,10 +112,7 @@ export function TTNSnapshotPanel({
                 ) : (
                   <XCircle className="h-3 w-3 text-red-500" />
                 )}
-                <span>
-                  Last test: {new Date(snapshot.last_test_at).toLocaleString()}
-                  {snapshot.last_test_message && ` - ${snapshot.last_test_message}`}
-                </span>
+                <span>Last saved test: {new Date(snapshot.last_test_at).toLocaleString()}</span>
               </div>
             )}
           </div>
@@ -112,12 +122,16 @@ export function TTNSnapshotPanel({
         {!loading && error && (
           <Alert variant="default" className={cn(
             "border",
-            errorCode === 'NOT_FOUND' ? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20" : "border-red-200"
+            errorCode === 'NOT_FOUND' || errorCode === 'INCOMPLETE_SETTINGS' 
+              ? "border-amber-200 bg-amber-50/50 dark:border-amber-800 dark:bg-amber-950/20" 
+              : "border-red-200"
           )}>
             <Info className="h-4 w-4" />
             <AlertDescription className="text-sm">
               {errorCode === 'NOT_FOUND'
-                ? 'No TTN integration found for this user. Provision in FrostGuard first, or configure manually in the Webhook tab.'
+                ? 'No TTN settings found. Configure in the Webhook tab first.'
+                : errorCode === 'INCOMPLETE_SETTINGS'
+                ? 'TTN settings incomplete. Add application ID and API key in Webhook tab.'
                 : error}
             </AlertDescription>
           </Alert>
@@ -131,12 +145,12 @@ export function TTNSnapshotPanel({
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="mt-2 p-3 bg-muted/50 rounded text-xs font-mono space-y-1">
-              <div>selected_user_id: {selectedUserId || 'none'}</div>
               <div>org_id: {orgId || 'none'}</div>
-              <div>site_id: {siteId || 'none'}</div>
-              <div>snapshot.updated_at: {snapshot?.updated_at || 'n/a'}</div>
-              <div>snapshot.fetched_at: {snapshot?.fetched_at || 'n/a'}</div>
-              <div>last_test_status: {snapshot?.last_test_success === true ? 'success' : snapshot?.last_test_success === false ? 'failed' : 'unknown'}</div>
+              <div>source: {snapshot?.source || 'n/a'}</div>
+              <div>ttn_connected: {snapshot?.ttn_connected ? 'yes' : 'no'}</div>
+              <div>device_count: {snapshot?.ttn_device_count ?? 'n/a'}</div>
+              <div>updated_at: {snapshot?.updated_at || 'n/a'}</div>
+              <div>fetched_at: {snapshot?.fetched_at || 'n/a'}</div>
               <div>error_code: {errorCode || 'none'}</div>
             </div>
           </CollapsibleContent>

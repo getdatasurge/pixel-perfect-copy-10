@@ -125,9 +125,9 @@ export default function TestContextConfig({
     clearSnapshot(); // Also clear TTN snapshot
   };
   
-  // Fetch TTN snapshot when user is selected
-  const handleFetchTTNSnapshot = useCallback(async (userId: string, orgId?: string, siteId?: string) => {
-    const snapshot = await fetchSnapshot(userId, orgId, siteId);
+  // Fetch TTN snapshot when org is selected
+  const handleFetchTTNSnapshot = useCallback(async (orgId: string) => {
+    const snapshot = await fetchSnapshot(orgId);
     if (snapshot) {
       onTTNSnapshotChange?.(snapshot);
       
@@ -146,10 +146,10 @@ export default function TestContextConfig({
   
   // Refresh TTN snapshot
   const handleRefreshSnapshot = useCallback(() => {
-    if (config.selectedUserId && config.testOrgId) {
-      handleFetchTTNSnapshot(config.selectedUserId, config.testOrgId, config.testSiteId);
+    if (config.testOrgId) {
+      handleFetchTTNSnapshot(config.testOrgId);
     }
-  }, [config.selectedUserId, config.testOrgId, config.testSiteId, handleFetchTTNSnapshot]);
+  }, [config.testOrgId, handleFetchTTNSnapshot]);
 
   // Validation: require valid preflight + at least one entity
   const canSync = validationResult.isValid && (gateways.length > 0 || devices.length > 0);
@@ -422,8 +422,10 @@ export default function TestContextConfig({
                 contextSetAt: new Date().toISOString(),
               });
               
-              // Fetch TTN snapshot for this user
-              handleFetchTTNSnapshot(user.id, user.organization_id, siteToSelect);
+              // Fetch TTN snapshot for this user's organization
+              if (user.organization_id) {
+                handleFetchTTNSnapshot(user.organization_id);
+              }
             }}
             disabled={disabled}
             cachedUserCount={cachedUserCount}
@@ -466,9 +468,7 @@ export default function TestContextConfig({
           error={ttnSnapshotError}
           errorCode={ttnSnapshotErrorCode}
           onRefresh={handleRefreshSnapshot}
-          selectedUserId={config.selectedUserId || undefined}
           orgId={config.testOrgId}
-          siteId={config.testSiteId}
         />
 
         <div className="grid gap-4 sm:grid-cols-3">
