@@ -78,6 +78,20 @@ serve(async (req: Request) => {
       );
     }
 
+    // Validate URL format
+    if (!frostguardUrl.startsWith('http://') && !frostguardUrl.startsWith('https://')) {
+      console.error(`[${requestId}] Invalid FROSTGUARD_SUPABASE_URL format: ${frostguardUrl}`);
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          error: 'FROSTGUARD_SUPABASE_URL must be a full URL (e.g., https://xxx.supabase.co)', 
+          code: 'CONFIG_ERROR', 
+          request_id: requestId 
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     if (!sharedSecret) {
       console.error(`[${requestId}] FROSTGUARD_SYNC_SHARED_SECRET not configured`);
       return new Response(
