@@ -31,6 +31,22 @@ export default function TestContextConfig({
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
   const [isSyncingUsers, setIsSyncingUsers] = useState(false);
   const [userSyncResult, setUserSyncResult] = useState<string | null>(null);
+  const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
+
+  // Fetch cached user count
+  const fetchUserCount = async () => {
+    const { count, error } = await supabase
+      .from('users_cache')
+      .select('*', { count: 'exact', head: true });
+    
+    if (!error && count !== null) {
+      setCachedUserCount(count);
+    }
+  };
+
+  useEffect(() => {
+    fetchUserCount();
+  }, []);
 
   // Normalize saved URL on initial load
   useEffect(() => {
@@ -84,6 +100,7 @@ export default function TestContextConfig({
       if (data.success) {
         setUserSyncResult(`✓ ${data.message}`);
         toast({ title: 'Users Synced', description: data.message });
+        fetchUserCount(); // Refresh count after sync
       } else {
         const errorMsg = data.details ? `${data.error}: ${data.details}` : data.error;
         setUserSyncResult(`✗ ${errorMsg}`);
@@ -226,6 +243,11 @@ export default function TestContextConfig({
                 <>
                   <RefreshCw className="h-4 w-4" />
                   Sync Users
+                  {cachedUserCount !== null && cachedUserCount > 0 && (
+                    <span className="ml-1 bg-primary text-primary-foreground text-xs px-1.5 py-0.5 rounded-full">
+                      {cachedUserCount}
+                    </span>
+                  )}
                 </>
               )}
             </Button>
