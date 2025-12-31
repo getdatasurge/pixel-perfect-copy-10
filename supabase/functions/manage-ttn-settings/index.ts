@@ -15,7 +15,6 @@ const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:writ
 interface TTNSettingsRequest {
   action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway';
   org_id?: string;
-  site_id?: string; // NEW: optional site_id for site-scoped settings
   enabled?: boolean;
   cluster?: TTNCluster;
   application_id?: string;
@@ -93,13 +92,13 @@ Deno.serve(async (req) => {
       return errorResponse('Invalid JSON body', 'VALIDATION_ERROR', 400, requestId);
     }
 
-    const { action, org_id, site_id } = body;
-    console.log(`[${requestId}] Action: ${action}, org_id: ${org_id || 'none'}, site_id: ${site_id || 'none'}`);
+    const { action, org_id } = body;
+    console.log(`[${requestId}] Action: ${action}, org_id: ${org_id || 'none'}`);
 
     // Process action
     switch (action) {
       case 'load':
-        return await handleLoad(supabaseAdmin, org_id, site_id, requestId);
+        return await handleLoad(supabaseAdmin, org_id, requestId);
 
       case 'save':
         return await handleSave(supabaseAdmin, body, requestId);
@@ -132,11 +131,10 @@ Deno.serve(async (req) => {
   }
 });
 
-// Load TTN settings for org (with optional site-level override)
+// Load TTN settings for org
 async function handleLoad(
   supabase: any,
   org_id: string | undefined,
-  site_id: string | undefined,
   requestId: string
 ): Promise<Response> {
   if (!org_id) {
@@ -151,50 +149,21 @@ async function handleLoad(
         api_key_set: false,
         webhook_secret_preview: null,
         webhook_secret_set: false,
-      },
-      scope: 'none',
+      }
     }, 200, requestId);
   }
 
-  console.log(`[${requestId}] Loading settings for org ${org_id}, site ${site_id || 'none'}`);
+  console.log(`[${requestId}] Loading settings for org ${org_id}`);
 
-  let data: any = null;
-  let scope = 'org';
+  const { data, error } = await supabase
+    .from('ttn_settings')
+    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success')
+    .eq('org_id', org_id)
+    .maybeSingle();
 
-  // Step 1: Try to load site-specific settings if site_id provided
-  if (site_id) {
-    console.log(`[${requestId}] Checking for site-specific settings...`);
-    const { data: siteData, error: siteError } = await supabase
-      .from('ttn_settings')
-      .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success, site_id')
-      .eq('org_id', org_id)
-      .eq('site_id', site_id)
-      .maybeSingle();
-
-    if (!siteError && siteData) {
-      console.log(`[${requestId}] Found site-specific settings`);
-      data = siteData;
-      scope = 'site';
-    }
-  }
-
-  // Step 2: Fall back to org-level settings if no site-specific found
-  if (!data) {
-    console.log(`[${requestId}] Loading org-level settings...`);
-    const { data: orgData, error: orgError } = await supabase
-      .from('ttn_settings')
-      .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success, site_id')
-      .eq('org_id', org_id)
-      .is('site_id', null)
-      .maybeSingle();
-
-    if (orgError) {
-      console.error(`[${requestId}] Load error:`, orgError.message);
-      return errorResponse('Failed to load settings', 'DB_ERROR', 500, requestId);
-    }
-
-    data = orgData;
-    scope = 'org';
+  if (error) {
+    console.error(`[${requestId}] Load error:`, error.message);
+    return errorResponse('Failed to load settings', 'DB_ERROR', 500, requestId);
   }
 
   if (!data) {
@@ -210,15 +179,12 @@ async function handleLoad(
         webhook_secret_set: false,
         last_test_at: null,
         last_test_success: null,
-      },
-      scope: 'none',
+      }
     }, 200, requestId);
   }
 
   const hasApiKey = !!(data.api_key && data.api_key.length > 0);
   const hasWebhookSecret = !!(data.webhook_secret && data.webhook_secret.length > 0);
-
-  console.log(`[${requestId}] Returning settings from scope: ${scope}`);
 
   return buildResponse({
     ok: true,
@@ -233,39 +199,31 @@ async function handleLoad(
       updated_at: data.updated_at,
       last_test_at: data.last_test_at,
       last_test_success: data.last_test_success,
-    },
-    scope,
+    }
   }, 200, requestId);
 }
 
-// Save TTN settings for org (with optional site-level)
+// Save TTN settings for org
 async function handleSave(
   supabase: any,
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id, site_id, enabled, cluster, application_id, api_key, webhook_secret } = body;
+  const { org_id, enabled, cluster, application_id, api_key, webhook_secret } = body;
 
   if (!org_id) {
     return errorResponse('org_id is required to save settings', 'VALIDATION_ERROR', 400, requestId);
   }
 
-  const scope = site_id ? 'site' : 'org';
-  console.log(`[${requestId}] Saving settings for org ${org_id}, site ${site_id || 'none'} (scope: ${scope}), enabled=${enabled}, cluster=${cluster}, app=${application_id}`);
+  console.log(`[${requestId}] Saving settings for org ${org_id}, enabled=${enabled}, cluster=${cluster}, app=${application_id}`);
 
-  // Check if we have an existing row for this org+site combo
-  let existingQuery = supabase
+  // Check if we have an existing API key stored
+  const { data: existingSettings } = await supabase
     .from('ttn_settings')
-    .select('id, api_key')
-    .eq('org_id', org_id);
-  
-  if (site_id) {
-    existingQuery = existingQuery.eq('site_id', site_id);
-  } else {
-    existingQuery = existingQuery.is('site_id', null);
-  }
+    .select('api_key')
+    .eq('org_id', org_id)
+    .maybeSingle();
 
-  const { data: existingSettings } = await existingQuery.maybeSingle();
   const hasExistingKey = !!(existingSettings?.api_key && existingSettings.api_key.length > 0);
 
   // Validate required fields when enabled
@@ -282,10 +240,9 @@ async function handleSave(
     }
   }
 
-  // Build upsert data
+  // Build upsert data - only include api_key/webhook_secret if provided
   const upsertData: Record<string, any> = {
     org_id,
-    site_id: site_id || null,
     enabled: enabled ?? false,
     cluster: cluster ?? 'nam1',
     application_id: application_id ?? null,
@@ -299,22 +256,9 @@ async function handleSave(
     upsertData.webhook_secret = webhook_secret;
   }
 
-  let error: any;
-  
-  if (existingSettings?.id) {
-    // Update existing row
-    const { error: updateError } = await supabase
-      .from('ttn_settings')
-      .update(upsertData)
-      .eq('id', existingSettings.id);
-    error = updateError;
-  } else {
-    // Insert new row
-    const { error: insertError } = await supabase
-      .from('ttn_settings')
-      .insert(upsertData);
-    error = insertError;
-  }
+  const { error } = await supabase
+    .from('ttn_settings')
+    .upsert(upsertData, { onConflict: 'org_id' });
 
   if (error) {
     console.error(`[${requestId}] Save error:`, error.message);
@@ -322,28 +266,20 @@ async function handleSave(
   }
 
   // Reload settings to get the current state
-  let reloadQuery = supabase
+  const { data: savedSettings } = await supabase
     .from('ttn_settings')
     .select('api_key, webhook_secret')
-    .eq('org_id', org_id);
-  
-  if (site_id) {
-    reloadQuery = reloadQuery.eq('site_id', site_id);
-  } else {
-    reloadQuery = reloadQuery.is('site_id', null);
-  }
-
-  const { data: savedSettings } = await reloadQuery.maybeSingle();
+    .eq('org_id', org_id)
+    .maybeSingle();
 
   const apiKeySet = !!(savedSettings?.api_key && savedSettings.api_key.length > 0);
   const webhookSecretSet = !!(savedSettings?.webhook_secret && savedSettings.webhook_secret.length > 0);
 
-  console.log(`[${requestId}] Settings saved successfully (scope: ${scope}), api_key_set=${apiKeySet}`);
+  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}`);
   
   return buildResponse({ 
     ok: true, 
     message: 'Settings saved',
-    scope,
     api_key_set: apiKeySet,
     api_key_preview: maskSecret(savedSettings?.api_key),
     webhook_secret_set: webhookSecretSet,
@@ -357,7 +293,7 @@ async function handleTestStored(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id, site_id } = body;
+  const { org_id } = body;
 
   if (!org_id) {
     return buildResponse({
@@ -367,46 +303,22 @@ async function handleTestStored(
     }, 200, requestId);
   }
 
-  console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}, site ${site_id || 'none'}`);
+  console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}`);
 
-  // Step 1: Try site-specific settings first
-  let settings: any = null;
-  let scope = 'org';
+  // Load settings from database
+  const { data: settings, error } = await supabase
+    .from('ttn_settings')
+    .select('enabled, cluster, application_id, api_key')
+    .eq('org_id', org_id)
+    .maybeSingle();
 
-  if (site_id) {
-    const { data: siteSettings } = await supabase
-      .from('ttn_settings')
-      .select('enabled, cluster, application_id, api_key')
-      .eq('org_id', org_id)
-      .eq('site_id', site_id)
-      .maybeSingle();
-
-    if (siteSettings?.api_key) {
-      settings = siteSettings;
-      scope = 'site';
-      console.log(`[${requestId}] Using site-specific settings`);
-    }
-  }
-
-  // Step 2: Fall back to org-level settings
-  if (!settings) {
-    const { data: orgSettings, error } = await supabase
-      .from('ttn_settings')
-      .select('enabled, cluster, application_id, api_key')
-      .eq('org_id', org_id)
-      .is('site_id', null)
-      .maybeSingle();
-
-    if (error) {
-      console.error(`[${requestId}] Failed to load settings:`, error.message);
-      return buildResponse({
-        ok: false,
-        error: 'Failed to load TTN settings from database',
-        code: 'DB_ERROR',
-      }, 200, requestId);
-    }
-
-    settings = orgSettings;
+  if (error) {
+    console.error(`[${requestId}] Failed to load settings:`, error.message);
+    return buildResponse({
+      ok: false,
+      error: 'Failed to load TTN settings from database',
+      code: 'DB_ERROR',
+    }, 200, requestId);
   }
 
   if (!settings) {
@@ -443,11 +355,11 @@ async function handleTestStored(
     api_key: settings.api_key,
   }, requestId);
 
-  // Save test result to database (update the row we tested)
+  // Save test result to database
   const resultBody = await result.clone().json();
   const testSuccess = resultBody.ok && resultBody.connected === true;
   
-  let updateQuery = supabase
+  await supabase
     .from('ttn_settings')
     .update({
       last_test_at: new Date().toISOString(),
@@ -455,15 +367,7 @@ async function handleTestStored(
     })
     .eq('org_id', org_id);
 
-  if (scope === 'site' && site_id) {
-    updateQuery = updateQuery.eq('site_id', site_id);
-  } else {
-    updateQuery = updateQuery.is('site_id', null);
-  }
-
-  await updateQuery;
-
-  console.log(`[${requestId}] Saved test result (scope: ${scope}): success=${testSuccess}`);
+  console.log(`[${requestId}] Saved test result: success=${testSuccess}`);
   
   return result;
 }
@@ -676,7 +580,7 @@ async function handleCheckGateway(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { cluster, gateway_id, org_id, site_id } = body;
+  const { cluster, gateway_id, org_id } = body;
 
   console.log(`[${requestId}] Checking gateway: cluster=${cluster}, gateway=${gateway_id}`);
 
@@ -688,33 +592,16 @@ async function handleCheckGateway(
     }, 200, requestId);
   }
 
-  // Load API key from settings (site first, then org, then global)
+  // Load API key from settings
   let apiKey: string | null = null;
-  
   if (org_id) {
-    // Try site-specific first
-    if (site_id) {
-      const { data: siteData } = await supabase
-        .from('ttn_settings')
-        .select('api_key')
-        .eq('org_id', org_id)
-        .eq('site_id', site_id)
-        .maybeSingle();
-      apiKey = siteData?.api_key || null;
-    }
-    
-    // Fall back to org-level
-    if (!apiKey) {
-      const { data: orgData } = await supabase
-        .from('ttn_settings')
-        .select('api_key')
-        .eq('org_id', org_id)
-        .is('site_id', null)
-        .maybeSingle();
-      apiKey = orgData?.api_key || null;
-    }
+    const { data } = await supabase
+      .from('ttn_settings')
+      .select('api_key')
+      .eq('org_id', org_id)
+      .maybeSingle();
+    apiKey = data?.api_key || null;
   }
-  
   apiKey = apiKey || Deno.env.get('TTN_API_KEY') || null;
 
   if (!apiKey) {

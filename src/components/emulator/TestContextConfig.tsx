@@ -468,6 +468,7 @@ export default function TestContextConfig({
           onRefresh={handleRefreshSnapshot}
           selectedUserId={config.selectedUserId || undefined}
           orgId={config.testOrgId}
+          siteId={config.testSiteId}
         />
 
         <div className="grid gap-4 sm:grid-cols-3">

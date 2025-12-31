@@ -250,7 +250,6 @@ export type Database = {
           last_test_at: string | null
           last_test_success: boolean | null
           org_id: string
-          site_id: string | null
           updated_at: string
           webhook_secret: string | null
         }
@@ -264,7 +263,6 @@ export type Database = {
           last_test_at?: string | null
           last_test_success?: boolean | null
           org_id: string
-          site_id?: string | null
           updated_at?: string
           webhook_secret?: string | null
         }
@@ -278,7 +276,6 @@ export type Database = {
           last_test_at?: string | null
           last_test_success?: boolean | null
           org_id?: string
-          site_id?: string | null
           updated_at?: string
           webhook_secret?: string | null
         }

@@ -38,6 +38,3 @@ verify_jwt = false
 
 [functions.proxy-frostguard-ttn-snapshot]
 verify_jwt = false
-
-[functions.query-ttn-snapshot]
-verify_jwt = false

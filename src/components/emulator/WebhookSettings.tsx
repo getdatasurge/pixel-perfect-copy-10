@@ -31,7 +31,6 @@ interface WebhookSettingsProps {
   disabled?: boolean;
   currentDevEui?: string;
   orgId?: string;
-  siteId?: string; // NEW: for site-scoped TTN settings
   devices?: LoRaWANDevice[];
   ttnSnapshot?: TTNSnapshot | null;
 }
@@ -71,7 +70,7 @@ interface TTNSettingsFromDB {
   last_test_success: boolean | null;
 }
 
-export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, siteId, devices = [], ttnSnapshot }: WebhookSettingsProps) {
+export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, devices = [], ttnSnapshot }: WebhookSettingsProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [isTestingTTN, setIsTestingTTN] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -145,12 +144,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     cluster: 'eu1',
   };
 
-  // Load settings from database on mount or org/site change
+  // Load settings from database on mount or org change
   useEffect(() => {
     if (orgId) {
       loadSettings();
     }
-  }, [orgId, siteId]);
+  }, [orgId]);
 
   const loadSettings = async () => {
     if (!orgId) return;
@@ -158,7 +157,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     setIsLoading(true);
     try {
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        body: { action: 'load', org_id: orgId, site_id: siteId },
+        body: { action: 'load', org_id: orgId },
       });
 
       if (error) {
@@ -223,11 +222,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         body: {
           action: 'save',
           org_id: orgId,
-          site_id: siteId,
           enabled: ttnEnabled,
           cluster: ttnCluster,
           application_id: ttnApplicationId,
-          api_key: ttnApiKey || undefined,
+          api_key: ttnApiKey || undefined, // Only send if new value provided
           webhook_secret: ttnWebhookSecret || undefined,
         },
       });
@@ -301,7 +299,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         body: {
           action: 'test_stored',
           org_id: orgId,
-          site_id: siteId,
         },
       });
 
