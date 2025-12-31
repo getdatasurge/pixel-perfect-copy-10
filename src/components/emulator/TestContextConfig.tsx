@@ -1,10 +1,10 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, User, X } from 'lucide-react';
-import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
+import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
+import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog from './UserSearchDialog';
@@ -30,6 +30,10 @@ export default function TestContextConfig({
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
   const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
+  
+  // Sync run ID for idempotency - persists across retries
+  const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
+  const lastSyncMethodRef = useRef<'endpoint' | 'direct' | null>(null);
 
   // Fetch synced user count
   const fetchUserCount = async () => {
@@ -58,14 +62,16 @@ export default function TestContextConfig({
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
+    // Reset sync state when inputs change
     setSyncStatus(null);
     setLastSyncSummary(null);
+    // Clear sync run ID so next sync gets a new one
+    setCurrentSyncRunId(null);
   };
 
   // Normalize FrostGuard URL - extract base URL if edge function URL is pasted
   const handleFrostguardUrlChange = (value: string) => {
     let normalizedUrl = value;
-    // Extract base URL if edge function URL is pasted
     if (value.includes('/functions/')) {
       const match = value.match(/^(https?:\/\/[^\/]+)/);
       if (match) {
@@ -87,11 +93,46 @@ export default function TestContextConfig({
   // Validation: require both org_id and site_id for sync
   const canSync = config.testOrgId && config.testSiteId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
 
+  const buildSyncBundle = (syncRunId: string): SyncBundle => {
+    return {
+      metadata: {
+        sync_run_id: syncRunId,
+        initiated_at: new Date().toISOString(),
+        source_project: 'pixel-perfect-copy-10',
+      },
+      context: {
+        org_id: config.testOrgId!,
+        site_id: config.testSiteId!,
+        unit_id_override: config.testUnitId,
+        selected_user_id: config.selectedUserId || undefined,
+      },
+      entities: {
+        gateways: gateways.map(g => ({
+          id: g.id,
+          name: g.name,
+          eui: g.eui,
+          is_online: g.isOnline,
+        })),
+        devices: devices.map(d => ({
+          id: d.id,
+          name: d.name,
+          dev_eui: d.devEui,
+          join_eui: d.joinEui,
+          app_key: d.appKey,
+          type: d.type,
+          gateway_id: d.gatewayId,
+        })),
+      },
+      // Include fallback URL for direct writes if endpoint fails
+      frostguardApiUrl: config.frostguardApiUrl,
+    };
+  };
+
   const syncAll = async () => {
-    if (!config.testOrgId || !config.frostguardApiUrl) {
+    if (!config.testOrgId || !config.testSiteId || !config.frostguardApiUrl) {
       toast({ 
         title: 'Missing Configuration', 
-        description: 'Organization ID and FrostGuard API URL are required', 
+        description: 'Organization ID, Site ID, and FrostGuard API URL are required', 
         variant: 'destructive' 
       });
       return;
@@ -110,40 +151,32 @@ export default function TestContextConfig({
     setSyncStatus(null);
     setLastSyncSummary(null);
 
+    // Generate new sync_run_id on first attempt, reuse on retry
+    const syncRunId = currentSyncRunId || crypto.randomUUID();
+    if (!currentSyncRunId) {
+      setCurrentSyncRunId(syncRunId);
+    }
+
     try {
+      const syncBundle = buildSyncBundle(syncRunId);
+      console.log('Sending sync bundle:', JSON.stringify(syncBundle, null, 2));
+
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
-        body: {
-          gateways: gateways.map(g => ({
-            id: g.id,
-            name: g.name,
-            eui: g.eui,
-            isOnline: g.isOnline,
-          })),
-          sensors: devices.map(d => ({
-            id: d.id,
-            name: d.name,
-            devEui: d.devEui,
-            type: d.type,
-            gatewayId: d.gatewayId,
-          })),
-          orgId: config.testOrgId,
-          siteId: config.testSiteId,
-          unitId: config.testUnitId,
-          frostguardApiUrl: config.frostguardApiUrl,
-        },
+        body: syncBundle,
       });
 
       if (error) throw error;
 
-      const { success, results, summary } = data;
+      const { success, results, summary, method, sync_run_id } = data;
+      lastSyncMethodRef.current = method;
       setLastSyncSummary(summary);
       
-      const totalFailed = results.gateways.failed + results.sensors.failed;
-      const totalSynced = results.gateways.synced + results.sensors.synced;
+      const totalFailed = results?.gateways?.failed + results?.devices?.failed || 0;
+      const totalSynced = results?.gateways?.synced + results?.devices?.synced || 0;
       
       if (totalFailed > 0 && totalSynced > 0) {
         setSyncStatus('partial');
-        const errors = [...results.gateways.errors, ...results.sensors.errors];
+        const errors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
         toast({ 
           title: 'Partial Sync', 
           description: `${summary}. Errors: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '...' : ''}`, 
@@ -151,7 +184,7 @@ export default function TestContextConfig({
         });
       } else if (totalFailed > 0) {
         setSyncStatus('failed');
-        const errors = [...results.gateways.errors, ...results.sensors.errors];
+        const errors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
         toast({ 
           title: 'Sync Failed', 
           description: errors.slice(0, 2).join('; '), 
@@ -159,17 +192,25 @@ export default function TestContextConfig({
         });
       } else {
         setSyncStatus('success');
-        toast({ title: 'Sync Complete', description: summary });
+        // Clear sync run ID on success
+        setCurrentSyncRunId(null);
+        toast({ 
+          title: 'Sync Complete', 
+          description: `${summary}${method === 'endpoint' ? ' (via endpoint)' : ' (direct writes)'}` 
+        });
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
       setSyncStatus('failed');
       setLastSyncSummary(null);
+      // Keep sync run ID for retry
     } finally {
       setIsSyncing(false);
     }
   };
+
+  const isRetry = syncStatus === 'failed' && currentSyncRunId !== null;
 
   return (
     <Card>
@@ -263,7 +304,7 @@ export default function TestContextConfig({
               disabled={disabled}
             />
             <p className="text-xs text-muted-foreground">
-              Optional site context
+              Required for sync
             </p>
           </div>
 
@@ -347,6 +388,11 @@ export default function TestContextConfig({
                   <AlertTriangle className="h-4 w-4" />
                   Partial
                 </>
+              ) : isRetry ? (
+                <>
+                  <RefreshCw className="h-4 w-4" />
+                  Retry Sync
+                </>
               ) : syncStatus === 'failed' ? (
                 <>
                   <AlertTriangle className="h-4 w-4" />
@@ -368,6 +414,11 @@ export default function TestContextConfig({
           {lastSyncSummary && syncStatus === 'partial' && (
             <p className="text-xs text-yellow-600 mt-2">
               ⚠ {lastSyncSummary}
+            </p>
+          )}
+          {currentSyncRunId && syncStatus === 'failed' && (
+            <p className="text-xs text-muted-foreground mt-2">
+              Retry will use same sync ID: {currentSyncRunId.slice(0, 8)}...
             </p>
           )}
           {!canSync && !disabled && (
