@@ -8,7 +8,7 @@ import {
 } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig } from '@/lib/ttn-payload';
 import StepConnectionCheck from './provisioning/StepConnectionCheck';
 import StepDiscovery from './provisioning/StepDiscovery';
@@ -25,6 +25,9 @@ export interface ProvisionResult {
   ttn_gateway_id?: string;
   status: 'created' | 'already_exists' | 'failed';
   error?: string;
+  error_code?: string;
+  retryable?: boolean;
+  attempts?: number;
 }
 
 export interface ProvisioningSummary {
@@ -94,6 +97,8 @@ export default function TTNProvisioningWizard({
   // Get TTN config
   const ttnConfig = webhookConfig.ttnConfig;
   const orgId = webhookConfig.testOrgId;
+
+  const isGatewayMode = mode === 'gateways';
 
   // Reset state when wizard opens
   useEffect(() => {
@@ -171,9 +176,44 @@ export default function TTNProvisioningWizard({
     onOpenChange(false);
   };
 
-  const progressPercent = ((currentStep - 1) / (STEPS.length - 1)) * 100;
+  const handleRetryFailed = (filter: 'all' | 'retryable' = 'all') => {
+    const failedItems = provisionResults.filter(r => 
+      r.status === 'failed' && (filter === 'all' || r.retryable)
+    );
+    
+    if (isGatewayMode) {
+      const failedEuis = failedItems.map(r => r.eui);
+      const failedGatewayIds = gateways
+        .filter(g => failedEuis.includes(g.eui))
+        .map(g => g.id);
+      setSelectedDevices(failedGatewayIds);
+    } else {
+      const failedDevEuis = failedItems.map(r => r.dev_eui);
+      const failedDeviceIds = devices
+        .filter(d => failedDevEuis.includes(d.devEui))
+        .map(d => d.id);
+      setSelectedDevices(failedDeviceIds);
+    }
+    
+    // Keep successful results, only clear the ones we're retrying
+    const retainedResults = provisionResults.filter(r => 
+      r.status !== 'failed' || (filter === 'retryable' && !r.retryable)
+    );
+    setProvisionResults(retainedResults);
+    
+    // Update summary to reflect remaining
+    const newSummary = {
+      created: retainedResults.filter(r => r.status === 'created').length,
+      already_exists: retainedResults.filter(r => r.status === 'already_exists').length,
+      failed: retainedResults.filter(r => r.status === 'failed').length,
+      total: isGatewayMode ? gateways.length : devices.length,
+    };
+    setProvisionSummary(newSummary);
+    
+    goToStep(4);
+  };
 
-  const isGatewayMode = mode === 'gateways';
+  const progressPercent = ((currentStep - 1) / (STEPS.length - 1)) * 100;
   const entityLabel = isGatewayMode ? 'Gateways' : 'Devices';
 
   return (
@@ -271,32 +311,11 @@ export default function TTNProvisioningWizard({
             />
           )}
 
-{currentStep === 5 && (
+          {currentStep === 5 && (
             <StepResults
               results={provisionResults}
               summary={provisionSummary}
-              onRetryFailed={() => {
-                // Filter to only failed items and go back to execution
-                if (isGatewayMode) {
-                  const failedEuis = provisionResults
-                    .filter(r => r.status === 'failed')
-                    .map(r => r.eui);
-                  const failedGatewayIds = gateways
-                    .filter(g => failedEuis.includes(g.eui))
-                    .map(g => g.id);
-                  setSelectedDevices(failedGatewayIds);
-                } else {
-                  const failedDevEuis = provisionResults
-                    .filter(r => r.status === 'failed')
-                    .map(r => r.dev_eui);
-                  const failedDeviceIds = devices
-                    .filter(d => failedDevEuis.includes(d.devEui))
-                    .map(d => d.id);
-                  setSelectedDevices(failedDeviceIds);
-                }
-                setProvisionResults([]);
-                goToStep(4);
-              }}
+              onRetryFailed={handleRetryFailed}
               mode={mode}
             />
           )}
