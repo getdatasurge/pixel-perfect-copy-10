@@ -14,6 +14,7 @@ interface TTNSnapshotPanelProps {
   error: string | null;
   errorCode: string | null;
   onRefresh: () => void;
+  selectedUserId?: string;
   orgId?: string;
 }
 
@@ -23,11 +24,12 @@ export function TTNSnapshotPanel({
   error,
   errorCode,
   onRefresh,
+  selectedUserId,
   orgId,
 }: TTNSnapshotPanelProps) {
   const [showDiagnostics, setShowDiagnostics] = React.useState(false);
 
-  if (!orgId) {
+  if (!selectedUserId) {
     return null;
   }
 
@@ -145,6 +147,7 @@ export function TTNSnapshotPanel({
           </CollapsibleTrigger>
           <CollapsibleContent>
             <div className="mt-2 p-3 bg-muted/50 rounded text-xs font-mono space-y-1">
+              <div>user_id: {selectedUserId || 'none'}</div>
               <div>org_id: {orgId || 'none'}</div>
               <div>source: {snapshot?.source || 'n/a'}</div>
               <div>ttn_connected: {snapshot?.ttn_connected ? 'yes' : 'no'}</div>
