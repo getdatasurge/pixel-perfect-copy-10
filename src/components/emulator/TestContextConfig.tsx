@@ -31,10 +31,10 @@ export default function TestContextConfig({
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
   const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
 
-  // Fetch cached user count
+  // Fetch synced user count
   const fetchUserCount = async () => {
     const { count, error } = await supabase
-      .from('users_cache')
+      .from('synced_users')
       .select('*', { count: 'exact', head: true });
     
     if (!error && count !== null) {

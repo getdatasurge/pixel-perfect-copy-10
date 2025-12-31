@@ -3,21 +3,21 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-api-key',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-interface UserPayload {
+interface SyncedUser {
   user_id: string;
   email: string;
-  full_name: string;
+  full_name: string | null;
   organization_id: string | null;
   site_id: string | null;
   unit_id: string | null;
   updated_at: string;
 }
 
-interface SyncRequest {
-  users: UserPayload[];
+interface SyncPayload {
+  users: SyncedUser[];
 }
 
 serve(async (req) => {
@@ -26,152 +26,90 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // Validate API key using Bearer token
+  const authHeader = req.headers.get('Authorization');
+  const expectedKey = Deno.env.get('PROJECT2_SYNC_API_KEY');
+  
+  if (!expectedKey) {
+    console.error('[user-sync] Missing PROJECT2_SYNC_API_KEY secret');
+    return new Response(
+      JSON.stringify({ error: 'Server configuration error' }),
+      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
+  if (!authHeader || authHeader !== `Bearer ${expectedKey}`) {
+    console.error('[user-sync] Invalid or missing authorization');
+    return new Response(
+      JSON.stringify({ error: 'Unauthorized' }),
+      { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+    );
+  }
+
+  const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+  const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+  const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
   try {
-    // Authenticate request using PROJECT2_SYNC_API_KEY
-    const apiKey = Deno.env.get('PROJECT2_SYNC_API_KEY')?.trim();
-    if (!apiKey) {
-      console.error('PROJECT2_SYNC_API_KEY not configured');
+    const payload: SyncPayload = await req.json();
+    
+    if (!payload.users || !Array.isArray(payload.users)) {
       return new Response(
-        JSON.stringify({ success: false, error: 'Sync endpoint not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const requestApiKey = req.headers.get('x-api-key');
-    if (!requestApiKey || requestApiKey !== apiKey) {
-      console.error('Invalid or missing API key');
-      return new Response(
-        JSON.stringify({ success: false, error: 'Unauthorized' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    // Parse request body
-    const body: SyncRequest = await req.json();
-
-    if (!body.users || !Array.isArray(body.users)) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'Invalid payload: users array required' }),
+        JSON.stringify({ error: 'Invalid payload: expected users array' }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    if (body.users.length === 0) {
-      return new Response(
-        JSON.stringify({ success: true, synced: 0, skipped: 0, message: 'No users to sync' }),
-        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    console.log(`[user-sync] Received ${payload.users.length} user(s) to sync`);
 
-    // Create Supabase client with service role for database access
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+    const results = [];
+    
+    for (const user of payload.users) {
+      // Upsert user data into synced_users table
+      const { data, error } = await supabase
+        .from('synced_users')
+        .upsert({
+          source_user_id: user.user_id,
+          email: user.email,
+          full_name: user.full_name,
+          source_organization_id: user.organization_id,
+          source_site_id: user.site_id,
+          source_unit_id: user.unit_id,
+          synced_at: user.updated_at,
+          last_updated_at: new Date().toISOString(),
+        }, {
+          onConflict: 'source_user_id',
+        })
+        .select()
+        .single();
 
-    if (!supabaseUrl || !supabaseServiceKey) {
-      console.error('Supabase configuration missing');
-      return new Response(
-        JSON.stringify({ success: false, error: 'Server configuration error' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
-
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-
-    let synced = 0;
-    let skipped = 0;
-    const errors: string[] = [];
-
-    // Process each user with idempotent upsert logic
-    for (const user of body.users) {
-      try {
-        // Validate required fields
-        if (!user.user_id) {
-          errors.push(`Missing user_id for user`);
-          skipped++;
-          continue;
-        }
-
-        if (!user.updated_at) {
-          errors.push(`Missing updated_at for user ${user.user_id}`);
-          skipped++;
-          continue;
-        }
-
-        const incomingUpdatedAt = new Date(user.updated_at);
-
-        // Check if user exists and compare updated_at
-        const { data: existingUser, error: fetchError } = await supabase
-          .from('users_cache')
-          .select('updated_at')
-          .eq('user_id', user.user_id)
-          .single();
-
-        if (fetchError && fetchError.code !== 'PGRST116') {
-          // PGRST116 = no rows returned (user doesn't exist)
-          console.error(`Error fetching user ${user.user_id}:`, fetchError);
-          errors.push(`Failed to check user ${user.user_id}`);
-          skipped++;
-          continue;
-        }
-
-        // Skip if existing record is newer or same
-        if (existingUser) {
-          const existingUpdatedAt = new Date(existingUser.updated_at);
-          if (existingUpdatedAt >= incomingUpdatedAt) {
-            skipped++;
-            continue;
-          }
-        }
-
-        // Upsert the user record
-        const { error: upsertError } = await supabase
-          .from('users_cache')
-          .upsert({
-            user_id: user.user_id,
-            email: user.email || null,
-            full_name: user.full_name || null,
-            organization_id: user.organization_id || null,
-            site_id: user.site_id || null,
-            unit_id: user.unit_id || null,
-            updated_at: user.updated_at,
-            synced_at: new Date().toISOString(),
-          }, {
-            onConflict: 'user_id',
-          });
-
-        if (upsertError) {
-          console.error(`Error upserting user ${user.user_id}:`, upsertError);
-          errors.push(`Failed to sync user ${user.user_id}: ${upsertError.message}`);
-          skipped++;
-          continue;
-        }
-
-        synced++;
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error(`Error processing user:`, err);
-        errors.push(`Error processing user: ${message}`);
-        skipped++;
+      if (error) {
+        console.error(`[user-sync] Error upserting user ${user.user_id}:`, error);
+        results.push({ user_id: user.user_id, success: false, error: error.message });
+      } else {
+        console.log(`[user-sync] Successfully synced user ${user.user_id}`);
+        results.push({ user_id: user.user_id, success: true });
       }
     }
 
-    console.log(`Sync complete: ${synced} synced, ${skipped} skipped, ${errors.length} errors`);
+    const successCount = results.filter(r => r.success).length;
+    const failCount = results.filter(r => !r.success).length;
 
     return new Response(
-      JSON.stringify({
-        success: true,
-        synced,
-        skipped,
-        errors: errors.length > 0 ? errors.slice(0, 10) : undefined, // Limit error details
-        message: `Synced ${synced} users, skipped ${skipped}`,
+      JSON.stringify({ 
+        success: true, 
+        synced: successCount, 
+        failed: failCount,
+        results 
       }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
-  } catch (err) {
-    console.error('Unexpected error:', err);
+  } catch (error) {
+    const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+    console.error('[user-sync] Error:', errorMessage);
     return new Response(
-      JSON.stringify({ success: false, error: err instanceof Error ? err.message : String(err) }),
+      JSON.stringify({ error: errorMessage }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }
