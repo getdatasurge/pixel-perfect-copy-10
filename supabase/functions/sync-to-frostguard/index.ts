@@ -94,7 +94,6 @@ serve(async (req) => {
             .upsert({
               id: gateway.id,
               name: gateway.name,
-              org_id: orgId,
               status: gateway.isOnline ? 'online' : 'offline',
             }, { onConflict: 'id' });
 
@@ -126,7 +125,6 @@ serve(async (req) => {
             name: sensor.name,
             dev_eui: sensor.devEui,
             sensor_type: sensor.type,
-            org_id: orgId,
           };
 
           // Add optional fields if provided
