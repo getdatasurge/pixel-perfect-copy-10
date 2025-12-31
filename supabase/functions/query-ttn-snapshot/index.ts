@@ -36,6 +36,7 @@ interface TTNSettingsRow {
   updated_at: string;
   last_test_at: string | null;
   last_test_success: boolean | null;
+  site_id: string | null;
 }
 
 serve(async (req: Request) => {
@@ -56,7 +57,7 @@ serve(async (req: Request) => {
       );
     }
 
-    console.log(`[${requestId}] Querying TTN snapshot for user: ${user_id}, org: ${org_id || 'auto'}`);
+    console.log(`[${requestId}] Querying TTN snapshot for user: ${user_id}, org: ${org_id || 'auto'}, site: ${site_id || 'none'}`);
 
     // Initialize Supabase client
     const supabaseUrl = Deno.env.get("SUPABASE_URL")!;
@@ -65,54 +66,38 @@ serve(async (req: Request) => {
 
     let settings: TTNSettingsRow | null = null;
     let settingsSource = 'unknown';
-    let derivedApplicationId = '';
 
-    // Step 1: DERIVE application_id from site_name (pattern: ft-{site_name})
-    if (site_id) {
-      console.log(`[${requestId}] Looking up site_name for site_id: ${site_id}`);
-      const { data: siteData, error: siteErr } = await supabase
-        .from("user_site_memberships")
-        .select("site_name")
+    // Step 1: Try to load SITE-SPECIFIC settings first if site_id provided
+    if (org_id && site_id) {
+      console.log(`[${requestId}] Checking for site-specific TTN settings...`);
+      const { data: siteSettings, error: siteErr } = await supabase
+        .from("ttn_settings")
+        .select("cluster, application_id, api_key, enabled, webhook_secret, updated_at, last_test_at, last_test_success, site_id")
+        .eq("org_id", org_id)
         .eq("site_id", site_id)
-        .limit(1)
         .maybeSingle();
 
-      if (siteErr) {
-        console.log(`[${requestId}] Site lookup error: ${siteErr.message}`);
-      } else if (siteData?.site_name) {
-        // Normalize site name: lowercase, remove spaces (and fix common typo: resturant -> restaurant)
-        const normalizedSiteName = siteData.site_name
-          .toLowerCase()
-          .replace(/\s+/g, "")
-          .replace(/resturant/gi, "restaurant");
-        derivedApplicationId = `ft-${normalizedSiteName}`;
-        console.log(`[${requestId}] Derived application_id: ${derivedApplicationId} from site: ${siteData.site_name}`);
+      if (!siteErr && siteSettings && siteSettings.api_key) {
+        settings = siteSettings as TTNSettingsRow;
+        settingsSource = 'site';
+        console.log(`[${requestId}] Using site-specific settings: app=${settings.application_id}`);
       }
     }
 
-    // Step 2: Get API key from local ttn_settings (org-level)
-    if (org_id) {
-      console.log(`[${requestId}] Getting API key from local ttn_settings for org: ${org_id}`);
-      const { data: localSettings, error: dbError } = await supabase
+    // Step 2: Fall back to ORG-LEVEL settings if no site-specific found
+    if (!settings && org_id) {
+      console.log(`[${requestId}] Loading org-level TTN settings for org: ${org_id}`);
+      const { data: orgSettings, error: orgErr } = await supabase
         .from("ttn_settings")
-        .select("cluster, application_id, api_key, enabled, webhook_secret, updated_at, last_test_at, last_test_success")
+        .select("cluster, application_id, api_key, enabled, webhook_secret, updated_at, last_test_at, last_test_success, site_id")
         .eq("org_id", org_id)
-        .single();
+        .is("site_id", null)
+        .maybeSingle();
 
-      if (!dbError && localSettings && localSettings.api_key) {
-        settings = localSettings as TTNSettingsRow;
-        
-        // Override application_id with derived value if available
-        if (derivedApplicationId) {
-          settings.application_id = derivedApplicationId;
-          settingsSource = 'derived';
-          console.log(`[${requestId}] Using derived application_id: ${derivedApplicationId} with org API key`);
-        } else {
-          settingsSource = 'local';
-          console.log(`[${requestId}] Using local application_id: ${settings.application_id}`);
-        }
-      } else {
-        console.log(`[${requestId}] No local TTN settings found for org: ${org_id}`);
+      if (!orgErr && orgSettings && orgSettings.api_key) {
+        settings = orgSettings as TTNSettingsRow;
+        settingsSource = 'org';
+        console.log(`[${requestId}] Using org-level settings: app=${settings.application_id}`);
       }
     }
 
@@ -206,7 +191,7 @@ serve(async (req: Request) => {
       ttn_error: ttnError,
     };
 
-    console.log(`[${requestId}] Returning snapshot from ${settingsSource} - connected: ${ttnConnected}, devices: ${ttnDeviceCount ?? 'n/a'}`);
+    console.log(`[${requestId}] Returning snapshot from ${settingsSource} - app: ${settings.application_id}, connected: ${ttnConnected}, devices: ${ttnDeviceCount ?? 'n/a'}`);
 
     return new Response(
       JSON.stringify({ ok: true, snapshot, source: settingsSource }),
