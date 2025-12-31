@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef, useMemo } from 'react';
+import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -10,6 +10,8 @@ import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserSite } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
+import { TTNSnapshotPanel } from './TTNSnapshotPanel';
+import { useTTNSnapshot, TTNSnapshot } from '@/hooks/useTTNSnapshot';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
 
 interface TestContextConfigProps {
@@ -19,6 +21,7 @@ interface TestContextConfigProps {
   gateways?: GatewayConfig[];
   devices?: LoRaWANDevice[];
   onSyncResult?: (result: SyncResult) => void;
+  onTTNSnapshotChange?: (snapshot: TTNSnapshot | null) => void;
 }
 
 type SyncStatus = 'success' | 'partial' | 'failed' | null;
@@ -34,7 +37,8 @@ export default function TestContextConfig({
   disabled,
   gateways = [],
   devices = [],
-  onSyncResult
+  onSyncResult,
+  onTTNSnapshotChange
 }: TestContextConfigProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
@@ -49,6 +53,16 @@ export default function TestContextConfig({
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
   const lastSyncMethodRef = useRef<'endpoint' | 'direct' | null>(null);
+  
+  // TTN Snapshot from FrostGuard
+  const { 
+    snapshot: ttnSnapshot, 
+    loading: ttnSnapshotLoading, 
+    error: ttnSnapshotError, 
+    errorCode: ttnSnapshotErrorCode,
+    fetchSnapshot,
+    clearSnapshot
+  } = useTTNSnapshot();
 
   // Preflight validation
   const validationResult: ValidationResult = useMemo(() => {
@@ -108,7 +122,34 @@ export default function TestContextConfig({
     });
     setSelectedUserSites([]);
     setSelectedUserDefaultSite(null);
+    clearSnapshot(); // Also clear TTN snapshot
   };
+  
+  // Fetch TTN snapshot when user is selected
+  const handleFetchTTNSnapshot = useCallback(async (userId: string, orgId?: string, siteId?: string) => {
+    const snapshot = await fetchSnapshot(userId, orgId, siteId);
+    if (snapshot) {
+      onTTNSnapshotChange?.(snapshot);
+      
+      // Auto-populate TTN config from snapshot
+      onConfigChange({
+        ...config,
+        ttnConfig: {
+          ...config.ttnConfig,
+          enabled: snapshot.ttn_enabled,
+          applicationId: snapshot.application_id,
+          cluster: snapshot.cluster,
+        },
+      });
+    }
+  }, [fetchSnapshot, config, onConfigChange, onTTNSnapshotChange]);
+  
+  // Refresh TTN snapshot
+  const handleRefreshSnapshot = useCallback(() => {
+    if (config.selectedUserId && config.testOrgId) {
+      handleFetchTTNSnapshot(config.selectedUserId, config.testOrgId, config.testSiteId);
+    }
+  }, [config.selectedUserId, config.testOrgId, config.testSiteId, handleFetchTTNSnapshot]);
 
   // Validation: require valid preflight + at least one entity
   const canSync = validationResult.isValid && (gateways.length > 0 || devices.length > 0);
@@ -380,6 +421,9 @@ export default function TestContextConfig({
                 selectedUserDisplayName: user.full_name || user.email || user.id,
                 contextSetAt: new Date().toISOString(),
               });
+              
+              // Fetch TTN snapshot for this user
+              handleFetchTTNSnapshot(user.id, user.organization_id, siteToSelect);
             }}
             disabled={disabled}
             cachedUserCount={cachedUserCount}
@@ -414,6 +458,18 @@ export default function TestContextConfig({
             Users sync automatically from FrostGuard via database trigger
           </p>
         </div>
+
+        {/* TTN Snapshot Panel - shows TTN settings from FrostGuard */}
+        <TTNSnapshotPanel
+          snapshot={ttnSnapshot}
+          loading={ttnSnapshotLoading}
+          error={ttnSnapshotError}
+          errorCode={ttnSnapshotErrorCode}
+          onRefresh={handleRefreshSnapshot}
+          selectedUserId={config.selectedUserId || undefined}
+          orgId={config.testOrgId}
+          siteId={config.testSiteId}
+        />
 
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
