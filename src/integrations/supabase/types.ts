@@ -44,39 +44,6 @@ export type Database = {
         }
         Relationships: []
       }
-      users_cache: {
-        Row: {
-          user_id: string
-          email: string | null
-          full_name: string | null
-          organization_id: string | null
-          site_id: string | null
-          unit_id: string | null
-          updated_at: string
-          synced_at: string
-        }
-        Insert: {
-          user_id: string
-          email?: string | null
-          full_name?: string | null
-          organization_id?: string | null
-          site_id?: string | null
-          unit_id?: string | null
-          updated_at: string
-          synced_at?: string
-        }
-        Update: {
-          user_id?: string
-          email?: string | null
-          full_name?: string | null
-          organization_id?: string | null
-          site_id?: string | null
-          unit_id?: string | null
-          updated_at?: string
-          synced_at?: string
-        }
-        Relationships: []
-      }
       sensor_readings: {
         Row: {
           battery_level: number | null
@@ -110,6 +77,39 @@ export type Database = {
           signal_strength?: number | null
           temperature?: number | null
           unit_id?: string | null
+        }
+        Relationships: []
+      }
+      users_cache: {
+        Row: {
+          email: string | null
+          full_name: string | null
+          organization_id: string | null
+          site_id: string | null
+          synced_at: string
+          unit_id: string | null
+          updated_at: string
+          user_id: string
+        }
+        Insert: {
+          email?: string | null
+          full_name?: string | null
+          organization_id?: string | null
+          site_id?: string | null
+          synced_at?: string
+          unit_id?: string | null
+          updated_at: string
+          user_id: string
+        }
+        Update: {
+          email?: string | null
+          full_name?: string | null
+          organization_id?: string | null
+          site_id?: string | null
+          synced_at?: string
+          unit_id?: string | null
+          updated_at?: string
+          user_id?: string
         }
         Relationships: []
       }
