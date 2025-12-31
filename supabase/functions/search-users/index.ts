@@ -52,12 +52,12 @@ serve(async (req) => {
       }
     }
 
-    console.log(`Searching users_cache for: "${searchTerm}" (limit: ${limit})`);
+    console.log(`Searching synced_users for: "${searchTerm}" (limit: ${limit})`);
 
-    // Build query against local users_cache table
+    // Build query against synced_users table
     let query = supabase
-      .from('users_cache')
-      .select('user_id, email, full_name, organization_id, site_id, unit_id')
+      .from('synced_users')
+      .select('source_user_id, email, full_name, source_organization_id, source_site_id, source_unit_id')
       .limit(limit);
 
     // Apply search filter if provided
@@ -67,7 +67,7 @@ serve(async (req) => {
     }
 
     // Order by most recently updated
-    query = query.order('updated_at', { ascending: false });
+    query = query.order('last_updated_at', { ascending: false });
 
     const { data: users, error } = await query;
 
@@ -79,20 +79,20 @@ serve(async (req) => {
       );
     }
 
-    // Map results to expected format (using 'id' instead of 'user_id' for frontend compatibility)
+    // Map results to expected format (using 'id' instead of 'source_user_id' for frontend compatibility)
     const mappedUsers = (users || []).map(user => ({
-      id: user.user_id,
+      id: user.source_user_id,
       email: user.email,
       full_name: user.full_name,
-      organization_id: user.organization_id,
-      site_id: user.site_id,
-      unit_id: user.unit_id,
+      organization_id: user.source_organization_id,
+      site_id: user.source_site_id,
+      unit_id: user.source_unit_id,
     }));
 
     console.log(`Found ${mappedUsers.length} users`);
 
     return new Response(
-      JSON.stringify({ success: true, users: mappedUsers, source: 'cache' }),
+      JSON.stringify({ success: true, users: mappedUsers, source: 'synced_users' }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 

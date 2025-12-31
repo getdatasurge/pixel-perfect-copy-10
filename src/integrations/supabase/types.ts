@@ -80,6 +80,45 @@ export type Database = {
         }
         Relationships: []
       }
+      synced_users: {
+        Row: {
+          created_at: string
+          email: string
+          full_name: string | null
+          id: string
+          last_updated_at: string
+          source_organization_id: string | null
+          source_site_id: string | null
+          source_unit_id: string | null
+          source_user_id: string
+          synced_at: string
+        }
+        Insert: {
+          created_at?: string
+          email: string
+          full_name?: string | null
+          id?: string
+          last_updated_at?: string
+          source_organization_id?: string | null
+          source_site_id?: string | null
+          source_unit_id?: string | null
+          source_user_id: string
+          synced_at?: string
+        }
+        Update: {
+          created_at?: string
+          email?: string
+          full_name?: string | null
+          id?: string
+          last_updated_at?: string
+          source_organization_id?: string | null
+          source_site_id?: string | null
+          source_unit_id?: string | null
+          source_user_id?: string
+          synced_at?: string
+        }
+        Relationships: []
+      }
       users_cache: {
         Row: {
           email: string | null
