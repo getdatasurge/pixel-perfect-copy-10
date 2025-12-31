@@ -83,6 +83,7 @@ export type Database = {
       synced_users: {
         Row: {
           created_at: string
+          default_site_id: string | null
           email: string
           full_name: string | null
           id: string
@@ -95,6 +96,7 @@ export type Database = {
         }
         Insert: {
           created_at?: string
+          default_site_id?: string | null
           email: string
           full_name?: string | null
           id?: string
@@ -107,6 +109,7 @@ export type Database = {
         }
         Update: {
           created_at?: string
+          default_site_id?: string | null
           email?: string
           full_name?: string | null
           id?: string
@@ -116,6 +119,36 @@ export type Database = {
           source_unit_id?: string | null
           source_user_id?: string
           synced_at?: string
+        }
+        Relationships: []
+      }
+      user_site_memberships: {
+        Row: {
+          created_at: string
+          id: string
+          is_default: boolean | null
+          site_id: string
+          site_name: string | null
+          source_user_id: string
+          updated_at: string
+        }
+        Insert: {
+          created_at?: string
+          id?: string
+          is_default?: boolean | null
+          site_id: string
+          site_name?: string | null
+          source_user_id: string
+          updated_at?: string
+        }
+        Update: {
+          created_at?: string
+          id?: string
+          is_default?: boolean | null
+          site_id?: string
+          site_name?: string | null
+          source_user_id?: string
+          updated_at?: string
         }
         Relationships: []
       }

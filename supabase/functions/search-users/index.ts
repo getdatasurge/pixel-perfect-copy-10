@@ -14,6 +14,12 @@ interface SearchRequest {
   limit?: number;
 }
 
+interface UserSiteMembership {
+  site_id: string;
+  site_name: string | null;
+  is_default: boolean;
+}
+
 serve(async (req) => {
   // Handle CORS preflight
   if (req.method === 'OPTIONS') {
@@ -57,7 +63,7 @@ serve(async (req) => {
     // Build query against synced_users table
     let query = supabase
       .from('synced_users')
-      .select('source_user_id, email, full_name, source_organization_id, source_site_id, source_unit_id')
+      .select('source_user_id, email, full_name, source_organization_id, source_site_id, source_unit_id, default_site_id')
       .limit(limit);
 
     // Apply search filter if provided
@@ -79,17 +85,47 @@ serve(async (req) => {
       );
     }
 
-    // Map results to expected format (using 'id' instead of 'source_user_id' for frontend compatibility)
+    // Fetch site memberships for all users found
+    const userIds = users?.map(u => u.source_user_id) || [];
+    let siteMemberships: Record<string, UserSiteMembership[]> = {};
+
+    if (userIds.length > 0) {
+      const { data: memberships, error: membershipError } = await supabase
+        .from('user_site_memberships')
+        .select('source_user_id, site_id, site_name, is_default')
+        .in('source_user_id', userIds);
+
+      if (membershipError) {
+        console.error('Error fetching site memberships:', membershipError);
+        // Continue without memberships - not a fatal error
+      } else if (memberships) {
+        // Group memberships by user_id
+        for (const m of memberships) {
+          if (!siteMemberships[m.source_user_id]) {
+            siteMemberships[m.source_user_id] = [];
+          }
+          siteMemberships[m.source_user_id].push({
+            site_id: m.site_id,
+            site_name: m.site_name,
+            is_default: m.is_default,
+          });
+        }
+      }
+    }
+
+    // Map results to expected format with user_sites array
     const mappedUsers = (users || []).map(user => ({
       id: user.source_user_id,
       email: user.email,
       full_name: user.full_name,
       organization_id: user.source_organization_id,
-      site_id: user.source_site_id,
+      site_id: user.source_site_id,  // Legacy single site
       unit_id: user.source_unit_id,
+      default_site_id: user.default_site_id,
+      user_sites: siteMemberships[user.source_user_id] || [],
     }));
 
-    console.log(`Found ${mappedUsers.length} users`);
+    console.log(`Found ${mappedUsers.length} users with site memberships`);
 
     return new Response(
       JSON.stringify({ success: true, users: mappedUsers, source: 'synced_users' }),
