@@ -4,23 +4,29 @@ import { Checkbox } from '@/components/ui/checkbox';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { AlertTriangle, Info, Radio } from 'lucide-react';
-import { LoRaWANDevice, TTNConfig, generateTTNDeviceId } from '@/lib/ttn-payload';
-import { StepStatus } from '../TTNProvisioningWizard';
+import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
+import { StepStatus, ProvisioningMode } from '../TTNProvisioningWizard';
 
 interface StepStrategyProps {
   selectedDevices: LoRaWANDevice[];
+  selectedGateways?: GatewayConfig[];
   ttnConfig?: TTNConfig;
   onConfirm: () => void;
   stepStatus: StepStatus;
+  mode?: ProvisioningMode;
 }
 
 export default function StepStrategy({
   selectedDevices,
+  selectedGateways = [],
   ttnConfig,
   onConfirm,
   stepStatus,
+  mode = 'devices',
 }: StepStrategyProps) {
   const [confirmed, setConfirmed] = useState(false);
+  const isGatewayMode = mode === 'gateways';
+  const items = isGatewayMode ? selectedGateways : selectedDevices;
 
   const getFrequencyPlan = () => {
     switch (ttnConfig?.cluster) {
