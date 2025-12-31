@@ -27,6 +27,8 @@ export default function StepStrategy({
   const [confirmed, setConfirmed] = useState(false);
   const isGatewayMode = mode === 'gateways';
   const items = isGatewayMode ? selectedGateways : selectedDevices;
+  const entityLabel = isGatewayMode ? 'gateway' : 'device';
+  const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
 
   const getFrequencyPlan = () => {
     switch (ttnConfig?.cluster) {
@@ -59,12 +61,12 @@ export default function StepStrategy({
         <CardContent className="space-y-4">
           <div className="grid grid-cols-2 gap-4 text-sm">
             <div>
-              <p className="text-muted-foreground">Devices to Register</p>
-              <p className="font-medium text-lg">{selectedDevices.length}</p>
+              <p className="text-muted-foreground">{isGatewayMode ? 'Gateways' : 'Devices'} to Register</p>
+              <p className="font-medium text-lg">{items.length}</p>
             </div>
             <div>
-              <p className="text-muted-foreground">Target Application</p>
-              <p className="font-medium">{ttnConfig?.applicationId}</p>
+              <p className="text-muted-foreground">{isGatewayMode ? 'Target Cluster' : 'Target Application'}</p>
+              <p className="font-medium">{isGatewayMode ? ttnConfig?.cluster : ttnConfig?.applicationId}</p>
             </div>
             <div>
               <p className="text-muted-foreground">Cluster</p>
@@ -77,27 +79,48 @@ export default function StepStrategy({
           </div>
 
           <div className="border-t pt-4">
-            <p className="text-sm font-medium mb-2">Device ID Format</p>
+            <p className="text-sm font-medium mb-2">{isGatewayMode ? 'Gateway' : 'Device'} ID Format</p>
             <div className="space-y-1">
-              {selectedDevices.slice(0, 3).map(device => {
-                let ttnDeviceId: string;
-                try {
-                  ttnDeviceId = generateTTNDeviceId(device.devEui);
-                } catch {
-                  ttnDeviceId = 'Invalid DevEUI';
-                }
-                return (
-                  <div key={device.id} className="flex items-center gap-2 text-sm">
-                    <span className="text-muted-foreground">{device.name}:</span>
-                    <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
-                      {ttnDeviceId}
-                    </code>
-                  </div>
-                );
-              })}
-              {selectedDevices.length > 3 && (
+              {isGatewayMode ? (
+                // Gateway IDs
+                selectedGateways.slice(0, 3).map(gateway => {
+                  let ttnGatewayId: string;
+                  try {
+                    ttnGatewayId = generateTTNGatewayId(gateway.eui);
+                  } catch {
+                    ttnGatewayId = 'Invalid EUI';
+                  }
+                  return (
+                    <div key={gateway.id} className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">{gateway.name}:</span>
+                      <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                        {ttnGatewayId}
+                      </code>
+                    </div>
+                  );
+                })
+              ) : (
+                // Device IDs
+                selectedDevices.slice(0, 3).map(device => {
+                  let ttnDeviceId: string;
+                  try {
+                    ttnDeviceId = generateTTNDeviceId(device.devEui);
+                  } catch {
+                    ttnDeviceId = 'Invalid DevEUI';
+                  }
+                  return (
+                    <div key={device.id} className="flex items-center gap-2 text-sm">
+                      <span className="text-muted-foreground">{device.name}:</span>
+                      <code className="bg-muted px-1.5 py-0.5 rounded text-xs">
+                        {ttnDeviceId}
+                      </code>
+                    </div>
+                  );
+                })
+              )}
+              {items.length > 3 && (
                 <p className="text-xs text-muted-foreground">
-                  ...and {selectedDevices.length - 3} more devices
+                  ...and {items.length - 3} more {entityLabelPlural}
                 </p>
               )}
             </div>
@@ -106,13 +129,23 @@ export default function StepStrategy({
           <div className="border-t pt-4">
             <p className="text-sm font-medium mb-2">Registration Details</p>
             <ul className="space-y-1 text-sm text-muted-foreground">
-              <li className="flex items-center gap-2">
-                <Badge variant="outline" className="text-xs">OTAA</Badge>
-                Over-The-Air Activation
-              </li>
-              <li>• LoRaWAN Version: 1.0.3</li>
-              <li>• PHY Version: 1.0.3-REV-A</li>
-              <li>• Supports Join: Yes</li>
+              {isGatewayMode ? (
+                <>
+                  <li>• Gateway Server: {ttnConfig?.cluster}.cloud.thethings.network</li>
+                  <li>• Frequency Plan: {getFrequencyPlan()}</li>
+                  <li>• Status/Location: Private</li>
+                </>
+              ) : (
+                <>
+                  <li className="flex items-center gap-2">
+                    <Badge variant="outline" className="text-xs">OTAA</Badge>
+                    Over-The-Air Activation
+                  </li>
+                  <li>• LoRaWAN Version: 1.0.3</li>
+                  <li>• PHY Version: 1.0.3-REV-A</li>
+                  <li>• Supports Join: Yes</li>
+                </>
+              )}
             </ul>
           </div>
         </CardContent>
@@ -123,9 +156,9 @@ export default function StepStrategy({
         <Info className="h-4 w-4" />
         <AlertDescription>
           <ul className="text-sm space-y-1 mt-1">
-            <li>• Devices already registered in TTN will be skipped (treated as success)</li>
-            <li>• AppKeys are sent securely server-side and never exposed in logs</li>
-            <li>• Registration is processed sequentially to avoid TTN rate limits</li>
+            <li>• {isGatewayMode ? 'Gateways' : 'Devices'} already registered in TTN will be skipped (treated as success)</li>
+            {!isGatewayMode && <li>• AppKeys are sent securely server-side and never exposed in logs</li>}
+            <li>• Registration is processed {isGatewayMode ? 'in batch' : 'sequentially'} to avoid TTN rate limits</li>
           </ul>
         </AlertDescription>
       </Alert>
@@ -133,8 +166,8 @@ export default function StepStrategy({
       <Alert variant="destructive" className="border-amber-500/50 bg-amber-50 dark:bg-amber-950/20">
         <AlertTriangle className="h-4 w-4 text-amber-600" />
         <AlertDescription className="text-amber-700 dark:text-amber-400">
-          <strong>Important:</strong> This action will register {selectedDevices.length} device(s) 
-          in your TTN application. Existing TTN entities will not be overwritten.
+          <strong>Important:</strong> This action will register {items.length} {entityLabel}(s) 
+          in your TTN {isGatewayMode ? 'account' : 'application'}. Existing TTN entities will not be overwritten.
         </AlertDescription>
       </Alert>
 
