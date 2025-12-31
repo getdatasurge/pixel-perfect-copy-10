@@ -2,20 +2,27 @@ import { Button } from '@/components/ui/button';
 import { Card, CardContent } from '@/components/ui/card';
 import { CheckCircle2, Play, Radio, ExternalLink } from 'lucide-react';
 import { TTNConfig } from '@/lib/ttn-payload';
-import { ProvisioningSummary } from '../TTNProvisioningWizard';
+import { ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
 
 interface StepCompletionProps {
   summary: ProvisioningSummary;
   ttnConfig?: TTNConfig;
   onComplete: () => void;
+  mode?: ProvisioningMode;
 }
 
 export default function StepCompletion({
   summary,
   ttnConfig,
   onComplete,
+  mode = 'devices',
 }: StepCompletionProps) {
-  const ttnConsoleUrl = `https://${ttnConfig?.cluster || 'eu1'}.cloud.thethings.network/console/applications/${ttnConfig?.applicationId}/devices`;
+  const isGatewayMode = mode === 'gateways';
+  const entityLabelPlural = isGatewayMode ? 'gateway(s)' : 'device(s)';
+  
+  const ttnConsoleUrl = isGatewayMode
+    ? `https://${ttnConfig?.cluster || 'eu1'}.cloud.thethings.network/console/gateways`
+    : `https://${ttnConfig?.cluster || 'eu1'}.cloud.thethings.network/console/applications/${ttnConfig?.applicationId}/devices`;
 
   const successCount = summary.created + summary.already_exists;
   const hasFailures = summary.failed > 0;
@@ -32,7 +39,7 @@ export default function StepCompletion({
             {hasFailures ? 'Provisioning Completed' : 'Provisioning Complete!'}
           </h3>
           <p className="text-muted-foreground mt-1">
-            {successCount} device(s) are now registered in TTN
+            {successCount} {entityLabelPlural} are now registered in TTN
             {hasFailures && ` (${summary.failed} failed)`}
           </p>
         </div>
@@ -45,33 +52,69 @@ export default function StepCompletion({
         </p>
 
         <div className="grid gap-3">
-          <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
-            <CardContent className="flex items-center gap-4 p-4">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                <Play className="h-5 w-5 text-primary" />
-              </div>
-              <div className="flex-1">
-                <p className="font-medium text-sm">Start Emulation</p>
-                <p className="text-xs text-muted-foreground">
-                  Begin sending sensor data through TTN
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+          {isGatewayMode ? (
+            // Gateway-specific next steps
+            <>
+              <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
+                <CardContent className="flex items-center gap-4 p-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Play className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">Configure Devices</p>
+                    <p className="text-xs text-muted-foreground">
+                      Add devices and route data through your gateways
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
 
-          <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
-            <CardContent className="flex items-center gap-4 p-4">
-              <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
-                <Radio className="h-5 w-5 text-primary" />
-              </div>
-              <div className="flex-1">
-                <p className="font-medium text-sm">Route Through TTN</p>
-                <p className="text-xs text-muted-foreground">
-                  Enable TTN routing in Webhook settings
-                </p>
-              </div>
-            </CardContent>
-          </Card>
+              <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
+                <CardContent className="flex items-center gap-4 p-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Radio className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">Test Gateway Connectivity</p>
+                    <p className="text-xs text-muted-foreground">
+                      Verify gateways are online in TTN Console
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          ) : (
+            // Device-specific next steps
+            <>
+              <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
+                <CardContent className="flex items-center gap-4 p-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Play className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">Start Emulation</p>
+                    <p className="text-xs text-muted-foreground">
+                      Begin sending sensor data through TTN
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+
+              <Card className="cursor-pointer hover:bg-muted/50 transition-colors">
+                <CardContent className="flex items-center gap-4 p-4">
+                  <div className="flex-shrink-0 w-10 h-10 rounded-full bg-primary/10 flex items-center justify-center">
+                    <Radio className="h-5 w-5 text-primary" />
+                  </div>
+                  <div className="flex-1">
+                    <p className="font-medium text-sm">Route Through TTN</p>
+                    <p className="text-xs text-muted-foreground">
+                      Enable TTN routing in Webhook settings
+                    </p>
+                  </div>
+                </CardContent>
+              </Card>
+            </>
+          )}
 
           <a
             href={ttnConsoleUrl}
@@ -87,7 +130,7 @@ export default function StepCompletion({
                 <div className="flex-1">
                   <p className="font-medium text-sm">View in TTN Console</p>
                   <p className="text-xs text-muted-foreground">
-                    Manage devices in The Things Network
+                    Manage {isGatewayMode ? 'gateways' : 'devices'} in The Things Network
                   </p>
                 </div>
               </CardContent>

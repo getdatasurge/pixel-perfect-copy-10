@@ -10,29 +10,41 @@ import {
   AlertCircle,
   ChevronDown,
   RefreshCw,
-  ExternalLink,
 } from 'lucide-react';
-import { ProvisionResult, ProvisioningSummary } from '../TTNProvisioningWizard';
+import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
 import { useState } from 'react';
 
 interface StepResultsProps {
   results: ProvisionResult[];
   summary: ProvisioningSummary;
   onRetryFailed: () => void;
+  mode?: ProvisioningMode;
 }
 
 export default function StepResults({
   results,
   summary,
   onRetryFailed,
+  mode = 'devices',
 }: StepResultsProps) {
   const [expandedErrors, setExpandedErrors] = useState<string[]>([]);
+  const isGatewayMode = mode === 'gateways';
+  const entityLabel = isGatewayMode ? 'gateway' : 'device';
+  const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
 
-  const toggleError = (devEui: string) => {
+  const getResultKey = (result: ProvisionResult) => {
+    return result.dev_eui || result.eui || result.name;
+  };
+
+  const getDisplayId = (result: ProvisionResult) => {
+    return isGatewayMode ? result.ttn_gateway_id : result.ttn_device_id;
+  };
+
+  const toggleError = (key: string) => {
     setExpandedErrors(prev =>
-      prev.includes(devEui)
-        ? prev.filter(e => e !== devEui)
-        : [...prev, devEui]
+      prev.includes(key)
+        ? prev.filter(e => e !== key)
+        : [...prev, key]
     );
   };
 
@@ -50,14 +62,14 @@ export default function StepResults({
         <Alert className="border-green-600/30 bg-green-50 dark:bg-green-950/20">
           <CheckCircle2 className="h-4 w-4 text-green-600" />
           <AlertDescription className="text-green-700 dark:text-green-400">
-            All devices provisioned successfully!
+            All {entityLabelPlural} provisioned successfully!
           </AlertDescription>
         </Alert>
       ) : partialSuccess ? (
         <Alert className="border-amber-500/50 bg-amber-50 dark:bg-amber-950/20">
           <AlertCircle className="h-4 w-4 text-amber-600" />
           <AlertDescription className="text-amber-700 dark:text-amber-400">
-            Provisioning completed with some failures. {summary.failed} device(s) failed.
+            Provisioning completed with some failures. {summary.failed} {entityLabel}(s) failed.
           </AlertDescription>
         </Alert>
       ) : (
@@ -91,14 +103,14 @@ export default function StepResults({
         </Card>
       </div>
 
-      {/* Failed devices with expandable errors */}
+      {/* Failed items with expandable errors */}
       {failedResults.length > 0 && (
         <Card className="border-destructive/30">
           <CardHeader className="pb-2">
             <CardTitle className="text-sm flex items-center justify-between">
               <span className="flex items-center gap-2">
                 <XCircle className="h-4 w-4 text-destructive" />
-                Failed Devices ({failedResults.length})
+                Failed {isGatewayMode ? 'Gateways' : 'Devices'} ({failedResults.length})
               </span>
               <Button
                 variant="outline"
@@ -114,30 +126,33 @@ export default function StepResults({
           <CardContent>
             <ScrollArea className="max-h-[150px]">
               <div className="space-y-2">
-                {failedResults.map(result => (
-                  <Collapsible
-                    key={result.dev_eui}
-                    open={expandedErrors.includes(result.dev_eui)}
-                    onOpenChange={() => toggleError(result.dev_eui)}
-                  >
-                    <CollapsibleTrigger className="w-full">
-                      <div className="flex items-center justify-between p-2 rounded bg-destructive/10 hover:bg-destructive/20 transition-colors">
-                        <div className="flex items-center gap-2">
-                          <span className="text-sm font-medium">{result.name}</span>
-                          <code className="text-xs text-muted-foreground">
-                            {result.ttn_device_id}
-                          </code>
+                {failedResults.map(result => {
+                  const key = getResultKey(result);
+                  return (
+                    <Collapsible
+                      key={key}
+                      open={expandedErrors.includes(key)}
+                      onOpenChange={() => toggleError(key)}
+                    >
+                      <CollapsibleTrigger className="w-full">
+                        <div className="flex items-center justify-between p-2 rounded bg-destructive/10 hover:bg-destructive/20 transition-colors">
+                          <div className="flex items-center gap-2">
+                            <span className="text-sm font-medium">{result.name}</span>
+                            <code className="text-xs text-muted-foreground">
+                              {getDisplayId(result)}
+                            </code>
+                          </div>
+                          <ChevronDown className="h-4 w-4 text-muted-foreground" />
                         </div>
-                        <ChevronDown className="h-4 w-4 text-muted-foreground" />
-                      </div>
-                    </CollapsibleTrigger>
-                    <CollapsibleContent>
-                      <div className="p-2 mt-1 text-sm text-destructive bg-destructive/5 rounded">
-                        {result.error || 'Unknown error'}
-                      </div>
-                    </CollapsibleContent>
-                  </Collapsible>
-                ))}
+                      </CollapsibleTrigger>
+                      <CollapsibleContent>
+                        <div className="p-2 mt-1 text-sm text-destructive bg-destructive/5 rounded">
+                          {result.error || 'Unknown error'}
+                        </div>
+                      </CollapsibleContent>
+                    </Collapsible>
+                  );
+                })}
               </div>
             </ScrollArea>
           </CardContent>
@@ -156,29 +171,32 @@ export default function StepResults({
           <CardContent>
             <ScrollArea className="max-h-[150px]">
               <div className="space-y-1">
-                {[...successResults, ...existingResults].map(result => (
-                  <div
-                    key={result.dev_eui}
-                    className="flex items-center justify-between p-2 rounded bg-muted/50 text-sm"
-                  >
-                    <div className="flex items-center gap-2">
-                      <span className="font-medium">{result.name}</span>
-                      <code className="text-xs text-muted-foreground">
-                        {result.ttn_device_id}
-                      </code>
-                    </div>
-                    <Badge
-                      variant="outline"
-                      className={
-                        result.status === 'created'
-                          ? 'text-green-600 border-green-600/30'
-                          : 'text-amber-600 border-amber-600/30'
-                      }
+                {[...successResults, ...existingResults].map(result => {
+                  const key = getResultKey(result);
+                  return (
+                    <div
+                      key={key}
+                      className="flex items-center justify-between p-2 rounded bg-muted/50 text-sm"
                     >
-                      {result.status === 'created' ? 'Created' : 'Existed'}
-                    </Badge>
-                  </div>
-                ))}
+                      <div className="flex items-center gap-2">
+                        <span className="font-medium">{result.name}</span>
+                        <code className="text-xs text-muted-foreground">
+                          {getDisplayId(result)}
+                        </code>
+                      </div>
+                      <Badge
+                        variant="outline"
+                        className={
+                          result.status === 'created'
+                            ? 'text-green-600 border-green-600/30'
+                            : 'text-amber-600 border-amber-600/30'
+                        }
+                      >
+                        {result.status === 'created' ? 'Created' : 'Existed'}
+                      </Badge>
+                    </div>
+                  );
+                })}
               </div>
             </ScrollArea>
           </CardContent>

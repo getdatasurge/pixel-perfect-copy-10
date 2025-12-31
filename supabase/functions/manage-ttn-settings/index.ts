@@ -13,7 +13,7 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device';
+  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway';
   org_id?: string;
   enabled?: boolean;
   cluster?: TTNCluster;
@@ -21,6 +21,7 @@ interface TTNSettingsRequest {
   api_key?: string;
   webhook_secret?: string;
   device_id?: string;
+  gateway_id?: string;
 }
 
 // Generate correlation ID for debugging
@@ -110,6 +111,9 @@ Deno.serve(async (req) => {
 
       case 'check_device':
         return await handleCheckDevice(body, requestId);
+
+      case 'check_gateway':
+        return await handleCheckGateway(supabaseAdmin, body, requestId);
 
       default:
         return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
@@ -566,6 +570,78 @@ async function handleCheckDevice(
       code: 'NETWORK_ERROR',
       exists: false,
       device_id,
+    }, 200, requestId);
+  }
+}
+
+// Check if gateway exists in TTN
+async function handleCheckGateway(
+  supabase: any,
+  body: TTNSettingsRequest,
+  requestId: string
+): Promise<Response> {
+  const { cluster, gateway_id, org_id } = body;
+
+  console.log(`[${requestId}] Checking gateway: cluster=${cluster}, gateway=${gateway_id}`);
+
+  if (!cluster || !gateway_id) {
+    return buildResponse({
+      ok: false,
+      error: 'Missing required fields: cluster, gateway_id',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  // Load API key from settings
+  let apiKey: string | null = null;
+  if (org_id) {
+    const { data } = await supabase
+      .from('ttn_settings')
+      .select('api_key')
+      .eq('org_id', org_id)
+      .maybeSingle();
+    apiKey = data?.api_key || null;
+  }
+  apiKey = apiKey || Deno.env.get('TTN_API_KEY') || null;
+
+  if (!apiKey) {
+    return buildResponse({
+      ok: false,
+      error: 'No API key configured',
+      code: 'NO_API_KEY',
+    }, 200, requestId);
+  }
+
+  const baseUrl = getBaseUrl(cluster);
+  const checkUrl = `${baseUrl}/api/v3/gateways/${gateway_id}`;
+
+  try {
+    const response = await fetch(checkUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    const exists = response.status === 200;
+    console.log(`[${requestId}] Gateway check result: status=${response.status}, exists=${exists}`);
+
+    return buildResponse({
+      ok: true,
+      exists,
+      gateway_id,
+      status: response.status,
+    }, 200, requestId);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[${requestId}] Gateway check error:`, errorMsg);
+    return buildResponse({
+      ok: false,
+      error: `Network error: ${errorMsg}`,
+      code: 'NETWORK_ERROR',
+      exists: false,
+      gateway_id,
     }, 200, requestId);
   }
 }

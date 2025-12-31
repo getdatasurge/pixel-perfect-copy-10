@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useState } from 'react';
 import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
@@ -37,12 +37,14 @@ export default function StepExecution({
   setSummary,
   mode = 'devices',
 }: StepExecutionProps) {
-  const [currentDevice, setCurrentDevice] = useState<string | null>(null);
+  const [currentItem, setCurrentItem] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
   const isGatewayMode = mode === 'gateways';
   const items = isGatewayMode ? gateways : devices;
+  const entityLabel = isGatewayMode ? 'gateway' : 'device';
+  const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
 
-  const startProvisioning = async () => {
+  const startDeviceProvisioning = async () => {
     setIsExecuting(true);
     setHasStarted(true);
     setResults([]);
@@ -57,7 +59,7 @@ export default function StepExecution({
 
     for (let i = 0; i < devices.length; i++) {
       const device = devices[i];
-      setCurrentDevice(device.name);
+      setCurrentItem(device.name);
       setProgress(Math.round((i / devices.length) * 100));
 
       let ttnDeviceId: string;
@@ -128,9 +130,102 @@ export default function StepExecution({
     }
 
     setProgress(100);
-    setCurrentDevice(null);
+    setCurrentItem(null);
     setIsExecuting(false);
     setSummary(summary);
+  };
+
+  const startGatewayProvisioning = async () => {
+    setIsExecuting(true);
+    setHasStarted(true);
+    setResults([]);
+    setProgress(0);
+
+    const summary: ProvisioningSummary = {
+      created: 0,
+      already_exists: 0,
+      failed: 0,
+      total: gateways.length,
+    };
+
+    setProgress(10); // Show initial progress
+
+    try {
+      // Call the batch gateway registration endpoint
+      const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
+        body: {
+          org_id: orgId,
+          gateways: gateways.map(g => ({
+            eui: g.eui,
+            name: g.name,
+            is_online: g.isOnline,
+          })),
+        },
+      });
+
+      if (error) throw error;
+
+      setProgress(80);
+
+      // Process results
+      if (data?.results) {
+        for (const resultItem of data.results) {
+          const gateway = gateways.find(g => g.eui.toLowerCase().replace(/[^a-f0-9]/gi, '') === resultItem.eui?.toLowerCase());
+          const result: ProvisionResult = {
+            eui: resultItem.eui,
+            name: gateway?.name || resultItem.eui,
+            ttn_gateway_id: resultItem.ttn_gateway_id,
+            status: resultItem.status,
+            error: resultItem.error,
+          };
+          setResults(prev => [...prev, result]);
+
+          if (resultItem.status === 'created') summary.created++;
+          else if (resultItem.status === 'already_exists') summary.already_exists++;
+          else summary.failed++;
+        }
+      }
+
+      // Use summary from response if available
+      if (data?.summary) {
+        summary.created = data.summary.created || 0;
+        summary.already_exists = data.summary.already_exists || 0;
+        summary.failed = data.summary.failed || 0;
+      }
+    } catch (err: any) {
+      console.error('Gateway batch provision error:', err);
+      // Mark all gateways as failed
+      for (const gateway of gateways) {
+        let ttnGatewayId: string;
+        try {
+          ttnGatewayId = generateTTNGatewayId(gateway.eui);
+        } catch {
+          ttnGatewayId = 'invalid';
+        }
+        const result: ProvisionResult = {
+          eui: gateway.eui,
+          name: gateway.name,
+          ttn_gateway_id: ttnGatewayId,
+          status: 'failed',
+          error: err.message || 'Batch registration failed',
+        };
+        setResults(prev => [...prev, result]);
+        summary.failed++;
+      }
+    }
+
+    setProgress(100);
+    setCurrentItem(null);
+    setIsExecuting(false);
+    setSummary(summary);
+  };
+
+  const startProvisioning = async () => {
+    if (isGatewayMode) {
+      await startGatewayProvisioning();
+    } else {
+      await startDeviceProvisioning();
+    }
   };
 
   const getStatusIcon = (status: ProvisionResult['status']) => {
@@ -155,6 +250,10 @@ export default function StepExecution({
     }
   };
 
+  const getDisplayId = (result: ProvisionResult) => {
+    return isGatewayMode ? result.ttn_gateway_id : result.ttn_device_id;
+  };
+
   return (
     <div className="space-y-4">
       {/* Progress section */}
@@ -166,7 +265,7 @@ export default function StepExecution({
           <div>
             <p className="font-medium">Ready to Provision</p>
             <p className="text-sm text-muted-foreground">
-              {devices.length} device(s) will be registered in TTN
+              {items.length} {entityLabel}(s) will be registered in TTN
             </p>
           </div>
           <Button onClick={startProvisioning} className="gap-2">
@@ -180,7 +279,7 @@ export default function StepExecution({
             <div className="flex items-center justify-between text-sm">
               <span className="text-muted-foreground">
                 {isExecuting ? (
-                  <>Registering: {currentDevice}</>
+                  <>Registering{currentItem ? `: ${currentItem}` : '...'}</>
                 ) : (
                   <>Provisioning complete</>
                 )}
@@ -189,7 +288,7 @@ export default function StepExecution({
             </div>
             <Progress value={progress} className="h-2" />
             <p className="text-xs text-muted-foreground text-center">
-              {results.length} of {devices.length} devices processed
+              {results.length} of {items.length} {entityLabelPlural} processed
             </p>
           </div>
 
@@ -206,7 +305,7 @@ export default function StepExecution({
                     <div>
                       <p className="text-sm font-medium">{result.name}</p>
                       <code className="text-xs text-muted-foreground">
-                        {result.ttn_device_id}
+                        {getDisplayId(result)}
                       </code>
                     </div>
                   </div>
@@ -221,11 +320,11 @@ export default function StepExecution({
                 </div>
               ))}
               
-              {isExecuting && currentDevice && (
+              {isExecuting && currentItem && (
                 <div className="flex items-center gap-3 p-2 rounded bg-muted/50 animate-pulse">
                   <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
                   <div>
-                    <p className="text-sm font-medium">{currentDevice}</p>
+                    <p className="text-sm font-medium">{currentItem}</p>
                     <p className="text-xs text-muted-foreground">Registering...</p>
                   </div>
                 </div>

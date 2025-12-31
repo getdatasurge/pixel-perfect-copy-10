@@ -58,27 +58,54 @@ export default function StepDiscovery({
     }
   };
 
-  const checkAllDevices = async () => {
+  const checkGatewayStatus = async (gateway: GatewayConfig): Promise<'registered' | 'not_registered' | 'error'> => {
+    try {
+      const ttnGatewayId = generateTTNGatewayId(gateway.eui);
+      
+      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'check_gateway',
+          cluster: ttnConfig?.cluster,
+          gateway_id: ttnGatewayId,
+        },
+      });
+
+      if (error) {
+        console.error('Gateway check error:', error);
+        return 'error';
+      }
+
+      return data?.exists ? 'registered' : 'not_registered';
+    } catch (err) {
+      console.error('Gateway check failed:', err);
+      return 'error';
+    }
+  };
+
+  const checkAllItems = async () => {
     setIsChecking(true);
     
     // Mark all as checking
     const checkingStatuses: Record<string, 'checking'> = {};
-    devices.forEach(d => {
-      checkingStatuses[d.id] = 'checking';
+    items.forEach(item => {
+      checkingStatuses[item.id] = 'checking';
     });
     setDeviceStatuses(checkingStatuses);
 
-    // Check each device
+    // Check each item
     const newStatuses: Record<string, 'registered' | 'not_registered' | 'error'> = {};
     const newSelected: string[] = [];
 
-    for (const device of devices) {
-      const status = await checkDeviceStatus(device);
-      newStatuses[device.id] = status;
+    for (const item of items) {
+      const status = isGatewayMode 
+        ? await checkGatewayStatus(item as GatewayConfig)
+        : await checkDeviceStatus(item as LoRaWANDevice);
       
-      // Auto-select unregistered devices
+      newStatuses[item.id] = status;
+      
+      // Auto-select unregistered items
       if (status === 'not_registered') {
-        newSelected.push(device.id);
+        newSelected.push(item.id);
       }
     }
 
@@ -88,23 +115,23 @@ export default function StepDiscovery({
   };
 
   useEffect(() => {
-    if (Object.keys(deviceStatuses).length === 0 && devices.length > 0) {
-      checkAllDevices();
+    if (Object.keys(deviceStatuses).length === 0 && items.length > 0) {
+      checkAllItems();
     }
   }, []);
 
-  const toggleDevice = (deviceId: string) => {
+  const toggleItem = (itemId: string) => {
     setSelectedDevices(prev =>
-      prev.includes(deviceId)
-        ? prev.filter(id => id !== deviceId)
-        : [...prev, deviceId]
+      prev.includes(itemId)
+        ? prev.filter(id => id !== itemId)
+        : [...prev, itemId]
     );
   };
 
   const selectAllUnregistered = () => {
-    const unregistered = devices
-      .filter(d => deviceStatuses[d.id] === 'not_registered')
-      .map(d => d.id);
+    const unregistered = items
+      .filter(item => deviceStatuses[item.id] === 'not_registered')
+      .map(item => item.id);
     setSelectedDevices(unregistered);
   };
 
@@ -147,15 +174,17 @@ export default function StepDiscovery({
     }
   };
 
-  const unregisteredCount = devices.filter(d => deviceStatuses[d.id] === 'not_registered').length;
-  const registeredCount = devices.filter(d => deviceStatuses[d.id] === 'registered').length;
+  const unregisteredCount = items.filter(item => deviceStatuses[item.id] === 'not_registered').length;
+  const registeredCount = items.filter(item => deviceStatuses[item.id] === 'registered').length;
+  const entityLabel = isGatewayMode ? 'Gateway' : 'Device';
+  const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
 
   return (
     <div className="space-y-4">
       {/* Summary and actions */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
-          <p className="text-sm font-medium">Device Status</p>
+          <p className="text-sm font-medium">{entityLabel} Status</p>
           <p className="text-xs text-muted-foreground">
             {registeredCount} registered, {unregisteredCount} not registered, {selectedDevices.length} selected
           </p>
@@ -180,7 +209,7 @@ export default function StepDiscovery({
           <Button
             variant="outline"
             size="sm"
-            onClick={checkAllDevices}
+            onClick={checkAllItems}
             disabled={isChecking}
           >
             {isChecking ? (
@@ -192,67 +221,111 @@ export default function StepDiscovery({
         </div>
       </div>
 
-      {/* Devices table */}
+      {/* Items table */}
       <div className="border rounded-lg overflow-hidden">
         <Table>
           <TableHeader>
             <TableRow>
               <TableHead className="w-12"></TableHead>
-              <TableHead>Device</TableHead>
-              <TableHead>Type</TableHead>
-              <TableHead>TTN Device ID</TableHead>
+              <TableHead>{entityLabel}</TableHead>
+              {!isGatewayMode && <TableHead>Type</TableHead>}
+              <TableHead>TTN {entityLabel} ID</TableHead>
               <TableHead className="text-right">Status</TableHead>
             </TableRow>
           </TableHeader>
           <TableBody>
-            {devices.map(device => {
-              const status = deviceStatuses[device.id];
-              const isSelected = selectedDevices.includes(device.id);
-              const isDisabled = status === 'registered' || status === 'checking';
-              let ttnDeviceId: string;
-              try {
-                ttnDeviceId = generateTTNDeviceId(device.devEui);
-              } catch {
-                ttnDeviceId = 'Invalid DevEUI';
-              }
+            {isGatewayMode ? (
+              // Gateway rows
+              gateways.map(gateway => {
+                const status = deviceStatuses[gateway.id];
+                const isSelected = selectedDevices.includes(gateway.id);
+                const isDisabled = status === 'registered' || status === 'checking';
+                let ttnGatewayId: string;
+                try {
+                  ttnGatewayId = generateTTNGatewayId(gateway.eui);
+                } catch {
+                  ttnGatewayId = 'Invalid EUI';
+                }
 
-              return (
-                <TableRow key={device.id} className={isDisabled ? 'opacity-60' : ''}>
-                  <TableCell>
-                    <Checkbox
-                      checked={isSelected}
-                      onCheckedChange={() => toggleDevice(device.id)}
-                      disabled={isDisabled}
-                    />
-                  </TableCell>
-                  <TableCell>
-                    <div>
-                      <p className="font-medium text-sm">{device.name}</p>
-                      <p className="text-xs text-muted-foreground font-mono">
-                        {device.devEui.substring(0, 8)}...
-                      </p>
-                    </div>
-                  </TableCell>
-                  <TableCell>
-                    <Badge variant="secondary" className="capitalize">
-                      {device.type}
-                    </Badge>
-                  </TableCell>
-                  <TableCell>
-                    <code className="text-xs bg-muted px-1 py-0.5 rounded">
-                      {ttnDeviceId}
-                    </code>
-                  </TableCell>
-                  <TableCell className="text-right">
-                    {getStatusBadge(status)}
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-            {devices.length === 0 && (
+                return (
+                  <TableRow key={gateway.id} className={isDisabled ? 'opacity-60' : ''}>
+                    <TableCell>
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleItem(gateway.id)}
+                        disabled={isDisabled}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-sm">{gateway.name}</p>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {gateway.eui.substring(0, 8)}...
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                        {ttnGatewayId}
+                      </code>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {getStatusBadge(status)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            ) : (
+              // Device rows
+              devices.map(device => {
+                const status = deviceStatuses[device.id];
+                const isSelected = selectedDevices.includes(device.id);
+                const isDisabled = status === 'registered' || status === 'checking';
+                let ttnDeviceId: string;
+                try {
+                  ttnDeviceId = generateTTNDeviceId(device.devEui);
+                } catch {
+                  ttnDeviceId = 'Invalid DevEUI';
+                }
+
+                return (
+                  <TableRow key={device.id} className={isDisabled ? 'opacity-60' : ''}>
+                    <TableCell>
+                      <Checkbox
+                        checked={isSelected}
+                        onCheckedChange={() => toggleItem(device.id)}
+                        disabled={isDisabled}
+                      />
+                    </TableCell>
+                    <TableCell>
+                      <div>
+                        <p className="font-medium text-sm">{device.name}</p>
+                        <p className="text-xs text-muted-foreground font-mono">
+                          {device.devEui.substring(0, 8)}...
+                        </p>
+                      </div>
+                    </TableCell>
+                    <TableCell>
+                      <Badge variant="secondary" className="capitalize">
+                        {device.type}
+                      </Badge>
+                    </TableCell>
+                    <TableCell>
+                      <code className="text-xs bg-muted px-1 py-0.5 rounded">
+                        {ttnDeviceId}
+                      </code>
+                    </TableCell>
+                    <TableCell className="text-right">
+                      {getStatusBadge(status)}
+                    </TableCell>
+                  </TableRow>
+                );
+              })
+            )}
+            {items.length === 0 && (
               <TableRow>
-                <TableCell colSpan={5} className="text-center py-8 text-muted-foreground">
-                  No devices configured. Add devices in the Devices tab first.
+                <TableCell colSpan={isGatewayMode ? 4 : 5} className="text-center py-8 text-muted-foreground">
+                  No {entityLabelPlural} configured. Add {entityLabelPlural} in the {isGatewayMode ? 'Gateways' : 'Devices'} tab first.
                 </TableCell>
               </TableRow>
             )}
@@ -260,9 +333,9 @@ export default function StepDiscovery({
         </Table>
       </div>
 
-      {selectedDevices.length === 0 && devices.length > 0 && (
+      {selectedDevices.length === 0 && items.length > 0 && (
         <p className="text-sm text-amber-600 text-center">
-          Select at least one device to provision
+          Select at least one {entityLabel.toLowerCase()} to provision
         </p>
       )}
     </div>

@@ -271,22 +271,33 @@ export default function TTNProvisioningWizard({
             />
           )}
 
-          {currentStep === 5 && (
+{currentStep === 5 && (
             <StepResults
               results={provisionResults}
               summary={provisionSummary}
               onRetryFailed={() => {
-                // Filter to only failed devices and go back to execution
-                const failedDevEuis = provisionResults
-                  .filter(r => r.status === 'failed')
-                  .map(r => r.dev_eui);
-                const failedDeviceIds = devices
-                  .filter(d => failedDevEuis.includes(d.devEui))
-                  .map(d => d.id);
-                setSelectedDevices(failedDeviceIds);
+                // Filter to only failed items and go back to execution
+                if (isGatewayMode) {
+                  const failedEuis = provisionResults
+                    .filter(r => r.status === 'failed')
+                    .map(r => r.eui);
+                  const failedGatewayIds = gateways
+                    .filter(g => failedEuis.includes(g.eui))
+                    .map(g => g.id);
+                  setSelectedDevices(failedGatewayIds);
+                } else {
+                  const failedDevEuis = provisionResults
+                    .filter(r => r.status === 'failed')
+                    .map(r => r.dev_eui);
+                  const failedDeviceIds = devices
+                    .filter(d => failedDevEuis.includes(d.devEui))
+                    .map(d => d.id);
+                  setSelectedDevices(failedDeviceIds);
+                }
                 setProvisionResults([]);
                 goToStep(4);
               }}
+              mode={mode}
             />
           )}
 
@@ -295,6 +306,7 @@ export default function TTNProvisioningWizard({
               summary={provisionSummary}
               ttnConfig={ttnConfig}
               onComplete={handleComplete}
+              mode={mode}
             />
           )}
         </div>
