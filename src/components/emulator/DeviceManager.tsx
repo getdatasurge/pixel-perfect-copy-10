@@ -33,7 +33,7 @@ export default function DeviceManager({
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
 
-  const canSync = webhookConfig?.testOrgId && webhookConfig?.frostguardApiUrl;
+  const canSync = !!webhookConfig?.testOrgId;
 
   const addDevice = (type: 'temperature' | 'door') => {
     const defaultGateway = gateways[0]?.id || '';
@@ -111,10 +111,10 @@ export default function DeviceManager({
   };
 
   const syncDevice = async (device: LoRaWANDevice) => {
-    if (!webhookConfig?.testOrgId || !webhookConfig?.frostguardApiUrl) {
+    if (!webhookConfig?.testOrgId) {
       toast({ 
         title: 'Configure Test Context', 
-        description: 'Set Organization ID and FrostGuard API URL in the Testing tab first', 
+        description: 'Set Organization ID in the Testing tab first', 
         variant: 'destructive' 
       });
       return;
@@ -124,17 +124,28 @@ export default function DeviceManager({
     try {
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
         body: {
-          sensors: [{
-            id: device.id,
-            name: device.name,
-            devEui: device.devEui,
-            type: device.type,
-            gatewayId: device.gatewayId,
-          }],
-          orgId: webhookConfig.testOrgId,
-          siteId: webhookConfig.testSiteId,
-          unitId: webhookConfig.testUnitId,
-          frostguardApiUrl: webhookConfig.frostguardApiUrl,
+          metadata: {
+            sync_run_id: crypto.randomUUID(),
+            initiated_at: new Date().toISOString(),
+            source_project: 'pixel-perfect-copy-10',
+          },
+          context: {
+            org_id: webhookConfig.testOrgId,
+            site_id: webhookConfig.testSiteId,
+            unit_id_override: webhookConfig.testUnitId,
+          },
+          entities: {
+            gateways: [],
+            devices: [{
+              id: device.id,
+              name: device.name,
+              dev_eui: device.devEui,
+              join_eui: device.joinEui,
+              app_key: device.appKey,
+              type: device.type,
+              gateway_id: device.gatewayId,
+            }],
+          },
         },
       });
 
@@ -182,7 +193,7 @@ export default function DeviceManager({
               </span>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Set Organization ID and FrostGuard API URL in Testing tab to sync</p>
+              <p>Set Organization ID in Testing tab to sync</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>

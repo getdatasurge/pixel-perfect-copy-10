@@ -3,7 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
+import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -52,16 +52,6 @@ export default function TestContextConfig({
     fetchUserCount();
   }, []);
 
-  // Normalize saved URL on initial load
-  useEffect(() => {
-    if (config.frostguardApiUrl?.includes('/functions/')) {
-      const match = config.frostguardApiUrl.match(/^(https?:\/\/[^\/]+)/);
-      if (match && match[1] !== config.frostguardApiUrl) {
-        onConfigChange({ ...config, frostguardApiUrl: match[1] });
-      }
-    }
-  }, []); // Run once on mount
-
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
     // Reset sync state when inputs change
@@ -69,18 +59,6 @@ export default function TestContextConfig({
     setLastSyncSummary(null);
     // Clear sync run ID so next sync gets a new one
     setCurrentSyncRunId(null);
-  };
-
-  // Normalize FrostGuard URL - extract base URL if edge function URL is pasted
-  const handleFrostguardUrlChange = (value: string) => {
-    let normalizedUrl = value;
-    if (value.includes('/functions/')) {
-      const match = value.match(/^(https?:\/\/[^\/]+)/);
-      if (match) {
-        normalizedUrl = match[1];
-      }
-    }
-    update({ frostguardApiUrl: normalizedUrl || undefined });
   };
 
   // Clear selected user tracking (keeps input values)
@@ -92,8 +70,8 @@ export default function TestContextConfig({
     });
   };
 
-  // Validation: require both org_id and site_id for sync
-  const canSync = config.testOrgId && config.testSiteId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
+  // Validation: require org_id for sync, site_id is optional
+  const canSync = config.testOrgId && (gateways.length > 0 || devices.length > 0);
 
   const buildSyncBundle = (syncRunId: string): SyncBundle => {
     return {
@@ -104,7 +82,7 @@ export default function TestContextConfig({
       },
       context: {
         org_id: config.testOrgId!,
-        site_id: config.testSiteId!,
+        site_id: config.testSiteId || undefined,
         unit_id_override: config.testUnitId,
         selected_user_id: config.selectedUserId || undefined,
       },
@@ -125,16 +103,14 @@ export default function TestContextConfig({
           gateway_id: d.gatewayId,
         })),
       },
-      // Include fallback URL for direct writes if endpoint fails
-      frostguardApiUrl: config.frostguardApiUrl,
     };
   };
 
   const syncAll = async () => {
-    if (!config.testOrgId || !config.testSiteId || !config.frostguardApiUrl) {
+    if (!config.testOrgId) {
       toast({ 
         title: 'Missing Configuration', 
-        description: 'Organization ID, Site ID, and FrostGuard API URL are required', 
+        description: 'Organization ID is required', 
         variant: 'destructive' 
       });
       return;
@@ -376,24 +352,8 @@ export default function TestContextConfig({
           </div>
         </div>
 
-        <div className="border-t pt-4">
-          <div className="space-y-2">
-            <Label htmlFor="frostguardApiUrl" className="flex items-center gap-1">
-              <ExternalLink className="h-3 w-3" />
-              FrostGuard Supabase URL
-            </Label>
-            <Input
-              id="frostguardApiUrl"
-              placeholder="https://project-id.supabase.co"
-              value={config.frostguardApiUrl || ''}
-              onChange={e => handleFrostguardUrlChange(e.target.value)}
-              disabled={disabled}
-            />
-            <p className="text-xs text-muted-foreground">
-              Base Supabase URL (not edge function URL)
-            </p>
-          </div>
-        </div>
+
+
 
         {(config.testOrgId || config.testSiteId) && (
           <div className="bg-primary/5 border border-primary/20 rounded-lg p-3">
@@ -475,11 +435,12 @@ export default function TestContextConfig({
             <p className="text-xs text-muted-foreground mt-2">
               {!config.testOrgId 
                 ? 'Set Organization ID to enable sync'
-                : !config.testSiteId
-                ? 'Set Site ID to enable sync'
-                : !config.frostguardApiUrl 
-                ? 'Set FrostGuard API URL to enable sync'
                 : 'Add gateways or devices to sync'}
+            </p>
+          )}
+          {canSync && !config.testSiteId && !disabled && (
+            <p className="text-xs text-yellow-600 mt-2">
+              ⚠ Site ID not set - sync will use org-level context only
             </p>
           )}
         </div>

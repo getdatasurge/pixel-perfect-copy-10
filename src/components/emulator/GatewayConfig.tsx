@@ -23,7 +23,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
 
-  const canSync = webhookConfig?.testOrgId && webhookConfig?.frostguardApiUrl;
+  const canSync = !!webhookConfig?.testOrgId;
 
   const addGateway = () => {
     const newGateway = createGateway(`Gateway ${gateways.length + 1}`);
@@ -58,10 +58,10 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
   };
 
   const syncGateway = async (gateway: GatewayConfigType) => {
-    if (!webhookConfig?.testOrgId || !webhookConfig?.frostguardApiUrl) {
+    if (!webhookConfig?.testOrgId) {
       toast({ 
         title: 'Configure Test Context', 
-        description: 'Set Organization ID and FrostGuard API URL in the Testing tab first', 
+        description: 'Set Organization ID in the Testing tab first', 
         variant: 'destructive' 
       });
       return;
@@ -71,10 +71,24 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
     try {
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
         body: {
-          gateways: [gateway],
-          orgId: webhookConfig.testOrgId,
-          siteId: webhookConfig.testSiteId,
-          frostguardApiUrl: webhookConfig.frostguardApiUrl,
+          metadata: {
+            sync_run_id: crypto.randomUUID(),
+            initiated_at: new Date().toISOString(),
+            source_project: 'pixel-perfect-copy-10',
+          },
+          context: {
+            org_id: webhookConfig.testOrgId,
+            site_id: webhookConfig.testSiteId,
+          },
+          entities: {
+            gateways: [{
+              id: gateway.id,
+              name: gateway.name,
+              eui: gateway.eui,
+              is_online: gateway.isOnline,
+            }],
+            devices: [],
+          },
         },
       });
 
@@ -107,7 +121,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
               </span>
             </TooltipTrigger>
             <TooltipContent>
-              <p>Set Organization ID and FrostGuard API URL in Testing tab to sync</p>
+              <p>Set Organization ID in Testing tab to sync</p>
             </TooltipContent>
           </Tooltip>
         </TooltipProvider>
