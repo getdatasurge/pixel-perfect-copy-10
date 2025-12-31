@@ -3,7 +3,7 @@ import { Button } from '@/components/ui/button';
 import { Progress } from '@/components/ui/progress';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Loader2, CheckCircle2, XCircle, AlertCircle, Play } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, AlertCircle, Play, RefreshCw } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
 import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
@@ -39,6 +39,8 @@ export default function StepExecution({
 }: StepExecutionProps) {
   const [currentItem, setCurrentItem] = useState<string | null>(null);
   const [hasStarted, setHasStarted] = useState(false);
+  const [retryingItem, setRetryingItem] = useState<string | null>(null);
+  
   const isGatewayMode = mode === 'gateways';
   const items = isGatewayMode ? gateways : devices;
   const entityLabel = isGatewayMode ? 'gateway' : 'device';
@@ -73,6 +75,8 @@ export default function StepExecution({
           ttn_device_id: 'invalid',
           status: 'failed',
           error: 'Invalid DevEUI format',
+          error_code: 'INVALID_EUI',
+          retryable: false,
         };
         setResults(prev => [...prev, result]);
         summary.failed++;
@@ -102,6 +106,9 @@ export default function StepExecution({
             ttn_device_id: resultItem.ttn_device_id || ttnDeviceId,
             status: resultItem.status,
             error: resultItem.error,
+            error_code: resultItem.error_code,
+            retryable: resultItem.retryable ?? true,
+            attempts: resultItem.attempts,
           };
           setResults(prev => [...prev, result]);
 
@@ -118,6 +125,8 @@ export default function StepExecution({
           ttn_device_id: ttnDeviceId,
           status: 'failed',
           error: err.message || 'Unknown error',
+          error_code: 'NETWORK_ERROR',
+          retryable: true,
         };
         setResults(prev => [...prev, result]);
         summary.failed++;
@@ -148,54 +157,48 @@ export default function StepExecution({
       total: gateways.length,
     };
 
-    setProgress(10); // Show initial progress
+    // Process gateways one by one for granular progress
+    for (let i = 0; i < gateways.length; i++) {
+      const gateway = gateways[i];
+      setCurrentItem(gateway.name);
+      setProgress(Math.round((i / gateways.length) * 100));
 
-    try {
-      // Call the batch gateway registration endpoint
-      const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
-        body: {
-          org_id: orgId,
-          gateways: gateways.map(g => ({
-            eui: g.eui,
-            name: g.name,
-            is_online: g.isOnline,
-          })),
-        },
-      });
+      try {
+        // Call batch endpoint with single gateway for better error handling
+        const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
+          body: {
+            org_id: orgId,
+            gateways: [{
+              eui: gateway.eui,
+              name: gateway.name,
+              is_online: gateway.isOnline,
+            }],
+          },
+        });
 
-      if (error) throw error;
+        if (error) throw error;
 
-      setProgress(80);
-
-      // Process results
-      if (data?.results) {
-        for (const resultItem of data.results) {
-          const gateway = gateways.find(g => g.eui.toLowerCase().replace(/[^a-f0-9]/gi, '') === resultItem.eui?.toLowerCase());
+        if (data?.results?.[0]) {
+          const resultItem = data.results[0];
           const result: ProvisionResult = {
-            eui: resultItem.eui,
-            name: gateway?.name || resultItem.eui,
+            eui: gateway.eui,
+            name: gateway.name,
             ttn_gateway_id: resultItem.ttn_gateway_id,
             status: resultItem.status,
             error: resultItem.error,
+            error_code: resultItem.error_code,
+            retryable: resultItem.retryable,
+            attempts: resultItem.attempts,
           };
           setResults(prev => [...prev, result]);
 
           if (resultItem.status === 'created') summary.created++;
           else if (resultItem.status === 'already_exists') summary.already_exists++;
           else summary.failed++;
+        } else {
+          throw new Error('Unexpected response format');
         }
-      }
-
-      // Use summary from response if available
-      if (data?.summary) {
-        summary.created = data.summary.created || 0;
-        summary.already_exists = data.summary.already_exists || 0;
-        summary.failed = data.summary.failed || 0;
-      }
-    } catch (err: any) {
-      console.error('Gateway batch provision error:', err);
-      // Mark all gateways as failed
-      for (const gateway of gateways) {
+      } catch (err: any) {
         let ttnGatewayId: string;
         try {
           ttnGatewayId = generateTTNGatewayId(gateway.eui);
@@ -207,10 +210,17 @@ export default function StepExecution({
           name: gateway.name,
           ttn_gateway_id: ttnGatewayId,
           status: 'failed',
-          error: err.message || 'Batch registration failed',
+          error: err.message || 'Network error',
+          error_code: 'NETWORK_ERROR',
+          retryable: true,
         };
         setResults(prev => [...prev, result]);
         summary.failed++;
+      }
+
+      // Delay between gateways
+      if (i < gateways.length - 1) {
+        await new Promise(resolve => setTimeout(resolve, 500));
       }
     }
 
@@ -218,6 +228,128 @@ export default function StepExecution({
     setCurrentItem(null);
     setIsExecuting(false);
     setSummary(summary);
+  };
+
+  const retryGateway = async (failedResult: ProvisionResult) => {
+    const gateway = gateways.find(g => g.eui === failedResult.eui);
+    if (!gateway) return;
+
+    setRetryingItem(gateway.eui);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
+        body: {
+          org_id: orgId,
+          gateways: [{
+            eui: gateway.eui,
+            name: gateway.name,
+            is_online: gateway.isOnline,
+          }],
+        },
+      });
+
+      if (error) throw error;
+
+      if (data?.results?.[0]) {
+        const resultItem = data.results[0];
+        // Update the result in place
+        setResults(prev => prev.map(r => 
+          r.eui === gateway.eui 
+            ? { 
+                ...r, 
+                status: resultItem.status, 
+                error: resultItem.error, 
+                error_code: resultItem.error_code,
+                retryable: resultItem.retryable,
+                attempts: (r.attempts || 0) + (resultItem.attempts || 1),
+              }
+            : r
+        ));
+        
+        // Update summary if status changed
+        if (resultItem.status !== 'failed') {
+          setSummary(prev => ({
+            ...prev,
+            failed: prev.failed - 1,
+            [resultItem.status === 'created' ? 'created' : 'already_exists']: 
+              prev[resultItem.status === 'created' ? 'created' : 'already_exists'] + 1,
+          }));
+        }
+      }
+    } catch (err: any) {
+      // Update with new error
+      setResults(prev => prev.map(r => 
+        r.eui === gateway.eui 
+          ? { ...r, error: err.message, retryable: true, attempts: (r.attempts || 0) + 1 }
+          : r
+      ));
+    } finally {
+      setRetryingItem(null);
+    }
+  };
+
+  const retryDevice = async (failedResult: ProvisionResult) => {
+    const device = devices.find(d => d.devEui === failedResult.dev_eui);
+    if (!device) return;
+
+    setRetryingItem(device.devEui);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('ttn-batch-provision', {
+        body: {
+          org_id: orgId,
+          devices: [{
+            dev_eui: device.devEui,
+            join_eui: device.joinEui,
+            app_key: device.appKey,
+            name: device.name,
+          }],
+        },
+      });
+
+      if (error) throw error;
+
+      if (data?.results?.[0]) {
+        const resultItem = data.results[0];
+        setResults(prev => prev.map(r => 
+          r.dev_eui === device.devEui 
+            ? { 
+                ...r, 
+                status: resultItem.status, 
+                error: resultItem.error, 
+                error_code: resultItem.error_code,
+                retryable: resultItem.retryable ?? true,
+                attempts: (r.attempts || 0) + (resultItem.attempts || 1),
+              }
+            : r
+        ));
+        
+        if (resultItem.status !== 'failed') {
+          setSummary(prev => ({
+            ...prev,
+            failed: prev.failed - 1,
+            [resultItem.status === 'created' ? 'created' : 'already_exists']: 
+              prev[resultItem.status === 'created' ? 'created' : 'already_exists'] + 1,
+          }));
+        }
+      }
+    } catch (err: any) {
+      setResults(prev => prev.map(r => 
+        r.dev_eui === device.devEui 
+          ? { ...r, error: err.message, retryable: true, attempts: (r.attempts || 0) + 1 }
+          : r
+      ));
+    } finally {
+      setRetryingItem(null);
+    }
+  };
+
+  const handleRetryItem = (result: ProvisionResult) => {
+    if (isGatewayMode) {
+      retryGateway(result);
+    } else {
+      retryDevice(result);
+    }
   };
 
   const startProvisioning = async () => {
@@ -252,6 +384,10 @@ export default function StepExecution({
 
   const getDisplayId = (result: ProvisionResult) => {
     return isGatewayMode ? result.ttn_gateway_id : result.ttn_device_id;
+  };
+
+  const getItemKey = (result: ProvisionResult) => {
+    return isGatewayMode ? result.eui : result.dev_eui;
   };
 
   return (
@@ -295,30 +431,52 @@ export default function StepExecution({
           {/* Results list */}
           <ScrollArea className="h-[200px] border rounded-lg">
             <div className="p-2 space-y-2">
-              {results.map((result, index) => (
-                <div
-                  key={index}
-                  className="flex items-center justify-between p-2 rounded bg-muted/50"
-                >
-                  <div className="flex items-center gap-3">
-                    {getStatusIcon(result.status)}
-                    <div>
-                      <p className="text-sm font-medium">{result.name}</p>
-                      <code className="text-xs text-muted-foreground">
-                        {getDisplayId(result)}
-                      </code>
+              {results.map((result, index) => {
+                const itemKey = getItemKey(result);
+                const isRetrying = retryingItem === itemKey;
+                
+                return (
+                  <div
+                    key={index}
+                    className="flex items-center justify-between p-2 rounded bg-muted/50"
+                  >
+                    <div className="flex items-center gap-3">
+                      {isRetrying ? (
+                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                      ) : (
+                        getStatusIcon(result.status)
+                      )}
+                      <div>
+                        <p className="text-sm font-medium">{result.name}</p>
+                        <code className="text-xs text-muted-foreground">
+                          {getDisplayId(result)}
+                        </code>
+                      </div>
+                    </div>
+                    <div className="flex items-center gap-2">
+                      {result.status === 'failed' && result.retryable && !isExecuting && !isRetrying && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          onClick={() => handleRetryItem(result)}
+                          className="h-7 px-2 text-xs gap-1"
+                        >
+                          <RefreshCw className="h-3 w-3" />
+                          Retry
+                        </Button>
+                      )}
+                      <div className="text-right">
+                        {getStatusBadge(result.status)}
+                        {result.error && (
+                          <p className="text-xs text-destructive mt-1 max-w-[150px] truncate" title={result.error}>
+                            {result.error}
+                          </p>
+                        )}
+                      </div>
                     </div>
                   </div>
-                  <div className="text-right">
-                    {getStatusBadge(result.status)}
-                    {result.error && (
-                      <p className="text-xs text-destructive mt-1 max-w-[200px] truncate">
-                        {result.error}
-                      </p>
-                    )}
-                  </div>
-                </div>
-              ))}
+                );
+              })}
               
               {isExecuting && currentItem && (
                 <div className="flex items-center gap-3 p-2 rounded bg-muted/50 animate-pulse">
