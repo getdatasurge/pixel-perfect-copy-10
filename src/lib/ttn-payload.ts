@@ -126,6 +126,29 @@ export interface TestResult {
   error?: string;
 }
 
+// Sync operation result for entity sync feedback
+export interface SyncResult {
+  id: string;
+  timestamp: Date;
+  sync_run_id: string;
+  status: 'success' | 'partial' | 'failed';
+  method: 'endpoint' | 'direct' | null;
+  stages: {
+    emulator: 'success';
+    api: 'success' | 'failed' | 'skipped';
+    database: 'success' | 'failed' | 'pending';
+    orgApplied: boolean;
+  };
+  counts: {
+    gatewaysSynced: number;
+    gatewaysFailed: number;
+    devicesSynced: number;
+    devicesFailed: number;
+  };
+  errors: string[];
+  summary: string;
+}
+
 // Generate a random 16-character hex string (8 bytes) for EUI
 export function generateEUI(): string {
   const bytes = new Uint8Array(8);

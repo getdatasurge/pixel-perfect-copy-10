@@ -23,6 +23,7 @@ import {
   LoRaWANDevice, 
   WebhookConfig, 
   TestResult,
+  SyncResult,
   createGateway, 
   createDevice,
   buildTTNPayload 
@@ -59,6 +60,7 @@ export default function LoRaWANEmulator() {
   const [readingCount, setReadingCount] = useState(0);
   const [qrDevice, setQrDevice] = useState<LoRaWANDevice | null>(null);
   const [testResults, setTestResults] = useState<TestResult[]>([]);
+  const [syncResults, setSyncResults] = useState<SyncResult[]>([]);
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
@@ -177,6 +179,10 @@ export default function LoRaWANEmulator() {
       timestamp: new Date(),
     };
     setTestResults(prev => [entry, ...prev].slice(0, 50));
+  }, []);
+
+  const addSyncResult = useCallback((result: SyncResult) => {
+    setSyncResults(prev => [result, ...prev].slice(0, 20));
   }, []);
 
   const getActiveDevice = useCallback((type: 'temperature' | 'door') => {
@@ -698,10 +704,15 @@ export default function LoRaWANEmulator() {
                 disabled={isRunning}
                 gateways={gateways}
                 devices={devices}
+                onSyncResult={addSyncResult}
               />
               <TestDashboard
                 results={testResults}
-                onClearResults={() => setTestResults([])}
+                syncResults={syncResults}
+                onClearResults={() => {
+                  setTestResults([]);
+                  setSyncResults([]);
+                }}
               />
             </TabsContent>
 
