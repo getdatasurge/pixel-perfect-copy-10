@@ -13,7 +13,7 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test' | 'check_device';
+  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device';
   org_id?: string;
   enabled?: boolean;
   cluster?: TTNCluster;
@@ -105,6 +105,9 @@ Deno.serve(async (req) => {
       case 'test':
         return await handleTest(body, requestId);
 
+      case 'test_stored':
+        return await handleTestStored(supabaseAdmin, body, requestId);
+
       case 'check_device':
         return await handleCheckDevice(body, requestId);
 
@@ -139,7 +142,9 @@ async function handleLoad(
         cluster: 'nam1',
         application_id: null,
         api_key_preview: null,
+        api_key_set: false,
         webhook_secret_preview: null,
+        webhook_secret_set: false,
       }
     }, 200, requestId);
   }
@@ -165,10 +170,15 @@ async function handleLoad(
         cluster: 'nam1',
         application_id: null,
         api_key_preview: null,
+        api_key_set: false,
         webhook_secret_preview: null,
+        webhook_secret_set: false,
       }
     }, 200, requestId);
   }
+
+  const hasApiKey = !!(data.api_key && data.api_key.length > 0);
+  const hasWebhookSecret = !!(data.webhook_secret && data.webhook_secret.length > 0);
 
   return buildResponse({
     ok: true,
@@ -177,7 +187,9 @@ async function handleLoad(
       cluster: data.cluster,
       application_id: data.application_id,
       api_key_preview: maskSecret(data.api_key),
+      api_key_set: hasApiKey,
       webhook_secret_preview: maskSecret(data.webhook_secret),
+      webhook_secret_set: hasWebhookSecret,
       updated_at: data.updated_at,
     }
   }, 200, requestId);
@@ -197,27 +209,44 @@ async function handleSave(
 
   console.log(`[${requestId}] Saving settings for org ${org_id}, enabled=${enabled}, cluster=${cluster}, app=${application_id}`);
 
+  // Check if we have an existing API key stored
+  const { data: existingSettings } = await supabase
+    .from('ttn_settings')
+    .select('api_key')
+    .eq('org_id', org_id)
+    .maybeSingle();
+
+  const hasExistingKey = !!(existingSettings?.api_key && existingSettings.api_key.length > 0);
+
   // Validate required fields when enabled
   if (enabled) {
     if (!application_id) {
       return errorResponse('Application ID is required when TTN is enabled', 'VALIDATION_ERROR', 400, requestId);
     }
-    if (!api_key) {
-      return errorResponse('API key is required when TTN is enabled', 'VALIDATION_ERROR', 400, requestId);
+    // Only require API key if not already stored AND no new key provided
+    if (!api_key && !hasExistingKey) {
+      return errorResponse('API key is required when enabling TTN', 'VALIDATION_ERROR', 400, requestId);
     }
     if (!cluster || !VALID_CLUSTERS.includes(cluster as TTNCluster)) {
       return errorResponse('Valid cluster (eu1 or nam1) is required', 'VALIDATION_ERROR', 400, requestId);
     }
   }
 
-  const upsertData = {
+  // Build upsert data - only include api_key/webhook_secret if provided
+  const upsertData: Record<string, any> = {
     org_id,
     enabled: enabled ?? false,
     cluster: cluster ?? 'nam1',
     application_id: application_id ?? null,
-    api_key: api_key ?? null,
-    webhook_secret: webhook_secret ?? null,
   };
+
+  // Only update secrets if new values provided
+  if (api_key) {
+    upsertData.api_key = api_key;
+  }
+  if (webhook_secret) {
+    upsertData.webhook_secret = webhook_secret;
+  }
 
   const { error } = await supabase
     .from('ttn_settings')
@@ -228,13 +257,100 @@ async function handleSave(
     return errorResponse('Failed to save settings', 'DB_ERROR', 500, requestId);
   }
 
-  console.log(`[${requestId}] Settings saved successfully`);
-  return buildResponse({ ok: true, message: 'Settings saved' }, 200, requestId);
+  // Reload settings to get the current state
+  const { data: savedSettings } = await supabase
+    .from('ttn_settings')
+    .select('api_key, webhook_secret')
+    .eq('org_id', org_id)
+    .maybeSingle();
+
+  const apiKeySet = !!(savedSettings?.api_key && savedSettings.api_key.length > 0);
+  const webhookSecretSet = !!(savedSettings?.webhook_secret && savedSettings.webhook_secret.length > 0);
+
+  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}`);
+  
+  return buildResponse({ 
+    ok: true, 
+    message: 'Settings saved',
+    api_key_set: apiKeySet,
+    api_key_preview: maskSecret(savedSettings?.api_key),
+    webhook_secret_set: webhookSecretSet,
+    webhook_secret_preview: maskSecret(savedSettings?.webhook_secret),
+  }, 200, requestId);
+}
+
+// Test TTN connection using stored API key from database
+async function handleTestStored(
+  supabase: any,
+  body: TTNSettingsRequest,
+  requestId: string
+): Promise<Response> {
+  const { org_id } = body;
+
+  if (!org_id) {
+    return buildResponse({
+      ok: false,
+      error: 'org_id is required to test stored settings',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}`);
+
+  // Load settings from database
+  const { data: settings, error } = await supabase
+    .from('ttn_settings')
+    .select('enabled, cluster, application_id, api_key')
+    .eq('org_id', org_id)
+    .maybeSingle();
+
+  if (error) {
+    console.error(`[${requestId}] Failed to load settings:`, error.message);
+    return buildResponse({
+      ok: false,
+      error: 'Failed to load TTN settings from database',
+      code: 'DB_ERROR',
+    }, 200, requestId);
+  }
+
+  if (!settings) {
+    return buildResponse({
+      ok: false,
+      error: 'No TTN settings found for this organization',
+      code: 'NOT_CONFIGURED',
+      hint: 'Save TTN settings first before testing',
+    }, 200, requestId);
+  }
+
+  if (!settings.enabled) {
+    return buildResponse({
+      ok: false,
+      error: 'TTN integration is disabled',
+      code: 'DISABLED',
+      hint: 'Enable TTN integration and save settings',
+    }, 200, requestId);
+  }
+
+  if (!settings.api_key) {
+    return buildResponse({
+      ok: false,
+      error: 'No API key saved',
+      code: 'NO_API_KEY',
+      hint: 'Enter an API key and save settings first',
+    }, 200, requestId);
+  }
+
+  // Now test with the stored credentials
+  return await handleTest({
+    cluster: settings.cluster,
+    application_id: settings.application_id,
+    api_key: settings.api_key,
+  }, requestId);
 }
 
 // Test TTN connection - SIMPLIFIED to only check application access
 async function handleTest(
-  body: TTNSettingsRequest,
+  body: Partial<TTNSettingsRequest>,
   requestId: string
 ): Promise<Response> {
   const { cluster, application_id, api_key } = body;
