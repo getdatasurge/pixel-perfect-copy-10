@@ -8,9 +8,9 @@ import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
-  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info
+  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2
 } from 'lucide-react';
-import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway } from '@/lib/ttn-payload';
+import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import {
@@ -20,13 +20,15 @@ import {
   SelectTrigger,
   SelectValue,
 } from '@/components/ui/select';
+import TTNSetupWizard, { WizardConfig } from './TTNSetupWizard';
 
 interface WebhookSettingsProps {
   config: WebhookConfig;
   onConfigChange: (config: WebhookConfig) => void;
   disabled?: boolean;
   currentDevEui?: string;
-  orgId?: string; // Organization ID for scoped settings
+  orgId?: string;
+  devices?: LoRaWANDevice[];
 }
 
 const TTN_CLUSTERS = [
@@ -60,13 +62,14 @@ interface TTNSettingsFromDB {
   updated_at: string;
 }
 
-export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId }: WebhookSettingsProps) {
+export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, devices = [] }: WebhookSettingsProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [isTestingTTN, setIsTestingTTN] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
   const [copied, setCopied] = useState(false);
   const [copiedDevEui, setCopiedDevEui] = useState(false);
+  const [showWizard, setShowWizard] = useState(false);
   
   // Local form state for TTN settings
   const [ttnEnabled, setTtnEnabled] = useState(false);
@@ -78,6 +81,42 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   
   // Test result state
   const [testResult, setTestResult] = useState<TTNTestResult | null>(null);
+
+  // Handle wizard completion
+  const handleWizardComplete = async (wizardConfig: WizardConfig) => {
+    setTtnCluster(wizardConfig.cluster);
+    setTtnApplicationId(wizardConfig.applicationId);
+    setTtnApiKey(wizardConfig.apiKey);
+    if (wizardConfig.webhookSecret) {
+      setTtnWebhookSecret(wizardConfig.webhookSecret);
+    }
+    setTtnEnabled(true);
+    
+    // Auto-save settings
+    if (orgId) {
+      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'save',
+          org_id: orgId,
+          enabled: true,
+          cluster: wizardConfig.cluster,
+          application_id: wizardConfig.applicationId,
+          api_key: wizardConfig.apiKey,
+          webhook_secret: wizardConfig.webhookSecret,
+        },
+      });
+      
+      if (!error && data?.ok) {
+        toast({ title: 'TTN Setup Complete', description: 'Settings saved successfully' });
+        setTtnApiKeyPreview(`****${wizardConfig.apiKey.slice(-4)}`);
+        setTtnApiKey('');
+        updateTTN({ enabled: true, applicationId: wizardConfig.applicationId, cluster: wizardConfig.cluster });
+        
+        // Mark wizard complete
+        localStorage.setItem(`ttn-wizard-complete-${orgId}`, 'true');
+      }
+    }
+  };
   
   // Get the local ttn-webhook URL
   const localWebhookUrl = `${import.meta.env.VITE_SUPABASE_URL}/functions/v1/ttn-webhook`;
@@ -436,14 +475,38 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
   return (
     <div className="space-y-4">
-      <div>
-        <h3 className="text-lg font-medium flex items-center gap-2">
-          <Webhook className="h-5 w-5" />
-          TTN Integration
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          Route emulator data through The Things Network for production-ready testing
-        </p>
+      {/* Setup Wizard Modal */}
+      <TTNSetupWizard
+        open={showWizard}
+        onOpenChange={setShowWizard}
+        orgId={orgId}
+        devices={devices}
+        onComplete={handleWizardComplete}
+        initialConfig={{
+          cluster: ttnCluster,
+          applicationId: ttnApplicationId,
+        }}
+      />
+
+      <div className="flex items-center justify-between">
+        <div>
+          <h3 className="text-lg font-medium flex items-center gap-2">
+            <Webhook className="h-5 w-5" />
+            TTN Integration
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            Route emulator data through The Things Network for production-ready testing
+          </p>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          onClick={() => setShowWizard(true)}
+          className="gap-2"
+        >
+          <Wand2 className="h-4 w-4" />
+          Guided Setup
+        </Button>
       </div>
 
       {/* TTN Settings - Primary */}

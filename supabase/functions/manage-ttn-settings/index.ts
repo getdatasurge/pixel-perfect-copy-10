@@ -13,13 +13,14 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test';
+  action: 'load' | 'save' | 'test' | 'check_device';
   org_id?: string;
   enabled?: boolean;
   cluster?: TTNCluster;
   application_id?: string;
   api_key?: string;
   webhook_secret?: string;
+  device_id?: string;
 }
 
 // Generate correlation ID for debugging
@@ -103,6 +104,9 @@ Deno.serve(async (req) => {
 
       case 'test':
         return await handleTest(body, requestId);
+
+      case 'check_device':
+        return await handleCheckDevice(body, requestId);
 
       default:
         return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
@@ -377,4 +381,55 @@ async function handleTest(
     ttn_message: ttnMessage,
     baseUrl,
   }, 200, requestId);
+}
+
+// Check if device exists in TTN
+async function handleCheckDevice(
+  body: TTNSettingsRequest,
+  requestId: string
+): Promise<Response> {
+  const { cluster, application_id, api_key, device_id } = body;
+
+  console.log(`[${requestId}] Checking device: cluster=${cluster}, app=${application_id}, device=${device_id}`);
+
+  if (!cluster || !application_id || !api_key || !device_id) {
+    return buildResponse({
+      ok: false,
+      error: 'Missing required fields: cluster, application_id, api_key, device_id',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  const baseUrl = getBaseUrl(cluster);
+  const checkUrl = `${baseUrl}/api/v3/applications/${application_id}/devices/${device_id}`;
+
+  try {
+    const response = await fetch(checkUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${api_key}`,
+        'Accept': 'application/json',
+      },
+    });
+
+    const exists = response.status === 200;
+    console.log(`[${requestId}] Device check result: status=${response.status}, exists=${exists}`);
+
+    return buildResponse({
+      ok: true,
+      exists,
+      device_id,
+      status: response.status,
+    }, 200, requestId);
+  } catch (err: unknown) {
+    const errorMsg = err instanceof Error ? err.message : 'Unknown error';
+    console.error(`[${requestId}] Device check error:`, errorMsg);
+    return buildResponse({
+      ok: false,
+      error: `Network error: ${errorMsg}`,
+      code: 'NETWORK_ERROR',
+      exists: false,
+      device_id,
+    }, 200, requestId);
+  }
 }
