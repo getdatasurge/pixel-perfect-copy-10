@@ -83,19 +83,17 @@ serve(async (req) => {
       sensors: { synced: 0, failed: 0, errors: [] as string[] },
     };
 
-    // Sync gateways - use 'gateways' table (confirmed by PGRST205 hint)
+    // Sync gateways - use 'gateways' table without 'eui' column (doesn't exist in FrostGuard)
     if (gateways && gateways.length > 0) {
       console.log(`Syncing ${gateways.length} gateways to 'gateways' table...`);
       
       for (const gateway of gateways) {
         try {
-          // Try with eui/status columns first (common naming)
           const { error } = await frostguardClient
             .from('gateways')
             .upsert({
               id: gateway.id,
               name: gateway.name,
-              eui: gateway.eui,
               org_id: orgId,
               status: gateway.isOnline ? 'online' : 'offline',
             }, { onConflict: 'id' });
@@ -117,9 +115,9 @@ serve(async (req) => {
       }
     }
 
-    // Sync sensors - use 'sensors' table, without gateway_id (column doesn't exist)
+    // Sync sensors - use 'lora_sensors' table (FrostGuard's actual table name)
     if (sensors && sensors.length > 0) {
-      console.log(`Syncing ${sensors.length} sensors to 'sensors' table...`);
+      console.log(`Syncing ${sensors.length} sensors to 'lora_sensors' table...`);
       
       for (const sensor of sensors) {
         try {
@@ -131,7 +129,7 @@ serve(async (req) => {
             org_id: orgId,
           };
 
-          // Add optional fields if provided (but NOT gateway_id - column doesn't exist)
+          // Add optional fields if provided
           if (siteId) {
             sensorData.site_id = siteId;
           }
@@ -140,7 +138,7 @@ serve(async (req) => {
           }
 
           const { error } = await frostguardClient
-            .from('sensors')
+            .from('lora_sensors')
             .upsert(sensorData, { onConflict: 'id' });
 
           if (error) {
