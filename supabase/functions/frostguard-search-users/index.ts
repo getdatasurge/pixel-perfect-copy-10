@@ -116,7 +116,7 @@ serve(async (req) => {
 
     const frostguardClient = createClient(baseUrl, frostguardServiceKey);
 
-    // Use auth.admin.listUsers() since FrostGuard has no profiles/users tables
+    // Use auth.admin.listUsers() to get base user data
     const { data: authData, error: authError } = await frostguardClient.auth.admin.listUsers();
 
     if (authError) {
@@ -131,15 +131,102 @@ serve(async (req) => {
       );
     }
 
-    // Map auth users to profile format, extracting metadata
-    let users = (authData.users || []).map(user => ({
-      id: user.id,
-      email: user.email || null,
-      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
-      organization_id: user.user_metadata?.organization_id || null,
-      site_id: user.user_metadata?.site_id || null,
-      unit_id: user.user_metadata?.unit_id || null,
-    }));
+    const authUsers = authData.users || [];
+    const userIds = authUsers.map(u => u.id);
+    console.log(`Found ${authUsers.length} auth users, fetching site data...`);
+
+    // Try to fetch profiles with default_site_id from FrostGuard
+    let profilesMap: Record<string, { default_site_id?: string }> = {};
+    try {
+      const { data: profiles, error: profilesError } = await frostguardClient
+        .from('profiles')
+        .select('id, default_site_id')
+        .in('id', userIds);
+      
+      if (profilesError) {
+        console.warn('Could not fetch profiles (table may not exist):', profilesError.message);
+      } else if (profiles) {
+        profiles.forEach(p => {
+          profilesMap[p.id] = { default_site_id: p.default_site_id };
+        });
+        console.log(`Fetched ${profiles.length} profiles with default_site_id`);
+      }
+    } catch (e) {
+      console.warn('Profiles table query failed:', e);
+    }
+
+    // Try to fetch site memberships from FrostGuard
+    // Try multiple possible table names that FrostGuard might use
+    let siteMembershipsMap: Record<string, Array<{ site_id: string; site_name?: string }>> = {};
+    
+    // Attempt 1: Try 'site_memberships' table
+    try {
+      const { data: memberships, error: membershipsError } = await frostguardClient
+        .from('site_memberships')
+        .select('user_id, site_id, site:sites(name)')
+        .in('user_id', userIds);
+      
+      if (!membershipsError && memberships) {
+        memberships.forEach(m => {
+          if (!siteMembershipsMap[m.user_id]) {
+            siteMembershipsMap[m.user_id] = [];
+          }
+          siteMembershipsMap[m.user_id].push({
+            site_id: m.site_id,
+            site_name: (m.site as any)?.name || null,
+          });
+        });
+        console.log(`Fetched site_memberships: ${memberships.length} rows`);
+      } else if (membershipsError) {
+        console.warn('site_memberships query failed:', membershipsError.message);
+      }
+    } catch (e) {
+      console.warn('site_memberships table query failed:', e);
+    }
+
+    // Attempt 2: If no memberships found, try 'user_site_memberships' table
+    if (Object.keys(siteMembershipsMap).length === 0) {
+      try {
+        const { data: memberships, error: membershipsError } = await frostguardClient
+          .from('user_site_memberships')
+          .select('user_id, site_id, site_name')
+          .in('user_id', userIds);
+        
+        if (!membershipsError && memberships) {
+          memberships.forEach(m => {
+            if (!siteMembershipsMap[m.user_id]) {
+              siteMembershipsMap[m.user_id] = [];
+            }
+            siteMembershipsMap[m.user_id].push({
+              site_id: m.site_id,
+              site_name: m.site_name || null,
+            });
+          });
+          console.log(`Fetched user_site_memberships: ${memberships.length} rows`);
+        } else if (membershipsError) {
+          console.warn('user_site_memberships query failed:', membershipsError.message);
+        }
+      } catch (e) {
+        console.warn('user_site_memberships table query failed:', e);
+      }
+    }
+
+    // Map auth users to profile format with site data
+    let users = authUsers.map(user => {
+      const profile = profilesMap[user.id];
+      const userSites = siteMembershipsMap[user.id] || [];
+      
+      return {
+        id: user.id,
+        email: user.email || null,
+        full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+        organization_id: user.user_metadata?.organization_id || null,
+        site_id: user.user_metadata?.site_id || null,
+        unit_id: user.user_metadata?.unit_id || null,
+        default_site_id: profile?.default_site_id || null,
+        user_sites: userSites,
+      };
+    });
 
     // Apply search filter client-side
     if (searchTerm && searchTerm.trim()) {
@@ -150,7 +237,8 @@ serve(async (req) => {
       );
     }
 
-    console.log(`Found ${users.length} users`);
+    const usersWithSites = users.filter(u => u.user_sites.length > 0).length;
+    console.log(`Returning ${users.length} users (${usersWithSites} with sites)`);
 
     return new Response(
       JSON.stringify({ success: true, users, source: 'auth' }),
