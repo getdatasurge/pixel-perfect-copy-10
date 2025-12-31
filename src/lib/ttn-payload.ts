@@ -80,6 +80,40 @@ export interface WebhookConfig {
   contextSetAt?: string | null; // ISO string for localStorage compatibility
 }
 
+// Sync bundle for authenticated sync to Project 1
+export interface SyncBundle {
+  metadata: {
+    sync_run_id: string;
+    initiated_at: string;
+    source_project: string;
+  };
+  context: {
+    org_id: string;
+    site_id: string;
+    unit_id_override?: string;
+    selected_user_id?: string;
+  };
+  entities: {
+    gateways: Array<{
+      id: string;
+      name: string;
+      eui: string;
+      is_online: boolean;
+    }>;
+    devices: Array<{
+      id: string;
+      name: string;
+      dev_eui: string;
+      join_eui: string;
+      app_key: string;
+      type: 'temperature' | 'door';
+      gateway_id: string;
+    }>;
+  };
+  // Legacy fallback for direct DB writes when endpoint unavailable
+  frostguardApiUrl?: string;
+}
+
 export interface TestResult {
   id: string;
   timestamp: Date;
