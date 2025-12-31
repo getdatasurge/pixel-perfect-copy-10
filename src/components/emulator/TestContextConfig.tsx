@@ -4,7 +4,7 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
-import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle } from '@/lib/ttn-payload';
+import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog from './UserSearchDialog';
@@ -15,6 +15,7 @@ interface TestContextConfigProps {
   disabled?: boolean;
   gateways?: GatewayConfig[];
   devices?: LoRaWANDevice[];
+  onSyncResult?: (result: SyncResult) => void;
 }
 
 type SyncStatus = 'success' | 'partial' | 'failed' | null;
@@ -24,7 +25,8 @@ export default function TestContextConfig({
   onConfigChange, 
   disabled,
   gateways = [],
-  devices = []
+  devices = [],
+  onSyncResult
 }: TestContextConfigProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
@@ -173,27 +175,52 @@ export default function TestContextConfig({
       
       const totalFailed = results?.gateways?.failed + results?.devices?.failed || 0;
       const totalSynced = results?.gateways?.synced + results?.devices?.synced || 0;
+      const allErrors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
+      
+      // Build SyncResult for dashboard
+      const buildSyncResult = (status: SyncStatus): SyncResult => ({
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+        sync_run_id: syncRunId,
+        status: status!,
+        method: method || null,
+        stages: {
+          emulator: 'success',
+          api: method === 'endpoint' ? 'success' : method === 'direct' ? 'skipped' : 'failed',
+          database: totalSynced > 0 ? 'success' : totalFailed > 0 ? 'failed' : 'pending',
+          orgApplied: !!config.testOrgId,
+        },
+        counts: {
+          gatewaysSynced: results?.gateways?.synced || 0,
+          gatewaysFailed: results?.gateways?.failed || 0,
+          devicesSynced: results?.devices?.synced || 0,
+          devicesFailed: results?.devices?.failed || 0,
+        },
+        errors: allErrors,
+        summary: summary || '',
+      });
       
       if (totalFailed > 0 && totalSynced > 0) {
         setSyncStatus('partial');
-        const errors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
+        onSyncResult?.(buildSyncResult('partial'));
         toast({ 
           title: 'Partial Sync', 
-          description: `${summary}. Errors: ${errors.slice(0, 2).join('; ')}${errors.length > 2 ? '...' : ''}`, 
+          description: `${summary}. Errors: ${allErrors.slice(0, 2).join('; ')}${allErrors.length > 2 ? '...' : ''}`, 
           variant: 'destructive' 
         });
       } else if (totalFailed > 0) {
         setSyncStatus('failed');
-        const errors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
+        onSyncResult?.(buildSyncResult('failed'));
         toast({ 
           title: 'Sync Failed', 
-          description: errors.slice(0, 2).join('; '), 
+          description: allErrors.slice(0, 2).join('; '), 
           variant: 'destructive' 
         });
       } else {
         setSyncStatus('success');
         // Clear sync run ID on success
         setCurrentSyncRunId(null);
+        onSyncResult?.(buildSyncResult('success'));
         toast({ 
           title: 'Sync Complete', 
           description: `${summary}${method === 'endpoint' ? ' (via endpoint)' : ' (direct writes)'}` 
@@ -204,6 +231,29 @@ export default function TestContextConfig({
       toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
       setSyncStatus('failed');
       setLastSyncSummary(null);
+      
+      // Report error to dashboard
+      onSyncResult?.({
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+        sync_run_id: syncRunId,
+        status: 'failed',
+        method: null,
+        stages: {
+          emulator: 'success',
+          api: 'failed',
+          database: 'pending',
+          orgApplied: false,
+        },
+        counts: {
+          gatewaysSynced: 0,
+          gatewaysFailed: gateways.length,
+          devicesSynced: 0,
+          devicesFailed: devices.length,
+        },
+        errors: [errorMessage],
+        summary: errorMessage,
+      });
       // Keep sync run ID for retry
     } finally {
       setIsSyncing(false);

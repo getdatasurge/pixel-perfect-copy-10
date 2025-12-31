@@ -1,22 +1,28 @@
+import { useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { 
   CheckCircle2, XCircle, Clock, ArrowRight, 
   Radio, Webhook, Database, Building2, Trash2,
-  Thermometer, DoorOpen
+  Thermometer, DoorOpen, ChevronDown, Cloud, AlertTriangle
 } from 'lucide-react';
-import { TestResult } from '@/lib/ttn-payload';
+import { TestResult, SyncResult } from '@/lib/ttn-payload';
 
 interface TestDashboardProps {
   results: TestResult[];
+  syncResults?: SyncResult[];
   onClearResults: () => void;
 }
 
-export default function TestDashboard({ results, onClearResults }: TestDashboardProps) {
-  // Get latest result for summary
+export default function TestDashboard({ results, syncResults = [], onClearResults }: TestDashboardProps) {
+  const [errorsExpanded, setErrorsExpanded] = useState(false);
+  
+  // Get latest results for summary
   const latestResult = results[0];
+  const latestSync = syncResults[0];
 
   // Calculate stats
   const stats = {
@@ -26,6 +32,16 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
     dbSuccess: results.filter(r => r.dbStatus === 'inserted').length,
     orgApplied: results.filter(r => r.orgApplied).length,
   };
+
+  // Sync stats
+  const syncStats = syncResults.length > 0 ? {
+    totalSyncs: syncResults.length,
+    successful: syncResults.filter(r => r.status === 'success').length,
+    partial: syncResults.filter(r => r.status === 'partial').length,
+    failed: syncResults.filter(r => r.status === 'failed').length,
+    totalGatewaysSynced: syncResults.reduce((sum, r) => sum + r.counts.gatewaysSynced, 0),
+    totalDevicesSynced: syncResults.reduce((sum, r) => sum + r.counts.devicesSynced, 0),
+  } : null;
 
   const StatusIcon = ({ status }: { status: 'success' | 'failed' | 'skipped' | 'pending' | 'inserted' }) => {
     switch (status) {
@@ -41,6 +57,26 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
     }
   };
 
+  const SyncStatusBadge = ({ status }: { status: SyncResult['status'] }) => {
+    switch (status) {
+      case 'success':
+        return <Badge className="bg-green-500/10 text-green-600 border-green-500/30">Success</Badge>;
+      case 'partial':
+        return <Badge className="bg-yellow-500/10 text-yellow-600 border-yellow-500/30">Partial</Badge>;
+      case 'failed':
+        return <Badge variant="destructive">Failed</Badge>;
+    }
+  };
+
+  const MethodBadge = ({ method }: { method: SyncResult['method'] }) => {
+    if (!method) return null;
+    return (
+      <Badge variant="outline" className="text-xs">
+        {method === 'endpoint' ? 'via API' : 'direct writes'}
+      </Badge>
+    );
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -54,7 +90,7 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
           variant="outline" 
           size="sm" 
           onClick={onClearResults}
-          disabled={results.length === 0}
+          disabled={results.length === 0 && syncResults.length === 0}
           className="flex items-center gap-1"
         >
           <Trash2 className="h-4 w-4" />
@@ -62,10 +98,126 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
         </Button>
       </div>
 
-      {/* Data Flow Visualization */}
+      {/* Sync Status Section */}
+      {latestSync && (
+        <Card className={
+          latestSync.status === 'success' ? 'border-green-500/30 bg-green-500/5' :
+          latestSync.status === 'partial' ? 'border-yellow-500/30 bg-yellow-500/5' :
+          'border-destructive/30 bg-destructive/5'
+        }>
+          <CardHeader className="pb-2">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm flex items-center gap-2">
+                <Cloud className="h-4 w-4" />
+                Last Sync Status
+              </CardTitle>
+              <div className="flex items-center gap-2">
+                <SyncStatusBadge status={latestSync.status} />
+                <MethodBadge method={latestSync.method} />
+              </div>
+            </div>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {/* Sync Data Flow Visualization */}
+            <div className="flex items-center justify-center gap-2 py-2">
+              {/* Emulator */}
+              <div className="flex flex-col items-center gap-1">
+                <div className="w-12 h-12 rounded-lg bg-primary/10 flex items-center justify-center">
+                  <Radio className="h-6 w-6 text-primary" />
+                </div>
+                <span className="text-xs">Emulator</span>
+                <StatusIcon status={latestSync.stages.emulator} />
+              </div>
+
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+
+              {/* API */}
+              <div className="flex flex-col items-center gap-1">
+                <div className="w-12 h-12 rounded-lg bg-blue-500/10 flex items-center justify-center">
+                  <Webhook className="h-6 w-6 text-blue-500" />
+                </div>
+                <span className="text-xs">API</span>
+                <StatusIcon status={latestSync.stages.api} />
+              </div>
+
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+
+              {/* Database */}
+              <div className="flex flex-col items-center gap-1">
+                <div className="w-12 h-12 rounded-lg bg-orange-500/10 flex items-center justify-center">
+                  <Database className="h-6 w-6 text-orange-500" />
+                </div>
+                <span className="text-xs">Database</span>
+                <StatusIcon status={latestSync.stages.database} />
+              </div>
+
+              <ArrowRight className="h-4 w-4 text-muted-foreground" />
+
+              {/* Org Context */}
+              <div className="flex flex-col items-center gap-1">
+                <div className="w-12 h-12 rounded-lg bg-purple-500/10 flex items-center justify-center">
+                  <Building2 className="h-6 w-6 text-purple-500" />
+                </div>
+                <span className="text-xs">Org</span>
+                <StatusIcon status={latestSync.stages.orgApplied ? 'success' : 'skipped'} />
+              </div>
+            </div>
+
+            {/* Sync Counts */}
+            <div className="flex items-center justify-center gap-4 text-sm">
+              <span className="flex items-center gap-1">
+                <Radio className="h-3 w-3" />
+                {latestSync.counts.gatewaysSynced} gateways
+                {latestSync.counts.gatewaysFailed > 0 && (
+                  <span className="text-destructive">({latestSync.counts.gatewaysFailed} failed)</span>
+                )}
+              </span>
+              <span className="flex items-center gap-1">
+                <Thermometer className="h-3 w-3" />
+                {latestSync.counts.devicesSynced} devices
+                {latestSync.counts.devicesFailed > 0 && (
+                  <span className="text-destructive">({latestSync.counts.devicesFailed} failed)</span>
+                )}
+              </span>
+            </div>
+
+            {/* Summary */}
+            {latestSync.summary && (
+              <p className="text-xs text-center text-muted-foreground">{latestSync.summary}</p>
+            )}
+
+            {/* Error Details */}
+            {latestSync.errors.length > 0 && (
+              <Collapsible open={errorsExpanded} onOpenChange={setErrorsExpanded}>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="w-full flex items-center gap-2 text-destructive">
+                    <AlertTriangle className="h-4 w-4" />
+                    {latestSync.errors.length} error{latestSync.errors.length > 1 ? 's' : ''}
+                    <ChevronDown className={`h-4 w-4 transition-transform ${errorsExpanded ? 'rotate-180' : ''}`} />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent className="mt-2">
+                  <div className="bg-destructive/10 rounded-md p-3 space-y-1">
+                    {latestSync.errors.map((error, i) => (
+                      <p key={i} className="text-xs text-destructive font-mono">{error}</p>
+                    ))}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
+            )}
+
+            {/* Sync Run ID */}
+            <p className="text-xs text-center text-muted-foreground font-mono">
+              sync_run_id: {latestSync.sync_run_id.slice(0, 8)}...
+            </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Data Flow Visualization (for readings) */}
       <Card>
         <CardHeader className="pb-2">
-          <CardTitle className="text-sm">Data Flow Status</CardTitle>
+          <CardTitle className="text-sm">Reading Data Flow Status</CardTitle>
         </CardHeader>
         <CardContent>
           <div className="flex items-center justify-center gap-2 py-4">
@@ -128,7 +280,7 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
       </Card>
 
       {/* Stats Grid */}
-      <div className="grid grid-cols-4 gap-4">
+      <div className="grid grid-cols-5 gap-4">
         <Card>
           <CardContent className="pt-4">
             <div className="text-2xl font-bold">{stats.total}</div>
@@ -159,6 +311,16 @@ export default function TestDashboard({ results, onClearResults }: TestDashboard
             <p className="text-xs text-muted-foreground">Org Applied</p>
           </CardContent>
         </Card>
+        {syncStats && (
+          <Card>
+            <CardContent className="pt-4">
+              <div className="text-2xl font-bold text-primary">
+                {syncStats.successful}/{syncStats.totalSyncs}
+              </div>
+              <p className="text-xs text-muted-foreground">Syncs OK</p>
+            </CardContent>
+          </Card>
+        )}
       </div>
 
       {/* Recent Results Table */}
