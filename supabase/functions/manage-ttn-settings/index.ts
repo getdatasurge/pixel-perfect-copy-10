@@ -5,30 +5,21 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Required TTN rights for full functionality
-const REQUIRED_RIGHTS = [
-  'RIGHT_APPLICATION_INFO',
-  'RIGHT_APPLICATION_DEVICES_READ',
-  'RIGHT_APPLICATION_DEVICES_WRITE',
-];
+// Supported TTN clusters - simplified to main regions
+const VALID_CLUSTERS = ['eu1', 'nam1'] as const;
+type TTNCluster = typeof VALID_CLUSTERS[number];
+
+// Required permissions for display (informational only)
+const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
   action: 'load' | 'save' | 'test';
-  org_id: string;
+  org_id?: string;
   enabled?: boolean;
-  cluster?: 'eu1' | 'nam1' | 'au1' | 'as1';
+  cluster?: TTNCluster;
   application_id?: string;
   api_key?: string;
   webhook_secret?: string;
-}
-
-interface TTNSettings {
-  enabled: boolean;
-  cluster: string;
-  application_id: string | null;
-  api_key_preview: string | null; // Last 4 chars only
-  webhook_secret_preview: string | null;
-  updated_at: string;
 }
 
 // Generate correlation ID for debugging
@@ -40,6 +31,11 @@ function generateRequestId(): string {
 function maskSecret(value: string | null): string | null {
   if (!value || value.length < 8) return value ? '****' : null;
   return `****${value.slice(-4)}`;
+}
+
+// Build cluster base URL
+function getBaseUrl(cluster: string): string {
+  return `https://${cluster}.cloud.thethings.network`;
 }
 
 // Build response with correlation ID
@@ -57,7 +53,7 @@ function buildResponse(
   );
 }
 
-// Error response helper
+// Error response helper - always returns 200 with ok:false for client parsing
 function errorResponse(
   error: string,
   code: string,
@@ -81,121 +77,35 @@ Deno.serve(async (req) => {
   }
 
   try {
-    // 1. Validate Authorization header
-    const authHeader = req.headers.get('Authorization');
-    if (!authHeader) {
-      console.log(`[${requestId}] Missing Authorization header`);
-      return errorResponse(
-        'Authorization header required',
-        'AUTH_MISSING',
-        401,
-        requestId
-      );
-    }
-
-    const token = authHeader.replace('Bearer ', '');
-    if (!token) {
-      console.log(`[${requestId}] Empty bearer token`);
-      return errorResponse(
-        'Invalid authorization token',
-        'AUTH_INVALID',
-        401,
-        requestId
-      );
-    }
-
-    // 2. Initialize Supabase admin client
+    // Initialize Supabase admin client
     const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabaseAdmin = createClient(supabaseUrl, supabaseServiceKey);
 
-    // 3. Verify user token
-    const { data: { user }, error: userError } = await supabaseAdmin.auth.getUser(token);
-    if (userError || !user) {
-      console.log(`[${requestId}] Invalid token: ${userError?.message || 'No user'}`);
-      return errorResponse(
-        'Invalid or expired token',
-        'AUTH_INVALID',
-        401,
-        requestId
-      );
-    }
-
-    console.log(`[${requestId}] Authenticated user: ${user.id}`);
-
-    // 4. Parse request body
+    // Parse request body
     let body: TTNSettingsRequest;
     try {
       body = await req.json();
     } catch {
-      return errorResponse(
-        'Invalid JSON body',
-        'VALIDATION_ERROR',
-        400,
-        requestId
-      );
+      return errorResponse('Invalid JSON body', 'VALIDATION_ERROR', 400, requestId);
     }
 
     const { action, org_id } = body;
+    console.log(`[${requestId}] Action: ${action}, org_id: ${org_id || 'none'}`);
 
-    // 5. Validate org_id
-    if (!org_id) {
-      return errorResponse(
-        'org_id is required',
-        'VALIDATION_ERROR',
-        400,
-        requestId
-      );
-    }
-
-    // 6. Check user is member of org
-    const { data: membership, error: memberError } = await supabaseAdmin
-      .from('org_members')
-      .select('role')
-      .eq('user_id', user.id)
-      .eq('org_id', org_id)
-      .maybeSingle();
-
-    if (memberError) {
-      console.error(`[${requestId}] Membership check error:`, memberError.message);
-      return errorResponse(
-        'Failed to verify organization membership',
-        'DB_ERROR',
-        500,
-        requestId
-      );
-    }
-
-    if (!membership) {
-      console.log(`[${requestId}] User ${user.id} not member of org ${org_id}`);
-      return errorResponse(
-        'You are not a member of this organization',
-        'NOT_MEMBER',
-        403,
-        requestId
-      );
-    }
-
-    console.log(`[${requestId}] User ${user.id} has role '${membership.role}' in org ${org_id}`);
-
-    // 7. Process action
+    // Process action
     switch (action) {
       case 'load':
         return await handleLoad(supabaseAdmin, org_id, requestId);
 
       case 'save':
-        return await handleSave(supabaseAdmin, org_id, body, requestId);
+        return await handleSave(supabaseAdmin, body, requestId);
 
       case 'test':
         return await handleTest(body, requestId);
 
       default:
-        return errorResponse(
-          `Unknown action: ${action}`,
-          'VALIDATION_ERROR',
-          400,
-          requestId
-        );
+        return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
     }
   } catch (err) {
     // Catch-all: never throw, always return JSON
@@ -213,9 +123,23 @@ Deno.serve(async (req) => {
 // Load TTN settings for org
 async function handleLoad(
   supabase: any,
-  org_id: string,
+  org_id: string | undefined,
   requestId: string
 ): Promise<Response> {
+  if (!org_id) {
+    // Return defaults if no org
+    return buildResponse({
+      ok: true,
+      settings: {
+        enabled: false,
+        cluster: 'nam1',
+        application_id: null,
+        api_key_preview: null,
+        webhook_secret_preview: null,
+      }
+    }, 200, requestId);
+  }
+
   console.log(`[${requestId}] Loading settings for org ${org_id}`);
 
   const { data, error } = await supabase
@@ -226,82 +150,66 @@ async function handleLoad(
 
   if (error) {
     console.error(`[${requestId}] Load error:`, error.message);
-    return errorResponse(
-      'Failed to load settings',
-      'DB_ERROR',
-      500,
-      requestId
-    );
+    return errorResponse('Failed to load settings', 'DB_ERROR', 500, requestId);
   }
 
   if (!data) {
-    // No settings exist yet, return defaults
-    const settings: TTNSettings = {
-      enabled: false,
-      cluster: 'eu1',
-      application_id: null,
-      api_key_preview: null,
-      webhook_secret_preview: null,
-      updated_at: new Date().toISOString(),
-    };
-    return buildResponse({ ok: true, settings }, 200, requestId);
+    return buildResponse({
+      ok: true,
+      settings: {
+        enabled: false,
+        cluster: 'nam1',
+        application_id: null,
+        api_key_preview: null,
+        webhook_secret_preview: null,
+      }
+    }, 200, requestId);
   }
 
-  const settings: TTNSettings = {
-    enabled: data.enabled,
-    cluster: data.cluster,
-    application_id: data.application_id,
-    api_key_preview: maskSecret(data.api_key),
-    webhook_secret_preview: maskSecret(data.webhook_secret),
-    updated_at: data.updated_at,
-  };
-
-  return buildResponse({ ok: true, settings }, 200, requestId);
+  return buildResponse({
+    ok: true,
+    settings: {
+      enabled: data.enabled,
+      cluster: data.cluster,
+      application_id: data.application_id,
+      api_key_preview: maskSecret(data.api_key),
+      webhook_secret_preview: maskSecret(data.webhook_secret),
+      updated_at: data.updated_at,
+    }
+  }, 200, requestId);
 }
 
 // Save TTN settings for org
 async function handleSave(
   supabase: any,
-  org_id: string,
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { enabled, cluster, application_id, api_key, webhook_secret } = body;
+  const { org_id, enabled, cluster, application_id, api_key, webhook_secret } = body;
+
+  if (!org_id) {
+    return errorResponse('org_id is required to save settings', 'VALIDATION_ERROR', 400, requestId);
+  }
 
   console.log(`[${requestId}] Saving settings for org ${org_id}, enabled=${enabled}, cluster=${cluster}, app=${application_id}`);
 
   // Validate required fields when enabled
   if (enabled) {
     if (!application_id) {
-      return errorResponse(
-        'Application ID is required when TTN is enabled',
-        'VALIDATION_ERROR',
-        400,
-        requestId
-      );
+      return errorResponse('Application ID is required when TTN is enabled', 'VALIDATION_ERROR', 400, requestId);
     }
     if (!api_key) {
-      return errorResponse(
-        'API key is required when TTN is enabled',
-        'VALIDATION_ERROR',
-        400,
-        requestId
-      );
+      return errorResponse('API key is required when TTN is enabled', 'VALIDATION_ERROR', 400, requestId);
     }
-    if (!cluster) {
-      return errorResponse(
-        'Cluster is required when TTN is enabled',
-        'VALIDATION_ERROR',
-        400,
-        requestId
-      );
+    if (!cluster || !VALID_CLUSTERS.includes(cluster as TTNCluster)) {
+      return errorResponse('Valid cluster (eu1 or nam1) is required', 'VALIDATION_ERROR', 400, requestId);
     }
   }
 
   const upsertData = {
     org_id,
     enabled: enabled ?? false,
-    cluster: cluster ?? 'eu1',
+    cluster: cluster ?? 'nam1',
     application_id: application_id ?? null,
     api_key: api_key ?? null,
     webhook_secret: webhook_secret ?? null,
@@ -313,19 +221,14 @@ async function handleSave(
 
   if (error) {
     console.error(`[${requestId}] Save error:`, error.message);
-    return errorResponse(
-      'Failed to save settings',
-      'DB_ERROR',
-      500,
-      requestId
-    );
+    return errorResponse('Failed to save settings', 'DB_ERROR', 500, requestId);
   }
 
   console.log(`[${requestId}] Settings saved successfully`);
   return buildResponse({ ok: true, message: 'Settings saved' }, 200, requestId);
 }
 
-// Test TTN connection
+// Test TTN connection - SIMPLIFIED to only check application access
 async function handleTest(
   body: TTNSettingsRequest,
   requestId: string
@@ -336,181 +239,142 @@ async function handleTest(
 
   // Validate required fields
   if (!cluster) {
-    return errorResponse(
-      'Cluster is required for testing',
-      'VALIDATION_ERROR',
-      400,
-      requestId
-    );
+    return buildResponse({
+      ok: false,
+      error: 'Cluster is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
   }
+
+  if (!VALID_CLUSTERS.includes(cluster as TTNCluster)) {
+    return buildResponse({
+      ok: false,
+      error: `Invalid cluster. Use: ${VALID_CLUSTERS.join(' or ')}`,
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
   if (!application_id) {
-    return errorResponse(
-      'Application ID is required for testing',
-      'VALIDATION_ERROR',
-      400,
-      requestId
-    );
+    return buildResponse({
+      ok: false,
+      error: 'Application ID is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
   }
+
   if (!api_key) {
-    return errorResponse(
-      'API key is required for testing',
-      'VALIDATION_ERROR',
-      400,
-      requestId
-    );
+    return buildResponse({
+      ok: false,
+      error: 'API Key is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
   }
 
-  const baseUrl = `https://${cluster}.cloud.thethings.network`;
+  const baseUrl = getBaseUrl(cluster);
 
-  // Step 1: Fetch application info
-  console.log(`[${requestId}] Step 1: Fetching application info`);
-  let appResponse: Response;
+  // ONLY call GET /api/v3/applications/{application_id}
+  // This is the ONLY validation we perform
+  console.log(`[${requestId}] Fetching application: ${baseUrl}/api/v3/applications/${application_id}`);
+  
+  let response: Response;
   try {
-    appResponse = await fetch(
-      `${baseUrl}/api/v3/applications/${application_id}`,
-      {
-        headers: {
-          'Authorization': `Bearer ${api_key}`,
-          'Accept': 'application/json',
-        },
-      }
-    );
-  } catch (fetchError) {
-    console.error(`[${requestId}] Network error fetching application:`, fetchError);
-    return buildResponse(
-      {
-        ok: false,
-        step: 'fetch_application',
-        ttn_status: 0,
-        ttn_message: 'Network error connecting to TTN',
-        hint: `Could not reach ${baseUrl}. Check your internet connection and cluster selection.`,
+    response = await fetch(`${baseUrl}/api/v3/applications/${application_id}`, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${api_key}`,
+        'Accept': 'application/json',
       },
-      200, // Return 200 so UI can parse the JSON
-      requestId
-    );
+    });
+  } catch (fetchError: unknown) {
+    const errorMsg = fetchError instanceof Error ? fetchError.message : 'Unknown network error';
+    console.error(`[${requestId}] Network error:`, errorMsg);
+    return buildResponse({
+      ok: false,
+      error: 'Network error connecting to TTN',
+      code: 'NETWORK_ERROR',
+      hint: `Could not reach ${baseUrl}. Check internet connection.`,
+      baseUrl,
+    }, 200, requestId);
   }
 
-  if (!appResponse.ok) {
-    const ttnStatus = appResponse.status;
-    let ttnMessage = appResponse.statusText;
-    let hint = '';
+  const status = response.status;
+  console.log(`[${requestId}] TTN response status: ${status}`);
 
-    try {
-      const errorBody = await appResponse.json();
-      ttnMessage = errorBody.message || errorBody.error || ttnMessage;
-    } catch {
-      // Ignore parse error
-    }
-
-    if (ttnStatus === 401) {
-      hint = 'API key is invalid or expired. Generate a new key in TTN Console → API keys.';
-    } else if (ttnStatus === 403) {
-      hint = 'API key lacks permission to read this application. Check key rights in TTN Console.';
-    } else if (ttnStatus === 404) {
-      hint = `Application "${application_id}" not found. Verify the Application ID in TTN Console.`;
-    } else {
-      hint = 'Check TTN Console for more details.';
-    }
-
-    console.log(`[${requestId}] TTN returned ${ttnStatus}: ${ttnMessage}`);
-
-    return buildResponse(
-      {
-        ok: false,
-        step: 'fetch_application',
-        ttn_status: ttnStatus,
-        ttn_message: ttnMessage,
-        hint,
-        baseUrl,
-        application_id,
-      },
-      200,
-      requestId
-    );
-  }
-
-  console.log(`[${requestId}] Application found successfully`);
-
-  // Step 2: Check application rights
-  console.log(`[${requestId}] Step 2: Checking application rights`);
-  let rightsResponse: Response;
+  // Parse response body for error details
+  let ttnMessage = '';
+  let ttnCode = '';
   try {
-    rightsResponse = await fetch(
-      `${baseUrl}/api/v3/applications/${application_id}/rights`,
-      {
-        headers: {
-          'Authorization': `Bearer ${api_key}`,
-          'Accept': 'application/json',
-        },
-      }
-    );
-  } catch (fetchError) {
-    console.error(`[${requestId}] Network error fetching rights:`, fetchError);
-    // Application exists but couldn't check rights - still a success with warning
-    return buildResponse(
-      {
-        ok: true,
-        baseUrl,
-        application_id,
-        rights_ok: false,
-        rights_check_failed: true,
-        hint: 'Application found but could not verify rights. Connection should work.',
-      },
-      200,
-      requestId
-    );
-  }
-
-  if (!rightsResponse.ok) {
-    // Rights endpoint may not be accessible, treat as partial success
-    console.log(`[${requestId}] Could not fetch rights: ${rightsResponse.status}`);
-    return buildResponse(
-      {
-        ok: true,
-        baseUrl,
-        application_id,
-        rights_ok: false,
-        rights_check_failed: true,
-        hint: 'Application found but rights endpoint not accessible. This may still work.',
-      },
-      200,
-      requestId
-    );
-  }
-
-  let rights: string[] = [];
-  try {
-    const rightsData = await rightsResponse.json();
-    rights = rightsData.rights || [];
+    const responseBody = await response.json();
+    ttnMessage = responseBody.message || responseBody.error || '';
+    ttnCode = responseBody.code || '';
+    console.log(`[${requestId}] TTN response:`, { message: ttnMessage, code: ttnCode });
   } catch {
-    console.log(`[${requestId}] Could not parse rights response`);
+    console.log(`[${requestId}] Could not parse TTN response body`);
   }
 
-  console.log(`[${requestId}] Rights found:`, rights);
-
-  // Check for required rights
-  const missingRights = REQUIRED_RIGHTS.filter(r => !rights.includes(r));
-  const rightsOk = missingRights.length === 0;
-
-  const nextSteps: string[] = [];
-  if (!rightsOk) {
-    nextSteps.push('Go to TTN Console → Applications → API keys');
-    nextSteps.push('Edit your API key or create a new one');
-    nextSteps.push(`Grant the following rights: ${missingRights.join(', ')}`);
-    nextSteps.push('Or select "Grant all current and future rights" for full access');
-  }
-
-  return buildResponse(
-    {
+  // Handle response codes
+  if (status === 200) {
+    // SUCCESS
+    console.log(`[${requestId}] TTN connection successful`);
+    return buildResponse({
       ok: true,
+      connected: true,
       baseUrl,
       application_id,
-      rights_ok: rightsOk,
-      granted_rights: rights,
-      missing_rights: missingRights,
-      next_steps: nextSteps,
-    },
-    200,
-    requestId
-  );
+      cluster,
+      message: 'Connected to The Things Network',
+      required_permissions: REQUIRED_PERMISSIONS,
+    }, 200, requestId);
+  }
+
+  if (status === 401) {
+    // Invalid or expired API key
+    return buildResponse({
+      ok: false,
+      error: 'Invalid or expired API key',
+      code: 'AUTH_INVALID',
+      hint: 'Generate a new API key in TTN Console → Applications → API keys',
+      ttn_status: status,
+      ttn_message: ttnMessage,
+      baseUrl,
+    }, 200, requestId);
+  }
+
+  if (status === 403) {
+    // API key lacks permissions
+    return buildResponse({
+      ok: false,
+      error: 'API key missing required permissions',
+      code: 'PERMISSION_DENIED',
+      hint: `Your API key needs these permissions: ${REQUIRED_PERMISSIONS.join(', ')}. Edit the key in TTN Console.`,
+      ttn_status: status,
+      ttn_message: ttnMessage,
+      baseUrl,
+    }, 200, requestId);
+  }
+
+  if (status === 404) {
+    // Application not found - could be wrong cluster
+    return buildResponse({
+      ok: false,
+      error: `Application "${application_id}" not found in ${cluster} cluster`,
+      code: 'NOT_FOUND',
+      hint: 'Check the Application ID in TTN Console. If correct, verify you selected the right cluster region.',
+      cluster_hint: `Application may exist in a different region. Try switching cluster.`,
+      ttn_status: status,
+      ttn_message: ttnMessage,
+      baseUrl,
+    }, 200, requestId);
+  }
+
+  // Unknown error
+  return buildResponse({
+    ok: false,
+    error: `TTN returned status ${status}`,
+    code: 'TTN_ERROR',
+    hint: ttnMessage || 'Check TTN Console for more details',
+    ttn_status: status,
+    ttn_message: ttnMessage,
+    baseUrl,
+  }, 200, requestId);
 }

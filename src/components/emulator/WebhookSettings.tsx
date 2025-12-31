@@ -8,7 +8,7 @@ import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
-  Radio, Cloud, AlertCircle, Shield, ShieldCheck, ShieldX, Save
+  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info
 } from 'lucide-react';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
@@ -30,28 +30,25 @@ interface WebhookSettingsProps {
 }
 
 const TTN_CLUSTERS = [
-  { value: 'eu1', label: 'Europe 1 (eu1)' },
-  { value: 'nam1', label: 'North America 1 (nam1)' },
-  { value: 'au1', label: 'Australia 1 (au1)' },
-  { value: 'as1', label: 'Asia 1 (as1)' },
+  { value: 'nam1', label: 'North America (nam1)' },
+  { value: 'eu1', label: 'Europe (eu1)' },
 ];
 
 interface TTNTestResult {
   ok: boolean;
   requestId: string;
-  step?: string;
-  ttn_status?: number;
-  ttn_message?: string;
-  hint?: string;
-  baseUrl?: string;
-  application_id?: string;
-  rights_ok?: boolean;
-  rights_check_failed?: boolean;
-  granted_rights?: string[];
-  missing_rights?: string[];
-  next_steps?: string[];
   error?: string;
   code?: string;
+  hint?: string;
+  cluster_hint?: string;
+  baseUrl?: string;
+  application_id?: string;
+  cluster?: string;
+  connected?: boolean;
+  message?: string;
+  ttn_status?: number;
+  ttn_message?: string;
+  required_permissions?: string[];
 }
 
 interface TTNSettingsFromDB {
@@ -293,40 +290,28 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const result: TTNTestResult = data;
       setTestResult(result);
 
-      if (result.ok && result.rights_ok) {
+      if (result.ok && result.connected) {
         toast({
           title: 'TTN Connected',
-          description: 'Successfully connected to The Things Network with full rights',
+          description: result.message || 'Successfully connected to The Things Network',
         });
         updateTTN({
           lastStatus: {
             code: 200,
-            message: 'Connected with full rights',
-            timestamp: new Date(),
-          }
-        });
-      } else if (result.ok && !result.rights_ok) {
-        toast({
-          title: 'TTN Connected (Limited)',
-          description: 'Connected but some rights are missing',
-        });
-        updateTTN({
-          lastStatus: {
-            code: 200,
-            message: 'Connected with limited rights',
+            message: result.message || 'Connected',
             timestamp: new Date(),
           }
         });
       } else {
         toast({
           title: 'TTN Test Failed',
-          description: result.ttn_message || result.error || 'Unknown error',
+          description: result.error || result.ttn_message || 'Unknown error',
           variant: 'destructive',
         });
         updateTTN({
           lastStatus: {
             code: result.ttn_status || 500,
-            message: result.ttn_message || result.error || 'Unknown error',
+            message: result.error || result.ttn_message || 'Unknown error',
             timestamp: new Date(),
           }
         });
@@ -451,46 +436,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const renderTestDiagnostics = () => {
     if (!testResult) return null;
 
-    if (testResult.ok && testResult.rights_ok) {
+    // Success case
+    if (testResult.ok && testResult.connected) {
       return (
         <Alert className="border-green-500/50 bg-green-500/10">
           <ShieldCheck className="h-4 w-4 text-green-500" />
           <AlertTitle className="text-green-600">Connected Successfully</AlertTitle>
           <AlertDescription className="text-sm space-y-1">
             <p>Application: <code className="bg-muted px-1 rounded">{testResult.application_id}</code></p>
+            <p>Cluster: <code className="bg-muted px-1 rounded">{testResult.cluster}</code></p>
             <p>Endpoint: <code className="bg-muted px-1 rounded text-xs">{testResult.baseUrl}</code></p>
-            <p className="text-xs text-muted-foreground">Request ID: {testResult.requestId}</p>
-          </AlertDescription>
-        </Alert>
-      );
-    }
-
-    if (testResult.ok && !testResult.rights_ok) {
-      return (
-        <Alert className="border-amber-500/50 bg-amber-500/10">
-          <Shield className="h-4 w-4 text-amber-500" />
-          <AlertTitle className="text-amber-600">Connected with Limited Rights</AlertTitle>
-          <AlertDescription className="text-sm space-y-2">
-            <p>Your API key works but is missing some permissions.</p>
-            {testResult.missing_rights && testResult.missing_rights.length > 0 && (
-              <div>
-                <p className="font-medium">Missing rights:</p>
-                <ul className="list-disc list-inside text-xs">
-                  {testResult.missing_rights.map((r, i) => (
-                    <li key={i}><code>{r}</code></li>
-                  ))}
-                </ul>
-              </div>
-            )}
-            {testResult.next_steps && testResult.next_steps.length > 0 && (
-              <div className="bg-background/50 rounded p-2 text-xs">
-                <p className="font-medium mb-1">Next steps:</p>
-                <ol className="list-decimal list-inside space-y-0.5">
-                  {testResult.next_steps.map((step, i) => (
-                    <li key={i}>{step}</li>
-                  ))}
-                </ol>
-              </div>
+            {testResult.required_permissions && (
+              <p className="text-xs text-muted-foreground">
+                Required permissions: {testResult.required_permissions.join(', ')}
+              </p>
             )}
             <p className="text-xs text-muted-foreground">Request ID: {testResult.requestId}</p>
           </AlertDescription>
@@ -504,15 +463,17 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         <ShieldX className="h-4 w-4" />
         <AlertTitle>Connection Failed</AlertTitle>
         <AlertDescription className="text-sm space-y-2">
-          {testResult.step && (
-            <p>Failed at step: <code className="bg-muted px-1 rounded">{testResult.step}</code></p>
-          )}
+          <p className="font-medium">{testResult.error}</p>
           {testResult.ttn_status && (
             <p>TTN Status: <Badge variant="destructive">{testResult.ttn_status}</Badge></p>
           )}
-          <p>{testResult.ttn_message || testResult.error}</p>
           {testResult.hint && (
             <p className="bg-background/50 rounded p-2 text-xs">{testResult.hint}</p>
+          )}
+          {testResult.cluster_hint && (
+            <p className="bg-amber-500/10 border border-amber-500/30 rounded p-2 text-xs text-amber-700">
+              {testResult.cluster_hint}
+            </p>
           )}
           <p className="text-xs text-muted-foreground">Request ID: {testResult.requestId}</p>
         </AlertDescription>
@@ -630,19 +591,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
               {/* Test Result Diagnostics */}
               {renderTestDiagnostics()}
 
-              {/* TTN Device Registration Helper */}
-              {currentDevEui && (
-                <div className="bg-amber-500/10 border border-amber-500/30 rounded-lg p-4 space-y-3">
-                  <div className="flex items-start gap-2">
-                    <AlertCircle className="h-4 w-4 mt-0.5 text-amber-600 shrink-0" />
-                    <div className="text-sm space-y-2">
-                      <p className="font-medium text-amber-700">Device Must Be Registered in TTN</p>
-                      <p className="text-xs text-muted-foreground">
-                        Register this device in TTN Console with the exact DevEUI.
-                      </p>
-                    </div>
+              {/* TTN Device Registration Notice */}
+              <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 space-y-3">
+                <div className="flex items-start gap-2">
+                  <Info className="h-4 w-4 mt-0.5 text-blue-600 shrink-0" />
+                  <div className="text-sm space-y-2">
+                    <p className="font-medium text-blue-700">Device Registration Required</p>
+                    <p className="text-xs text-muted-foreground">
+                      Register the device in TTN Console using the DevEUI before uplinks will work.
+                      Devices are NOT auto-created — "Pending Provisioning" is expected until registration.
+                    </p>
                   </div>
-                  
+                </div>
+                
+                {currentDevEui && (
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">Current Temperature Sensor DevEUI</Label>
                     <div className="flex gap-2">
@@ -661,8 +623,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       </Button>
                     </div>
                   </div>
-                </div>
-              )}
+                )}
+              </div>
 
               {/* Action Buttons */}
               <div className="border-t pt-4 flex flex-wrap items-center justify-between gap-2">
