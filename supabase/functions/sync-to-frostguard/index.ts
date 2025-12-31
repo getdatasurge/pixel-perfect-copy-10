@@ -1,15 +1,21 @@
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
-import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
-// Hardcoded FrostGuard base URL for direct writes fallback
 const FROSTGUARD_BASE_URL = 'https://mfwyiifehsvwnjwqoxht.supabase.co';
+const PROJECT1_ENDPOINT = 'https://mfwyiifehsvwnjwqoxht.supabase.co/functions/v1/emulator-sync';
 
-// Sync bundle structure matching frontend SyncBundle interface
+// ─── Types ───────────────────────────────────────────────────────────────────
+
+interface ValidationError {
+  path: string;
+  message: string;
+  value?: string;
+}
+
 interface SyncBundle {
   metadata: {
     sync_run_id: string;
@@ -19,7 +25,7 @@ interface SyncBundle {
   context: {
     org_id: string;
     site_id?: string;
-    unit_id_override?: string;
+    unit_id?: string;
     selected_user_id?: string;
   };
   entities: {
@@ -35,281 +41,392 @@ interface SyncBundle {
       dev_eui: string;
       join_eui: string;
       app_key: string;
-      type: 'temperature' | 'door';
-      gateway_id: string;
+      type: string;
+      gateway_id?: string;
     }>;
   };
 }
 
 interface SyncResponse {
-  success: boolean;
-  sync_run_id: string;
-  method: 'endpoint' | 'direct';
-  results?: {
-    gateways: { synced: number; failed: number; errors: string[] };
-    devices: { synced: number; failed: number; errors: string[] };
-  };
-  summary?: string;
+  ok: boolean;
+  sync_run_id: string | null;
+  method?: 'endpoint' | 'direct';
   error?: string;
+  errors?: ValidationError[];
+  upstream_status?: number;
+  upstream_body?: unknown;
+  results?: {
+    gateways: { created: number; updated: number; failed: number };
+    devices: { created: number; updated: number; failed: number };
+  };
+  // Legacy fields for backward compatibility
+  success?: boolean;
+  summary?: string;
 }
 
-const PROJECT1_ENDPOINT = 'https://mfwyiifehsvwnjwqoxht.supabase.co/functions/v1/emulator-sync';
+// ─── Validation Helpers ─────────────────────────────────────────────────────
 
-serve(async (req) => {
-  // Handle CORS preflight requests
+function isValidHex(value: string | undefined | null, length: number): boolean {
+  if (!value) return false;
+  return new RegExp(`^[A-Fa-f0-9]{${length}}$`).test(value);
+}
+
+function isValidUUID(value: string | undefined | null): boolean {
+  if (!value) return false;
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(value);
+}
+
+function validateSyncBundle(body: SyncBundle): ValidationError[] {
+  const errors: ValidationError[] = [];
+
+  // Validate top-level structure
+  if (!body.metadata) {
+    errors.push({ path: 'metadata', message: 'Required object missing' });
+  }
+  if (!body.context) {
+    errors.push({ path: 'context', message: 'Required object missing' });
+  }
+  if (!body.entities) {
+    errors.push({ path: 'entities', message: 'Required object missing' });
+  }
+
+  // Early return if structure is broken
+  if (errors.length > 0) return errors;
+
+  // Validate metadata
+  if (!body.metadata.sync_run_id) {
+    errors.push({ path: 'metadata.sync_run_id', message: 'Required' });
+  } else if (!isValidUUID(body.metadata.sync_run_id)) {
+    errors.push({ path: 'metadata.sync_run_id', message: 'Must be a valid UUID' });
+  }
+
+  // Validate context
+  if (!body.context.org_id) {
+    errors.push({ path: 'context.org_id', message: 'Required' });
+  } else if (!isValidUUID(body.context.org_id)) {
+    errors.push({ path: 'context.org_id', message: 'Must be a valid UUID' });
+  }
+
+  // Validate entities structure
+  if (!Array.isArray(body.entities.gateways)) {
+    errors.push({ path: 'entities.gateways', message: 'Must be an array' });
+  }
+  if (!Array.isArray(body.entities.devices)) {
+    errors.push({ path: 'entities.devices', message: 'Must be an array' });
+  }
+
+  // Validate gateways
+  if (Array.isArray(body.entities.gateways)) {
+    body.entities.gateways.forEach((gw, i) => {
+      if (!gw.name?.trim()) {
+        errors.push({ path: `entities.gateways[${i}].name`, message: 'Required' });
+      }
+      if (!isValidHex(gw.eui, 16)) {
+        errors.push({
+          path: `entities.gateways[${i}].eui`,
+          message: `Must be 16 hex characters (got ${gw.eui?.length || 0})`,
+          value: gw.eui ? `...${gw.eui.slice(-4)}` : undefined,
+        });
+      }
+    });
+  }
+
+  // Validate devices
+  if (Array.isArray(body.entities.devices)) {
+    body.entities.devices.forEach((dev, i) => {
+      if (!dev.name?.trim()) {
+        errors.push({ path: `entities.devices[${i}].name`, message: 'Required' });
+      }
+      if (!isValidHex(dev.dev_eui, 16)) {
+        errors.push({
+          path: `entities.devices[${i}].dev_eui`,
+          message: `Must be 16 hex characters (got ${dev.dev_eui?.length || 0})`,
+        });
+      }
+      if (!isValidHex(dev.join_eui, 16)) {
+        errors.push({
+          path: `entities.devices[${i}].join_eui`,
+          message: `Must be 16 hex characters (got ${dev.join_eui?.length || 0})`,
+        });
+      }
+      if (!isValidHex(dev.app_key, 32)) {
+        errors.push({
+          path: `entities.devices[${i}].app_key`,
+          message: `Must be 32 hex characters (got ${dev.app_key?.length || 0})`,
+        });
+      }
+    });
+  }
+
+  return errors;
+}
+
+function safeLog(label: string, payload: unknown) {
+  // Deep clone and redact sensitive fields for logging
+  const redacted = JSON.parse(JSON.stringify(payload));
+  if (redacted.devices && Array.isArray(redacted.devices)) {
+    redacted.devices = redacted.devices.map((d: { app_key?: string }) => ({
+      ...d,
+      app_key: d.app_key ? `...${d.app_key.slice(-4)}` : undefined,
+    }));
+  }
+  if (redacted.entities?.devices && Array.isArray(redacted.entities.devices)) {
+    redacted.entities.devices = redacted.entities.devices.map((d: { app_key?: string }) => ({
+      ...d,
+      app_key: d.app_key ? `...${d.app_key.slice(-4)}` : undefined,
+    }));
+  }
+  console.log(label, JSON.stringify(redacted, null, 2));
+}
+
+// ─── Main Handler ────────────────────────────────────────────────────────────
+
+Deno.serve(async (req) => {
+  // Handle CORS preflight
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const responseHeaders = { ...corsHeaders, 'Content-Type': 'application/json' };
+
+  // Parse JSON body
+  let body: SyncBundle;
   try {
-    const body: SyncBundle = await req.json();
-    console.log('Sync request received:', JSON.stringify(body, null, 2));
+    body = await req.json();
+  } catch (e) {
+    console.error('JSON parse error:', e);
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        success: false,
+        sync_run_id: null,
+        error: 'invalid_json',
+        message: 'Request body must be valid JSON',
+      } as SyncResponse),
+      { status: 400, headers: responseHeaders }
+    );
+  }
 
-    const { metadata, context, entities } = body;
+  safeLog('Received sync bundle:', body);
 
-    // Validate required fields
-    if (!metadata?.sync_run_id) {
-      return new Response(
-        JSON.stringify({ success: false, error: 'sync_run_id is required in metadata' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+  // Validate the payload
+  const validationErrors = validateSyncBundle(body);
+  if (validationErrors.length > 0) {
+    console.log('Validation failed:', JSON.stringify(validationErrors, null, 2));
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        success: false,
+        sync_run_id: body.metadata?.sync_run_id || null,
+        error: 'validation_failed',
+        errors: validationErrors,
+      } as SyncResponse),
+      { status: 400, headers: responseHeaders }
+    );
+  }
 
-    if (!context?.org_id) {
-      return new Response(
-        JSON.stringify({ success: false, sync_run_id: metadata.sync_run_id, error: 'org_id is required in context' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+  const { metadata, context, entities } = body;
 
-    // site_id is optional - sync can proceed with org-level context only
-    if (!context?.site_id) {
-      console.log('No site_id provided, syncing with org-level context only');
-    }
+  console.log(`Sync request validated - sync_run_id: ${metadata.sync_run_id}, org: ${context.org_id}`);
+  console.log(`Entities: ${entities.gateways.length} gateways, ${entities.devices.length} devices`);
 
-    // Try Project 1 endpoint first
-    const emulatorSyncApiKey = Deno.env.get('EMULATOR_SYNC_API_KEY');
-    
-    if (emulatorSyncApiKey) {
-      console.log(`Attempting sync to Project 1 endpoint: ${PROJECT1_ENDPOINT}`);
-      
+  // Check for EMULATOR_SYNC_API_KEY for Project 1 endpoint
+  const syncApiKey = Deno.env.get('EMULATOR_SYNC_API_KEY');
+
+  if (syncApiKey) {
+    console.log('Attempting sync via Project 1 endpoint:', PROJECT1_ENDPOINT);
+
+    try {
+      // Transform payload to match Project 1's expected schema
+      const transformedGateways = entities.gateways.map(gw => ({
+        id: gw.id,
+        name: gw.name,
+        gateway_eui: gw.eui, // Rename eui → gateway_eui
+        is_online: gw.is_online,
+      }));
+
+      const transformedDevices = entities.devices.map(device => ({
+        id: device.id,
+        name: device.name,
+        dev_eui: device.dev_eui,
+        join_eui: device.join_eui,
+        app_key: device.app_key,
+        type: device.type,
+        gateway_id: device.gateway_id,
+        serial_number: device.dev_eui, // Use dev_eui as serial_number
+      }));
+
+      const project1Payload = {
+        org_id: context.org_id,
+        synced_at: metadata.initiated_at || new Date().toISOString(),
+        site_id: context.site_id || null,
+        sync_run_id: metadata.sync_run_id,
+        selected_user_id: context.selected_user_id || null,
+        source_project: metadata.source_project,
+        gateways: transformedGateways,
+        devices: transformedDevices,
+      };
+
+      safeLog('Transformed payload for Project 1:', project1Payload);
+
+      const response = await fetch(PROJECT1_ENDPOINT, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${syncApiKey}`,
+        },
+        body: JSON.stringify(project1Payload),
+      });
+
+      let responseData: unknown;
+      const responseText = await response.text();
       try {
-        // Transform payload to match Project 1's expected schema
-        // Project 1 expects:
-        // - org_id at top level, synced_at field
-        // - gateways[].gateway_eui (not eui)
-        // - devices[].serial_number (required)
-        
-        const transformedGateways = entities.gateways.map(gw => ({
-          id: gw.id,
-          name: gw.name,
-          gateway_eui: gw.eui,  // Rename eui → gateway_eui
-          is_online: gw.is_online,
-        }));
+        responseData = JSON.parse(responseText);
+      } catch {
+        responseData = { raw: responseText };
+      }
 
-        const transformedDevices = entities.devices.map(device => ({
+      console.log(`Project 1 response: ${response.status}`, JSON.stringify(responseData));
+
+      if (response.ok) {
+        return new Response(
+          JSON.stringify({
+            ok: true,
+            success: true,
+            sync_run_id: metadata.sync_run_id,
+            method: 'endpoint',
+            results: responseData,
+          } as SyncResponse),
+          { status: 200, headers: responseHeaders }
+        );
+      }
+
+      // If Project 1 returns an error (not 404), return 502 with upstream details
+      if (response.status !== 404) {
+        console.error(`Project 1 returned error: ${response.status}`);
+        return new Response(
+          JSON.stringify({
+            ok: false,
+            success: false,
+            sync_run_id: metadata.sync_run_id,
+            error: 'upstream_failed',
+            upstream_status: response.status,
+            upstream_body: responseData,
+          } as SyncResponse),
+          { status: 502, headers: responseHeaders }
+        );
+      }
+
+      // 404 means endpoint not found, fall through to direct write
+      console.log('Project 1 endpoint not found (404), falling back to direct write');
+    } catch (error) {
+      console.error('Error calling Project 1 endpoint:', error);
+      // Fall through to direct write on network errors
+    }
+  } else {
+    console.log('EMULATOR_SYNC_API_KEY not configured, using direct writes');
+  }
+
+  // ─── Fallback: Direct Database Write ─────────────────────────────────────────
+  console.log('Using direct database write to FrostGuard');
+
+  const frostguardAnonKey = Deno.env.get('FROSTGUARD_ANON_KEY');
+  if (!frostguardAnonKey) {
+    console.error('Missing FROSTGUARD_ANON_KEY');
+    return new Response(
+      JSON.stringify({
+        ok: false,
+        success: false,
+        sync_run_id: metadata.sync_run_id,
+        error: 'configuration_error',
+        message: 'FROSTGUARD_ANON_KEY not configured',
+      } as SyncResponse),
+      { status: 500, headers: responseHeaders }
+    );
+  }
+
+  const supabase = createClient(FROSTGUARD_BASE_URL, frostguardAnonKey);
+
+  const results = {
+    gateways: { created: 0, updated: 0, failed: 0 },
+    devices: { created: 0, updated: 0, failed: 0 },
+  };
+
+  // Sync gateways
+  for (const gateway of entities.gateways) {
+    try {
+      const { error } = await supabase.from('gateways').upsert(
+        {
+          id: gateway.id,
+          name: gateway.name,
+          gateway_eui: gateway.eui,
+          is_online: gateway.is_online,
+          organization_id: context.org_id,
+          site_id: context.site_id || null,
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
+      );
+
+      if (error) {
+        console.error(`Gateway ${gateway.id} upsert failed:`, error);
+        results.gateways.failed++;
+      } else {
+        results.gateways.updated++;
+      }
+    } catch (err) {
+      console.error(`Gateway ${gateway.id} exception:`, err);
+      results.gateways.failed++;
+    }
+  }
+
+  // Sync devices
+  for (const device of entities.devices) {
+    try {
+      const { error } = await supabase.from('lora_sensors').upsert(
+        {
           id: device.id,
           name: device.name,
           dev_eui: device.dev_eui,
           join_eui: device.join_eui,
           app_key: device.app_key,
-          type: device.type,
-          gateway_id: device.gateway_id,
-          serial_number: device.dev_eui,  // Use dev_eui as serial_number
-        }));
-
-        const project1Payload = {
-          org_id: context.org_id,
-          synced_at: metadata.initiated_at || new Date().toISOString(),
+          sensor_type: device.type,
+          serial_number: device.dev_eui,
+          gateway_id: device.gateway_id || null,
+          organization_id: context.org_id,
           site_id: context.site_id || null,
-          sync_run_id: metadata.sync_run_id,
-          selected_user_id: context.selected_user_id || null,
-          source_project: metadata.source_project,
-          gateways: transformedGateways,
-          devices: transformedDevices,
-        };
-
-        console.log('Transformed payload for Project 1:', JSON.stringify(project1Payload, null, 2));
-
-        const response = await fetch(PROJECT1_ENDPOINT, {
-          method: 'POST',
-          headers: {
-            'Content-Type': 'application/json',
-            'Authorization': `Bearer ${emulatorSyncApiKey}`,
-          },
-          body: JSON.stringify(project1Payload),
-        });
-
-        console.log(`Project 1 response status: ${response.status}`);
-
-        // If endpoint exists and responds (even with error), use that response
-        if (response.status !== 404) {
-          const responseData = await response.json();
-          console.log('Project 1 response:', JSON.stringify(responseData, null, 2));
-          
-          // If validation error, provide structured feedback
-          if (response.status === 400 && responseData.details) {
-            const validationErrors = responseData.details.map(
-              (d: { path: string; message: string }) => `${d.path}: ${d.message}`
-            ).join(', ');
-            
-            return new Response(
-              JSON.stringify({
-                success: false,
-                sync_run_id: metadata.sync_run_id,
-                method: 'endpoint',
-                error: `Validation failed: ${validationErrors}`,
-                details: responseData.details,
-              }),
-              { 
-                status: 400,
-                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-              }
-            );
-          }
-          
-          return new Response(
-            JSON.stringify({
-              ...responseData,
-              sync_run_id: metadata.sync_run_id,
-              method: 'endpoint',
-            }),
-            { 
-              status: response.ok ? 200 : response.status,
-              headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-            }
-          );
-        }
-
-        console.log('Project 1 endpoint returned 404, falling back to direct writes');
-      } catch (fetchError) {
-        console.error('Failed to reach Project 1 endpoint:', fetchError);
-        console.log('Falling back to direct database writes');
-      }
-    } else {
-      console.log('EMULATOR_SYNC_API_KEY not configured, using direct writes');
-    }
-
-    // Fallback: Direct database writes to FrostGuard using hardcoded URL
-    console.log('Using direct writes to FrostGuard:', FROSTGUARD_BASE_URL);
-
-    const frostguardAnonKey = Deno.env.get('FROSTGUARD_ANON_KEY');
-    if (!frostguardAnonKey) {
-      console.error('FROSTGUARD_ANON_KEY not configured');
-      return new Response(
-        JSON.stringify({ success: false, sync_run_id: metadata.sync_run_id, error: 'FROSTGUARD_ANON_KEY not configured' }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+          updated_at: new Date().toISOString(),
+        },
+        { onConflict: 'id' }
       );
-    }
 
-    const frostguardClient = createClient(FROSTGUARD_BASE_URL, frostguardAnonKey);
-
-    const results = {
-      gateways: { synced: 0, failed: 0, errors: [] as string[] },
-      devices: { synced: 0, failed: 0, errors: [] as string[] },
-    };
-
-    // Sync gateways
-    if (entities.gateways && entities.gateways.length > 0) {
-      console.log(`Syncing ${entities.gateways.length} gateways via direct writes...`);
-      
-      for (const gateway of entities.gateways) {
-        try {
-          const { error } = await frostguardClient
-            .from('gateways')
-            .upsert({
-              id: gateway.id,
-              name: gateway.name,
-              status: gateway.is_online ? 'online' : 'offline',
-            }, { onConflict: 'id' });
-
-          if (error) {
-            console.error(`Failed to sync gateway ${gateway.name}:`, error);
-            results.gateways.failed++;
-            results.gateways.errors.push(`${gateway.name}: ${error.message}`);
-          } else {
-            console.log(`Successfully synced gateway: ${gateway.name}`);
-            results.gateways.synced++;
-          }
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          console.error(`Exception syncing gateway ${gateway.name}:`, err);
-          results.gateways.failed++;
-          results.gateways.errors.push(`${gateway.name}: ${errorMessage}`);
-        }
+      if (error) {
+        console.error(`Device ${device.id} upsert failed:`, error);
+        results.devices.failed++;
+      } else {
+        results.devices.updated++;
       }
+    } catch (err) {
+      console.error(`Device ${device.id} exception:`, err);
+      results.devices.failed++;
     }
+  }
 
-    // Sync devices (sensors)
-    if (entities.devices && entities.devices.length > 0) {
-      console.log(`Syncing ${entities.devices.length} devices via direct writes...`);
-      
-      for (const device of entities.devices) {
-        try {
-          const sensorData: Record<string, unknown> = {
-            id: device.id,
-            name: device.name,
-            dev_eui: device.dev_eui,
-            join_eui: device.join_eui,
-            app_key: device.app_key,
-            sensor_type: device.type,
-            gateway_id: device.gateway_id,
-          };
+  console.log('Direct write results:', JSON.stringify(results));
 
-          // Add context fields
-          if (context.site_id) {
-            sensorData.site_id = context.site_id;
-          }
-          if (context.unit_id_override) {
-            sensorData.unit_id = context.unit_id_override;
-          }
+  const allSucceeded =
+    results.gateways.failed === 0 && results.devices.failed === 0;
+  const summary = `Synced ${results.gateways.updated} gateways and ${results.devices.updated} devices`;
 
-          const { error } = await frostguardClient
-            .from('lora_sensors')
-            .upsert(sensorData, { onConflict: 'id' });
-
-          if (error) {
-            console.error(`Failed to sync device ${device.name}:`, error);
-            results.devices.failed++;
-            results.devices.errors.push(`${device.name}: ${error.message}`);
-          } else {
-            console.log(`Successfully synced device: ${device.name}`);
-            results.devices.synced++;
-          }
-        } catch (err) {
-          const errorMessage = err instanceof Error ? err.message : String(err);
-          console.error(`Exception syncing device ${device.name}:`, err);
-          results.devices.failed++;
-          results.devices.errors.push(`${device.name}: ${errorMessage}`);
-        }
-      }
-    }
-
-    const totalSynced = results.gateways.synced + results.devices.synced;
-    const totalFailed = results.gateways.failed + results.devices.failed;
-    const summary = `Synced ${results.gateways.synced} gateways and ${results.devices.synced} devices`;
-
-    console.log(`Direct sync complete: ${totalSynced} synced, ${totalFailed} failed`);
-
-    const response: SyncResponse = {
-      success: totalFailed === 0,
+  return new Response(
+    JSON.stringify({
+      ok: allSucceeded,
+      success: allSucceeded,
       sync_run_id: metadata.sync_run_id,
       method: 'direct',
       results,
       summary,
-    };
-
-    return new Response(
-      JSON.stringify(response),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-
-  } catch (error) {
-    const errorMessage = error instanceof Error ? error.message : String(error);
-    console.error('Error in sync-to-frostguard:', error);
-    return new Response(
-      JSON.stringify({ success: false, error: errorMessage }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
-  }
+    } as SyncResponse),
+    { status: allSucceeded ? 200 : 207, headers: responseHeaders }
+  );
 });

@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -8,6 +8,8 @@ import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } f
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog from './UserSearchDialog';
+import SyncReadinessPanel from './SyncReadinessPanel';
+import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
 
 interface TestContextConfigProps {
   config: WebhookConfig;
@@ -20,6 +22,11 @@ interface TestContextConfigProps {
 
 type SyncStatus = 'success' | 'partial' | 'failed' | null;
 
+interface SyncErrorDetail {
+  path: string;
+  message: string;
+}
+
 export default function TestContextConfig({ 
   config, 
   onConfigChange, 
@@ -31,11 +38,32 @@ export default function TestContextConfig({
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
+  const [lastSyncError, setLastSyncError] = useState<string | null>(null);
   const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
   
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
   const lastSyncMethodRef = useRef<'endpoint' | 'direct' | null>(null);
+
+  // Preflight validation
+  const validationResult: ValidationResult = useMemo(() => {
+    return validateSyncBundle(
+      {
+        org_id: config.testOrgId,
+        site_id: config.testSiteId,
+        selected_user_id: config.selectedUserId || undefined,
+      },
+      gateways.map(g => ({ id: g.id, name: g.name, eui: g.eui })),
+      devices.map(d => ({
+        id: d.id,
+        name: d.name,
+        dev_eui: d.devEui,
+        join_eui: d.joinEui,
+        app_key: d.appKey,
+        type: d.type,
+      }))
+    );
+  }, [config.testOrgId, config.testSiteId, config.selectedUserId, gateways, devices]);
 
   // Fetch synced user count
   const fetchUserCount = async () => {
@@ -57,6 +85,7 @@ export default function TestContextConfig({
     // Reset sync state when inputs change
     setSyncStatus(null);
     setLastSyncSummary(null);
+    setLastSyncError(null);
     // Clear sync run ID so next sync gets a new one
     setCurrentSyncRunId(null);
   };
@@ -70,10 +99,11 @@ export default function TestContextConfig({
     });
   };
 
-  // Validation: require org_id for sync, site_id is optional
-  const canSync = config.testOrgId && (gateways.length > 0 || devices.length > 0);
+  // Validation: require valid preflight + at least one entity
+  const canSync = validationResult.isValid && (gateways.length > 0 || devices.length > 0);
+  const hasEntities = gateways.length > 0 || devices.length > 0;
 
-  const buildSyncBundle = (syncRunId: string): SyncBundle => {
+  const buildSyncBundlePayload = (syncRunId: string): SyncBundle => {
     return {
       metadata: {
         sync_run_id: syncRunId,
@@ -107,16 +137,17 @@ export default function TestContextConfig({
   };
 
   const syncAll = async () => {
-    if (!config.testOrgId) {
+    // Block if validation fails
+    if (!validationResult.isValid) {
       toast({ 
-        title: 'Missing Configuration', 
-        description: 'Organization ID is required', 
+        title: 'Validation Failed', 
+        description: `Fix ${validationResult.blockingErrors.length} issue(s) before syncing`, 
         variant: 'destructive' 
       });
       return;
     }
 
-    if (gateways.length === 0 && devices.length === 0) {
+    if (!hasEntities) {
       toast({ 
         title: 'Nothing to Sync', 
         description: 'Add gateways or devices first', 
@@ -128,6 +159,7 @@ export default function TestContextConfig({
     setIsSyncing(true);
     setSyncStatus(null);
     setLastSyncSummary(null);
+    setLastSyncError(null);
 
     // Generate new sync_run_id on first attempt, reuse on retry
     const syncRunId = currentSyncRunId || crypto.randomUUID();
@@ -136,21 +168,53 @@ export default function TestContextConfig({
     }
 
     try {
-      const syncBundle = buildSyncBundle(syncRunId);
+      const syncBundle = buildSyncBundlePayload(syncRunId);
       console.log('Sending sync bundle:', JSON.stringify(syncBundle, null, 2));
 
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
         body: syncBundle,
       });
 
-      if (error) throw error;
+      // Extract detailed error from response
+      if (error) {
+        console.error('Sync function error:', error);
+        
+        let errorDetails = error.message || 'Unknown error';
+        let validationErrors: SyncErrorDetail[] = [];
+        
+        // Try to extract structured error from the response body
+        // The FunctionsHttpError may have context.body with our JSON
+        if ((error as { context?: { body?: string } }).context?.body) {
+          try {
+            const parsed = JSON.parse((error as { context: { body: string } }).context.body);
+            if (parsed.errors && Array.isArray(parsed.errors)) {
+              validationErrors = parsed.errors;
+              errorDetails = parsed.errors.map((e: SyncErrorDetail) => 
+                `${e.path}: ${e.message}`
+              ).join('\n');
+            } else if (parsed.error) {
+              errorDetails = parsed.error;
+              if (parsed.upstream_body) {
+                errorDetails += ` (upstream: ${JSON.stringify(parsed.upstream_body)})`;
+              }
+            }
+          } catch {
+            // Use original error message
+          }
+        }
+        
+        throw new Error(errorDetails);
+      }
 
-      const { success, results, summary, method, sync_run_id } = data;
+      // Handle successful response
+      const { ok, success, results, summary, method } = data;
       lastSyncMethodRef.current = method;
-      setLastSyncSummary(summary);
+      setLastSyncSummary(summary || null);
       
-      const totalFailed = results?.gateways?.failed + results?.devices?.failed || 0;
-      const totalSynced = results?.gateways?.synced + results?.devices?.synced || 0;
+      // Handle both new format (ok, created/updated) and legacy format (success, synced)
+      const totalFailed = (results?.gateways?.failed ?? 0) + (results?.devices?.failed ?? 0);
+      const totalSynced = (results?.gateways?.synced ?? results?.gateways?.updated ?? 0) + 
+                          (results?.devices?.synced ?? results?.devices?.updated ?? 0);
       const allErrors = [...(results?.gateways?.errors || []), ...(results?.devices?.errors || [])];
       
       // Build SyncResult for dashboard
@@ -167,10 +231,10 @@ export default function TestContextConfig({
           orgApplied: !!config.testOrgId,
         },
         counts: {
-          gatewaysSynced: results?.gateways?.synced || 0,
-          gatewaysFailed: results?.gateways?.failed || 0,
-          devicesSynced: results?.devices?.synced || 0,
-          devicesFailed: results?.devices?.failed || 0,
+          gatewaysSynced: results?.gateways?.synced ?? results?.gateways?.updated ?? 0,
+          gatewaysFailed: results?.gateways?.failed ?? 0,
+          devicesSynced: results?.devices?.synced ?? results?.devices?.updated ?? 0,
+          devicesFailed: results?.devices?.failed ?? 0,
         },
         errors: allErrors,
         summary: summary || '',
@@ -192,7 +256,7 @@ export default function TestContextConfig({
           description: allErrors.slice(0, 2).join('; '), 
           variant: 'destructive' 
         });
-      } else {
+      } else if (ok || success) {
         setSyncStatus('success');
         // Clear sync run ID on success
         setCurrentSyncRunId(null);
@@ -201,9 +265,20 @@ export default function TestContextConfig({
           title: 'Sync Complete', 
           description: `${summary}${method === 'endpoint' ? ' (via endpoint)' : ' (direct writes)'}` 
         });
+      } else {
+        // ok=false but no failures - treat as failed
+        setSyncStatus('failed');
+        setLastSyncError(data.error || 'Unknown error');
+        onSyncResult?.(buildSyncResult('failed'));
+        toast({ 
+          title: 'Sync Failed', 
+          description: data.error || 'Unknown error', 
+          variant: 'destructive' 
+        });
       }
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
+      setLastSyncError(errorMessage);
       toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
       setSyncStatus('failed');
       setLastSyncSummary(null);
@@ -330,7 +405,7 @@ export default function TestContextConfig({
               disabled={disabled}
             />
             <p className="text-xs text-muted-foreground">
-              Required for sync
+              Optional for sync
             </p>
           </div>
 
@@ -352,9 +427,6 @@ export default function TestContextConfig({
           </div>
         </div>
 
-
-
-
         {(config.testOrgId || config.testSiteId) && (
           <div className="bg-primary/5 border border-primary/20 rounded-lg p-3">
             <p className="text-xs text-muted-foreground">
@@ -366,7 +438,12 @@ export default function TestContextConfig({
           </div>
         )}
 
-        <div className="border-t pt-4">
+        <div className="border-t pt-4 space-y-3">
+          {/* Sync Readiness Panel */}
+          {hasEntities && (
+            <SyncReadinessPanel validation={validationResult} />
+          )}
+
           <div className="flex items-center justify-between">
             <div>
               <Label className="flex items-center gap-2">
@@ -416,31 +493,32 @@ export default function TestContextConfig({
               )}
             </Button>
           </div>
+          
+          {/* Status messages */}
           {lastSyncSummary && syncStatus === 'success' && (
-            <p className="text-xs text-green-600 mt-2">
+            <p className="text-xs text-green-600 dark:text-green-400">
               ✓ {lastSyncSummary}
             </p>
           )}
           {lastSyncSummary && syncStatus === 'partial' && (
-            <p className="text-xs text-yellow-600 mt-2">
+            <p className="text-xs text-yellow-600 dark:text-yellow-400">
               ⚠ {lastSyncSummary}
             </p>
           )}
+          {lastSyncError && syncStatus === 'failed' && (
+            <div className="text-xs text-destructive bg-destructive/10 p-2 rounded border border-destructive/20">
+              <span className="font-medium">Error: </span>
+              <span className="whitespace-pre-wrap">{lastSyncError}</span>
+            </div>
+          )}
           {currentSyncRunId && syncStatus === 'failed' && (
-            <p className="text-xs text-muted-foreground mt-2">
+            <p className="text-xs text-muted-foreground">
               Retry will use same sync ID: {currentSyncRunId.slice(0, 8)}...
             </p>
           )}
-          {!canSync && !disabled && (
-            <p className="text-xs text-muted-foreground mt-2">
-              {!config.testOrgId 
-                ? 'Set Organization ID to enable sync'
-                : 'Add gateways or devices to sync'}
-            </p>
-          )}
-          {canSync && !config.testSiteId && !disabled && (
-            <p className="text-xs text-yellow-600 mt-2">
-              ⚠ Site ID not set - sync will use org-level context only
+          {!hasEntities && !disabled && (
+            <p className="text-xs text-muted-foreground">
+              Add gateways or devices to sync
             </p>
           )}
         </div>
