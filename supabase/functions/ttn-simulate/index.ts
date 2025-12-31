@@ -124,8 +124,8 @@ function validateConfig(applicationId: string, deviceId: string, cluster: string
   return null;
 }
 
-// Load TTN settings from database for an organization
-async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
+// Load TTN settings from database - site-specific first, then org-level
+async function loadTTNSettings(orgId: string, siteId?: string): Promise<TTNSettings | null> {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
@@ -137,10 +137,27 @@ async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
     
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
     
+    // Step 1: Try site-specific settings first
+    if (siteId) {
+      const { data: siteData, error: siteErr } = await supabase
+        .from('ttn_settings')
+        .select('api_key, application_id, cluster, enabled')
+        .eq('org_id', orgId)
+        .eq('site_id', siteId)
+        .maybeSingle();
+      
+      if (!siteErr && siteData?.enabled && siteData?.api_key) {
+        console.log(`Using site-specific TTN settings for org ${orgId}, site ${siteId}`);
+        return siteData as TTNSettings;
+      }
+    }
+    
+    // Step 2: Fall back to org-level settings
     const { data, error } = await supabase
       .from('ttn_settings')
       .select('api_key, application_id, cluster, enabled')
       .eq('org_id', orgId)
+      .is('site_id', null)
       .maybeSingle();
     
     if (error) {
@@ -155,45 +172,7 @@ async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
     
     return data as TTNSettings;
   } catch (err) {
-    console.error('Exception loading org settings:', err);
-    return null;
-  }
-}
-
-// Derive application_id from site_name (pattern: ft-{site_name})
-async function deriveApplicationIdFromSite(siteId: string): Promise<string | null> {
-  try {
-    const supabaseUrl = Deno.env.get('SUPABASE_URL');
-    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    
-    if (!supabaseUrl || !supabaseServiceKey) {
-      return null;
-    }
-    
-    const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    
-    const { data, error } = await supabase
-      .from('user_site_memberships')
-      .select('site_name')
-      .eq('site_id', siteId)
-      .limit(1)
-      .maybeSingle();
-    
-    if (error || !data?.site_name) {
-      console.log(`Could not derive application_id from site_id ${siteId}`);
-      return null;
-    }
-    
-    // Normalize: lowercase, remove spaces (and fix common typo: resturant -> restaurant)
-    const normalized = data.site_name
-      .toLowerCase()
-      .replace(/\s+/g, '')
-      .replace(/resturant/gi, 'restaurant');
-    const applicationId = `ft-${normalized}`;
-    console.log(`Derived application_id: ${applicationId} from site: ${data.site_name}`);
-    return applicationId;
-  } catch (err) {
-    console.error('Error deriving application_id from site:', err);
+    console.error('Exception loading TTN settings:', err);
     return null;
   }
 }
@@ -254,44 +233,30 @@ serve(async (req) => {
     const body: SimulateUplinkRequest = await req.json();
     let { org_id, site_id, deviceId, decodedPayload, fPort } = body;
 
-    // Try to load settings from org first, then fall back to request body / global secret
+    // Try to load settings from database (site-specific first, then org-level)
     let apiKey: string | undefined;
     let applicationId: string | undefined;
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    // Step 1: Derive application_id from site_id if provided (pattern: ft-{site_name})
-    if (site_id) {
-      const derivedAppId = await deriveApplicationIdFromSite(site_id);
-      if (derivedAppId) {
-        applicationId = derivedAppId;
-        settingsSource = 'derived';
-        console.log(`Using derived application_id: ${applicationId} from site_id: ${site_id}`);
-      }
-    }
-
-    // Step 2: Load org settings for API key and cluster
+    // Step 1: Load TTN settings (site-specific first, fallback to org-level)
     if (org_id) {
-      console.log(`Loading TTN settings for org: ${org_id}`);
-      const orgSettings = await loadOrgSettings(org_id);
+      console.log(`Loading TTN settings for org: ${org_id}, site: ${site_id || 'none'}`);
+      const ttnSettings = await loadTTNSettings(org_id, site_id);
       
-      if (orgSettings?.api_key) {
-        apiKey = orgSettings.api_key;
-        cluster = orgSettings.cluster;
-        
-        // Only use org application_id if we didn't derive one from site
-        if (!applicationId && orgSettings.application_id) {
-          applicationId = orgSettings.application_id;
-          settingsSource = 'org_settings';
-        }
-        console.log(`Using org TTN settings: cluster=${cluster}, app=${applicationId}, source=${settingsSource}`);
+      if (ttnSettings?.api_key) {
+        apiKey = ttnSettings.api_key;
+        cluster = ttnSettings.cluster;
+        applicationId = ttnSettings.application_id || undefined;
+        settingsSource = site_id && ttnSettings.application_id ? 'site_settings' : 'org_settings';
+        console.log(`Using TTN settings: cluster=${cluster}, app=${applicationId}, source=${settingsSource}`);
       }
     }
 
     // Fall back to request body values
     if (!apiKey) {
       apiKey = Deno.env.get('TTN_API_KEY');
-      settingsSource = settingsSource === 'derived' ? 'derived' : 'global_secret';
+      settingsSource = 'global_secret';
     }
     if (!applicationId) {
       applicationId = body.applicationId;
@@ -348,7 +313,8 @@ serve(async (req) => {
       cluster, 
       fPort, 
       settingsSource,
-      orgId: org_id || 'none'
+      orgId: org_id || 'none',
+      siteId: site_id || 'none'
     });
 
     // Preflight check: verify device exists in TTN
