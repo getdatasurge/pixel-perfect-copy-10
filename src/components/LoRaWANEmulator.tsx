@@ -25,6 +25,7 @@ import QRCodeModal from './emulator/QRCodeModal';
 import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
 import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
+import TelemetryMonitor from './emulator/TelemetryMonitor';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -766,10 +767,40 @@ export default function LoRaWANEmulator() {
             />
           </TabsContent>
 
-          {/* Monitor Tab - Dark Theme */}
+          {/* Monitor Tab - Database-Driven Telemetry */}
           <TabsContent value="monitor">
-            <div className="bg-slate-900 rounded-lg p-6 space-y-6">
-              <div className="grid gap-6 md:grid-cols-2">
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Database Telemetry (when org context is set) */}
+              <div className="space-y-4">
+                <div className="flex items-center gap-2 mb-2">
+                  <Activity className="h-4 w-4" />
+                  <h3 className="font-medium">Live Telemetry</h3>
+                  {webhookConfig.testOrgId && (
+                    <Badge variant="outline" className="text-xs">
+                      Org: {webhookConfig.testOrgId.slice(0, 8)}...
+                    </Badge>
+                  )}
+                </div>
+                <TelemetryMonitor
+                  orgId={webhookConfig.testOrgId}
+                  unitId={webhookConfig.testUnitId}
+                  localState={{
+                    currentTemp,
+                    humidity: tempState.humidity,
+                    doorOpen: doorState.doorOpen,
+                    batteryLevel: tempState.batteryLevel,
+                    signalStrength: tempState.signalStrength,
+                  }}
+                />
+              </div>
+
+              {/* Local Emulator State (always visible) */}
+              <div className="bg-slate-900 rounded-lg p-6 space-y-6">
+                <div className="flex items-center gap-2 mb-2">
+                  <Radio className="h-4 w-4 text-slate-400" />
+                  <h3 className="font-medium text-slate-200">Local Emulator State</h3>
+                </div>
+                
                 {/* Temperature Sensor Monitor */}
                 <Card className="bg-slate-800 border-slate-700">
                   <CardHeader className="pb-2">
@@ -831,31 +862,40 @@ export default function LoRaWANEmulator() {
                     )}
                   </CardContent>
                 </Card>
-              </div>
 
-              {/* Gateway Status */}
-              <Card className="bg-slate-800 border-slate-700">
-                <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center gap-2 text-slate-200">
-                    <Radio className="h-4 w-4" />
-                    Gateway Status
-                  </CardTitle>
-                </CardHeader>
-                <CardContent>
-                  <div className="flex flex-wrap gap-3">
-                    {gateways.map(gw => (
-                      <div key={gw.id} className="flex items-center gap-2">
-                        <div className={`w-2 h-2 rounded-full ${gw.isOnline ? 'bg-green-400' : 'bg-slate-500'}`} />
-                        <span className="text-sm text-slate-300">{gw.name}</span>
-                        <Badge variant={gw.isOnline ? 'default' : 'secondary'} className="text-xs">
-                          {gw.isOnline ? 'Online' : 'Offline'}
-                        </Badge>
-                      </div>
-                    ))}
-                  </div>
-                </CardContent>
-              </Card>
+                {/* Gateway Status */}
+                <Card className="bg-slate-800 border-slate-700">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2 text-slate-200">
+                      <Radio className="h-4 w-4" />
+                      Gateway Status
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className="flex flex-wrap gap-3">
+                      {gateways.map(gw => (
+                        <div key={gw.id} className="flex items-center gap-2">
+                          <div className={`w-2 h-2 rounded-full ${gw.isOnline ? 'bg-green-400' : 'bg-slate-500'}`} />
+                          <span className="text-sm text-slate-300">{gw.name}</span>
+                          <Badge variant={gw.isOnline ? 'default' : 'secondary'} className="text-xs">
+                            {gw.isOnline ? 'Online' : 'Offline'}
+                          </Badge>
+                        </div>
+                      ))}
+                    </div>
+                  </CardContent>
+                </Card>
+              </div>
             </div>
+
+            {/* Realtime Notice */}
+            <Alert className="mt-4">
+              <Info className="h-4 w-4" />
+              <AlertDescription>
+                <strong>Live Telemetry</strong> reads from the <code>unit_telemetry</code> table via realtime subscription.
+                Set an Org ID in the Testing tab to see database values. Door and temperature events sent through TTN or the local webhook will update both views.
+              </AlertDescription>
+            </Alert>
           </TabsContent>
 
           {/* Logs Tab */}

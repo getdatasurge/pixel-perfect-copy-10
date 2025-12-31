@@ -1,0 +1,217 @@
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Badge } from '@/components/ui/badge';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { useTelemetrySubscription } from '@/hooks/useTelemetrySubscription';
+import { formatDistanceToNow } from 'date-fns';
+
+interface TelemetryMonitorProps {
+  orgId?: string;
+  unitId?: string;
+  // Fallback to local state when no DB telemetry available
+  localState?: {
+    currentTemp: number | null;
+    humidity: number;
+    doorOpen: boolean;
+    batteryLevel: number;
+    signalStrength: number;
+  };
+}
+
+export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
+  const { telemetry, loading, getSensorStatus } = useTelemetrySubscription({
+    orgId,
+    unitId,
+    enabled: !!(orgId || unitId),
+  });
+
+  // Determine data source
+  const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
+  
+  // Calculate sensor status from telemetry
+  const sensorStatus = telemetry 
+    ? getSensorStatus(
+        telemetry.last_uplink_at,
+        telemetry.expected_checkin_minutes,
+        telemetry.warn_after_missed,
+        telemetry.critical_after_missed
+      )
+    : 'unknown';
+
+  const getStatusBadge = () => {
+    switch (sensorStatus) {
+      case 'online':
+        return <Badge className="bg-green-500"><CheckCircle className="h-3 w-3 mr-1" />Online</Badge>;
+      case 'warning':
+        return <Badge className="bg-yellow-500"><AlertTriangle className="h-3 w-3 mr-1" />Warning</Badge>;
+      case 'offline':
+        return <Badge variant="destructive"><XCircle className="h-3 w-3 mr-1" />Offline</Badge>;
+      default:
+        return <Badge variant="secondary">Unknown</Badge>;
+    }
+  };
+
+  const getDoorStatusIcon = () => {
+    const isOpen = useDbTelemetry 
+      ? telemetry?.door_state === 'open'
+      : localState?.doorOpen;
+    
+    return isOpen 
+      ? <DoorOpen className="h-6 w-6 text-orange-500" />
+      : <DoorClosed className="h-6 w-6 text-green-500" />;
+  };
+
+  const getDoorStatusText = () => {
+    if (useDbTelemetry) {
+      return telemetry?.door_state === 'unknown' 
+        ? 'Unknown' 
+        : telemetry?.door_state?.toUpperCase();
+    }
+    return localState?.doorOpen ? 'OPEN' : 'CLOSED';
+  };
+
+  // Values from DB or fallback to local
+  const tempValue = useDbTelemetry 
+    ? telemetry?.last_temp_f 
+    : localState?.currentTemp;
+  
+  const humidityValue = useDbTelemetry 
+    ? telemetry?.last_humidity 
+    : localState?.humidity;
+  
+  const batteryValue = useDbTelemetry 
+    ? telemetry?.battery_pct 
+    : localState?.batteryLevel;
+  
+  const signalValue = useDbTelemetry 
+    ? telemetry?.rssi_dbm 
+    : localState?.signalStrength;
+
+  const lastUplinkText = telemetry?.last_uplink_at 
+    ? formatDistanceToNow(new Date(telemetry.last_uplink_at), { addSuffix: true })
+    : 'Never';
+
+  return (
+    <div className="space-y-4">
+      {/* Data Source Indicator */}
+      <div className="flex items-center justify-between">
+        <Badge variant={useDbTelemetry ? "default" : "outline"}>
+          {useDbTelemetry ? '📡 Live from Database' : '🔌 Local Emulator State'}
+        </Badge>
+        {useDbTelemetry && getStatusBadge()}
+      </div>
+
+      {/* Temperature & Humidity */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            <Thermometer className="h-4 w-4" />
+            Temperature & Humidity
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-2 gap-4">
+            <div className="text-center">
+              <div className="text-3xl font-bold">
+                {tempValue !== null && tempValue !== undefined 
+                  ? `${Number(tempValue).toFixed(1)}°F` 
+                  : '-- --'}
+              </div>
+              <div className="text-xs text-muted-foreground">Temperature</div>
+            </div>
+            <div className="text-center">
+              <div className="text-3xl font-bold flex items-center justify-center gap-1">
+                <Droplets className="h-5 w-5 text-blue-500" />
+                {humidityValue !== null && humidityValue !== undefined 
+                  ? `${Number(humidityValue).toFixed(0)}%` 
+                  : '-- --'}
+              </div>
+              <div className="text-xs text-muted-foreground">Humidity</div>
+            </div>
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Door Status */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm flex items-center gap-2">
+            {getDoorStatusIcon()}
+            Door Status
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="flex items-center justify-between">
+            <div className="text-2xl font-bold">
+              {getDoorStatusText()}
+            </div>
+            {useDbTelemetry && telemetry?.last_door_event_at && (
+              <div className="text-xs text-muted-foreground">
+                Last event: {formatDistanceToNow(new Date(telemetry.last_door_event_at), { addSuffix: true })}
+              </div>
+            )}
+          </div>
+        </CardContent>
+      </Card>
+
+      {/* Device Readiness */}
+      <Card>
+        <CardHeader className="pb-2">
+          <CardTitle className="text-sm">Device Readiness</CardTitle>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {/* Battery */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Battery className={`h-4 w-4 ${(batteryValue ?? 0) < 20 ? 'text-red-500' : 'text-green-500'}`} />
+              <span className="text-sm">Battery</span>
+            </div>
+            <span className="font-medium">
+              {batteryValue !== null && batteryValue !== undefined 
+                ? `${Math.round(Number(batteryValue))}%` 
+                : '-- --'}
+            </span>
+          </div>
+
+          {/* Signal Strength */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Signal className={`h-4 w-4 ${(signalValue ?? -100) < -80 ? 'text-yellow-500' : 'text-green-500'}`} />
+              <span className="text-sm">Signal</span>
+            </div>
+            <span className="font-medium">
+              {signalValue !== null && signalValue !== undefined 
+                ? `${Math.round(Number(signalValue))} dBm` 
+                : '-- --'}
+            </span>
+          </div>
+
+          {/* SNR (only from DB) */}
+          {useDbTelemetry && telemetry?.snr_db !== null && (
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Signal className="h-4 w-4 text-blue-500" />
+                <span className="text-sm">SNR</span>
+              </div>
+              <span className="font-medium">{Number(telemetry.snr_db).toFixed(1)} dB</span>
+            </div>
+          )}
+
+          {/* Last Heartbeat */}
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <Clock className="h-4 w-4 text-muted-foreground" />
+              <span className="text-sm">Last Heartbeat</span>
+            </div>
+            <span className="font-medium text-sm">{lastUplinkText}</span>
+          </div>
+        </CardContent>
+      </Card>
+
+      {loading && (
+        <div className="text-center text-sm text-muted-foreground py-2">
+          Loading telemetry...
+        </div>
+      )}
+    </div>
+  );
+}
