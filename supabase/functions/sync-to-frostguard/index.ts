@@ -94,13 +94,28 @@ serve(async (req) => {
       console.log(`Attempting sync to Project 1 endpoint: ${PROJECT1_ENDPOINT}`);
       
       try {
+        // Transform payload to match Project 1's expected schema
+        // Project 1 expects: org_id at top level, synced_at field
+        const project1Payload = {
+          org_id: context.org_id,
+          synced_at: metadata.initiated_at || new Date().toISOString(),
+          site_id: context.site_id || null,
+          sync_run_id: metadata.sync_run_id,
+          selected_user_id: context.selected_user_id || null,
+          source_project: metadata.source_project,
+          gateways: entities.gateways,
+          devices: entities.devices,
+        };
+
+        console.log('Transformed payload for Project 1:', JSON.stringify(project1Payload, null, 2));
+
         const response = await fetch(PROJECT1_ENDPOINT, {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json',
             'Authorization': `Bearer ${emulatorSyncApiKey}`,
           },
-          body: JSON.stringify(body),
+          body: JSON.stringify(project1Payload),
         });
 
         console.log(`Project 1 response status: ${response.status}`);
@@ -109,6 +124,27 @@ serve(async (req) => {
         if (response.status !== 404) {
           const responseData = await response.json();
           console.log('Project 1 response:', JSON.stringify(responseData, null, 2));
+          
+          // If validation error, provide structured feedback
+          if (response.status === 400 && responseData.details) {
+            const validationErrors = responseData.details.map(
+              (d: { path: string; message: string }) => `${d.path}: ${d.message}`
+            ).join(', ');
+            
+            return new Response(
+              JSON.stringify({
+                success: false,
+                sync_run_id: metadata.sync_run_id,
+                method: 'endpoint',
+                error: `Validation failed: ${validationErrors}`,
+                details: responseData.details,
+              }),
+              { 
+                status: 400,
+                headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
+              }
+            );
+          }
           
           return new Response(
             JSON.stringify({
