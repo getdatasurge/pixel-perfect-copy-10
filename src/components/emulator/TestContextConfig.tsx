@@ -3,7 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle } from 'lucide-react';
+import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, User, X } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -75,7 +75,17 @@ export default function TestContextConfig({
     update({ frostguardApiUrl: normalizedUrl || undefined });
   };
 
-  const canSync = config.testOrgId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
+  // Clear selected user tracking (keeps input values)
+  const clearSelectedUser = () => {
+    update({
+      selectedUserId: null,
+      selectedUserDisplayName: null,
+      contextSetAt: null,
+    });
+  };
+
+  // Validation: require both org_id and site_id for sync
+  const canSync = config.testOrgId && config.testSiteId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
 
   const syncAll = async () => {
     if (!config.testOrgId || !config.frostguardApiUrl) {
@@ -175,7 +185,7 @@ export default function TestContextConfig({
         </div>
 
         <div className="mb-2">
-        <UserSearchDialog
+          <UserSearchDialog
             onSelectUser={(user) => {
               // organization_id is always present (required field)
               // site_id and unit_id are optional - only update if present
@@ -183,11 +193,40 @@ export default function TestContextConfig({
                 testOrgId: user.organization_id,
                 testSiteId: user.site_id || undefined,
                 testUnitId: user.unit_id || undefined,
+                selectedUserId: user.id,
+                selectedUserDisplayName: user.full_name || user.email || user.id,
+                contextSetAt: new Date().toISOString(),
               });
             }}
             disabled={disabled}
             cachedUserCount={cachedUserCount}
           />
+          
+          {/* Selected user context indicator */}
+          {config.selectedUserId && config.selectedUserDisplayName && (
+            <div className="flex items-center justify-between bg-muted/50 rounded-md px-3 py-2 mt-2">
+              <div className="flex items-center gap-2 text-sm">
+                <User className="h-4 w-4 text-muted-foreground" />
+                <span className="text-muted-foreground">Context from:</span>
+                <span className="font-medium">{config.selectedUserDisplayName}</span>
+                {config.contextSetAt && (
+                  <span className="text-xs text-muted-foreground">
+                    ({new Date(config.contextSetAt).toLocaleTimeString()})
+                  </span>
+                )}
+              </div>
+              <Button
+                variant="ghost"
+                size="sm"
+                className="h-6 w-6 p-0"
+                onClick={clearSelectedUser}
+                disabled={disabled}
+              >
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
+          )}
+          
           <p className="text-xs text-muted-foreground mt-2">
             Users sync automatically from FrostGuard via database trigger
           </p>
@@ -333,8 +372,12 @@ export default function TestContextConfig({
           )}
           {!canSync && !disabled && (
             <p className="text-xs text-muted-foreground mt-2">
-              {!config.testOrgId || !config.frostguardApiUrl 
-                ? 'Set Organization ID and FrostGuard API URL to enable sync'
+              {!config.testOrgId 
+                ? 'Set Organization ID to enable sync'
+                : !config.testSiteId
+                ? 'Set Site ID to enable sync'
+                : !config.frostguardApiUrl 
+                ? 'Set FrostGuard API URL to enable sync'
                 : 'Add gateways or devices to sync'}
             </p>
           )}

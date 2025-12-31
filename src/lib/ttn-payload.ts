@@ -74,6 +74,10 @@ export interface WebhookConfig {
   testSiteId?: string;
   testUnitId?: string;
   frostguardApiUrl?: string;
+  // User tracking fields
+  selectedUserId?: string | null;
+  selectedUserDisplayName?: string | null;
+  contextSetAt?: string | null; // ISO string for localStorage compatibility
 }
 
 export interface TestResult {
