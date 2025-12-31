@@ -57,6 +57,7 @@ export type Database = {
           site_id: string | null
           status: Database["public"]["Enums"]["sensor_status"] | null
           ttn_application_id: string | null
+          ttn_device_id: string | null
           ttn_region: string | null
           unit_id: string
           updated_at: string | null
@@ -73,6 +74,7 @@ export type Database = {
           site_id?: string | null
           status?: Database["public"]["Enums"]["sensor_status"] | null
           ttn_application_id?: string | null
+          ttn_device_id?: string | null
           ttn_region?: string | null
           unit_id: string
           updated_at?: string | null
@@ -89,6 +91,7 @@ export type Database = {
           site_id?: string | null
           status?: Database["public"]["Enums"]["sensor_status"] | null
           ttn_application_id?: string | null
+          ttn_device_id?: string | null
           ttn_region?: string | null
           unit_id?: string
           updated_at?: string | null

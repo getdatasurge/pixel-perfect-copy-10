@@ -404,6 +404,25 @@ export default function DeviceManager({
                 <p className="text-xs text-muted-foreground">16 hex characters</p>
               </div>
 
+              {/* Row 2.5: TTN Device ID (read-only, canonical format) */}
+              <div className="space-y-2">
+                <Label className="text-xs text-muted-foreground">TTN Device ID</Label>
+                <div className="flex gap-2">
+                  <Input
+                    value={`sensor-${device.devEui.replace(/[:\s-]/g, '').toLowerCase()}`}
+                    readOnly
+                    className="font-mono text-sm h-9 bg-muted"
+                  />
+                  <CopyButton 
+                    value={`sensor-${device.devEui.replace(/[:\s-]/g, '').toLowerCase()}`} 
+                    fieldId={`${device.id}-ttndeviceid`} 
+                  />
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  Use this exact ID when registering in TTN Console
+                </p>
+              </div>
+
               {/* Row 3: JoinEUI + AppKey */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">

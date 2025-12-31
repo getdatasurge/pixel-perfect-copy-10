@@ -12,6 +12,21 @@ interface RegisterDeviceRequest {
   deviceName: string;
 }
 
+// Normalize DevEUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
+function normalizeDevEui(devEui: string): string | null {
+  const cleaned = devEui.replace(/[:\s-]/g, '').toLowerCase();
+  if (!/^[a-f0-9]{16}$/.test(cleaned)) {
+    return null;
+  }
+  return cleaned;
+}
+
+// Generate canonical TTN device_id from DevEUI
+// Format: sensor-{normalized_deveui}
+function generateTTNDeviceId(normalizedDevEui: string): string {
+  return `sensor-${normalizedDevEui}`;
+}
+
 Deno.serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -48,8 +63,21 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Format device ID from DevEUI
-    const deviceId = `eui-${devEui.toLowerCase()}`;
+    // Normalize and validate DevEUI
+    const normalizedDevEui = normalizeDevEui(devEui);
+    if (!normalizedDevEui) {
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: 'Invalid DevEUI format. Must be 16 hex characters (e.g., 0F8FE95CABA665D4).' 
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Generate canonical TTN device_id: sensor-{normalized_deveui}
+    const deviceId = generateTTNDeviceId(normalizedDevEui);
+    console.log('Using canonical device_id:', deviceId);
 
     // Build TTN Device Registry API URL
     const ttnUrl = `https://${cluster}.cloud.thethings.network/api/v3/applications/${applicationId}/devices`;
@@ -59,8 +87,8 @@ Deno.serve(async (req) => {
       end_device: {
         ids: {
           device_id: deviceId,
-          dev_eui: devEui.toUpperCase(),
-          join_eui: joinEui.toUpperCase(),
+          dev_eui: normalizedDevEui.toUpperCase(),
+          join_eui: joinEui.toUpperCase().replace(/[:\s-]/g, ''),
         },
         name: deviceName || deviceId,
         description: `Registered via FrostGuard Emulator at ${new Date().toISOString()}`,
@@ -71,7 +99,7 @@ Deno.serve(async (req) => {
         supports_join: true,
         root_keys: {
           app_key: {
-            key: appKey.toUpperCase(),
+            key: appKey.toUpperCase().replace(/[:\s-]/g, ''),
           },
         },
       },
@@ -136,6 +164,8 @@ Deno.serve(async (req) => {
           success: false, 
           error: errorMessage,
           status: response.status,
+          deviceId,
+          ttnDeviceId: deviceId,
         }),
         { status: response.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -148,14 +178,14 @@ Deno.serve(async (req) => {
       end_device: {
         ids: {
           device_id: deviceId,
-          dev_eui: devEui.toUpperCase(),
-          join_eui: joinEui.toUpperCase(),
+          dev_eui: normalizedDevEui.toUpperCase(),
+          join_eui: joinEui.toUpperCase().replace(/[:\s-]/g, ''),
         },
         network_server_address: `${cluster}.cloud.thethings.network`,
         application_server_address: `${cluster}.cloud.thethings.network`,
         root_keys: {
           app_key: {
-            key: appKey.toUpperCase(),
+            key: appKey.toUpperCase().replace(/[:\s-]/g, ''),
           },
         },
       },
@@ -191,6 +221,8 @@ Deno.serve(async (req) => {
       JSON.stringify({ 
         success: true, 
         deviceId,
+        ttnDeviceId: deviceId,
+        devEui: normalizedDevEui.toUpperCase(),
         message: `Device ${deviceId} registered in TTN application ${applicationId}`,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

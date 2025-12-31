@@ -259,7 +259,9 @@ export default function LoRaWANEmulator() {
       
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
-        const deviceId = `eui-${device.devEui.toLowerCase()}`;
+        // Use canonical device_id format: sensor-{normalized_deveui}
+        const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
+        const deviceId = `sensor-${normalizedDevEui}`;
         
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
@@ -375,7 +377,9 @@ export default function LoRaWANEmulator() {
       
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
-        const deviceId = `eui-${device.devEui.toLowerCase()}`;
+        // Use canonical device_id format: sensor-{normalized_deveui}
+        const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
+        const deviceId = `sensor-${normalizedDevEui}`;
         
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {

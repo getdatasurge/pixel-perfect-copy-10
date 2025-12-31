@@ -23,6 +23,23 @@ interface TTNSettings {
   enabled: boolean;
 }
 
+// Normalize DevEUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
+function normalizeDevEui(devEui: string): string | null {
+  const cleaned = devEui.replace(/[:\s-]/g, '').toLowerCase();
+  if (!/^[a-f0-9]{16}$/.test(cleaned)) {
+    return null;
+  }
+  return cleaned;
+}
+
+// Generate canonical TTN device_id from DevEUI
+// Format: sensor-{normalized_deveui}
+function generateTTNDeviceId(devEui: string): string | null {
+  const normalized = normalizeDevEui(devEui);
+  if (!normalized) return null;
+  return `sensor-${normalized}`;
+}
+
 // Parse common TTN error codes and provide user-friendly messages
 function parseTTNError(status: number, responseText: string, applicationId: string, deviceId: string): { 
   message: string; 
@@ -56,11 +73,11 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
       };
     }
     
-    if (status === 404 || errorName === 'end_device_not_found') {
+    if (status === 404 || errorName === 'end_device_not_found' || errorMessage.includes('not_found') || errorMessage.includes('entity not found')) {
       return {
-        message: `Device "${deviceId}" not found in TTN application "${applicationId}".`,
+        message: `Device "${deviceId}" not found in TTN application "${applicationId}". TTN will drop uplinks as "entity not found".`,
         errorType: 'device_not_found',
-        hint: 'Register the device in TTN Console first with matching DevEUI.',
+        hint: `Register the device in TTN Console with device_id: ${deviceId}. Use the "Register in TTN" button or create it manually.`,
       };
     }
     
@@ -92,8 +109,9 @@ function validateConfig(applicationId: string, deviceId: string, cluster: string
   if (!deviceId || deviceId.trim() === '') {
     return 'Device ID is required.';
   }
-  if (!/^eui-[a-f0-9]{16}$/i.test(deviceId)) {
-    return `Device ID "${deviceId}" has invalid format. Expected format: eui-XXXXXXXXXXXXXXXX (16 hex characters).`;
+  // Accept canonical format: sensor-{16 hex chars}
+  if (!/^sensor-[a-f0-9]{16}$/i.test(deviceId)) {
+    return `Device ID "${deviceId}" has invalid format. Expected format: sensor-XXXXXXXXXXXXXXXX (16 hex characters). Example: sensor-0f8fe95caba665d4`;
   }
   if (!cluster || cluster.trim() === '') {
     return 'TTN cluster is required.';
@@ -141,6 +159,52 @@ async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
   }
 }
 
+// Check if device exists in TTN before simulating
+async function checkDeviceExists(
+  cluster: string, 
+  applicationId: string, 
+  deviceId: string, 
+  apiKey: string
+): Promise<{ exists: boolean; error?: string; hint?: string }> {
+  try {
+    const checkUrl = `https://${cluster}.cloud.thethings.network/api/v3/applications/${applicationId}/devices/${deviceId}`;
+    console.log('Preflight check - verifying device exists:', checkUrl);
+    
+    const response = await fetch(checkUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+      },
+    });
+    
+    if (response.status === 404) {
+      return { 
+        exists: false, 
+        error: `Device "${deviceId}" not provisioned in TTN application "${applicationId}". TTN will drop uplinks as "entity not found".`,
+        hint: `Register the device in TTN Console first using the "Register in TTN" button, or create it manually with device_id: ${deviceId}`,
+      };
+    }
+    
+    if (response.status === 403) {
+      // Can't verify but might still work for simulation
+      console.warn('Cannot verify device existence (403), proceeding with simulation');
+      return { exists: true };
+    }
+    
+    if (!response.ok) {
+      console.warn(`Device check returned ${response.status}, proceeding with simulation`);
+      return { exists: true };
+    }
+    
+    console.log('Device exists in TTN, proceeding with simulation');
+    return { exists: true };
+  } catch (err) {
+    console.error('Error checking device existence:', err);
+    // On network error, proceed with simulation
+    return { exists: true };
+  }
+}
+
 serve(async (req) => {
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -149,7 +213,7 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    const { org_id, deviceId, decodedPayload, fPort } = body;
+    let { org_id, deviceId, decodedPayload, fPort } = body;
 
     // Try to load settings from org first, then fall back to request body / global secret
     let apiKey: string | undefined;
@@ -182,6 +246,16 @@ serve(async (req) => {
       cluster = body.cluster;
     }
 
+    // Convert legacy eui-xxx format to canonical sensor-xxx format
+    if (deviceId && deviceId.startsWith('eui-')) {
+      const devEui = deviceId.substring(4); // Remove 'eui-' prefix
+      const canonicalId = generateTTNDeviceId(devEui);
+      if (canonicalId) {
+        console.log(`Converting legacy device_id "${deviceId}" to canonical format "${canonicalId}"`);
+        deviceId = canonicalId;
+      }
+    }
+
     // Validate we have required credentials
     if (!apiKey) {
       console.error('No TTN API key available');
@@ -206,7 +280,9 @@ serve(async (req) => {
         JSON.stringify({ 
           success: false, 
           error: validationError,
-          errorType: 'validation_error'
+          errorType: 'validation_error',
+          deviceId,
+          expectedFormat: 'sensor-XXXXXXXXXXXXXXXX',
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -220,6 +296,24 @@ serve(async (req) => {
       settingsSource,
       orgId: org_id || 'none'
     });
+
+    // Preflight check: verify device exists in TTN
+    const deviceCheck = await checkDeviceExists(cluster!, applicationId!, deviceId, apiKey);
+    if (!deviceCheck.exists) {
+      console.error('Preflight check failed: device not found in TTN');
+      return new Response(
+        JSON.stringify({ 
+          success: false, 
+          error: deviceCheck.error,
+          errorType: 'device_not_found',
+          hint: deviceCheck.hint,
+          deviceId,
+          applicationId,
+          cluster,
+        }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
 
     // Build the TTN Simulate Uplink API URL
     const ttnUrl = `https://${cluster}.cloud.thethings.network/api/v3/as/applications/${applicationId}/devices/${deviceId}/up/simulate`;
@@ -298,6 +392,7 @@ serve(async (req) => {
         settingsSource,
         cluster,
         applicationId,
+        deviceId,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
