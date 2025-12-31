@@ -58,7 +58,9 @@ interface TTNSettingsFromDB {
   cluster: string;
   application_id: string | null;
   api_key_preview: string | null;
+  api_key_set: boolean;
   webhook_secret_preview: string | null;
+  webhook_secret_set: boolean;
   updated_at: string;
 }
 
@@ -78,6 +80,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [ttnApiKey, setTtnApiKey] = useState('');
   const [ttnWebhookSecret, setTtnWebhookSecret] = useState('');
   const [ttnApiKeyPreview, setTtnApiKeyPreview] = useState<string | null>(null);
+  const [ttnApiKeySet, setTtnApiKeySet] = useState(false);
+  const [ttnWebhookSecretSet, setTtnWebhookSecretSet] = useState(false);
   
   // Test result state
   const [testResult, setTestResult] = useState<TTNTestResult | null>(null);
@@ -108,7 +112,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       
       if (!error && data?.ok) {
         toast({ title: 'TTN Setup Complete', description: 'Settings saved successfully' });
-        setTtnApiKeyPreview(`****${wizardConfig.apiKey.slice(-4)}`);
+        setTtnApiKeyPreview(data.api_key_preview || `****${wizardConfig.apiKey.slice(-4)}`);
+        setTtnApiKeySet(true);
         setTtnApiKey('');
         updateTTN({ enabled: true, applicationId: wizardConfig.applicationId, cluster: wizardConfig.cluster });
         
@@ -160,9 +165,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnCluster(settings.cluster);
         setTtnApplicationId(settings.application_id || '');
         setTtnApiKeyPreview(settings.api_key_preview);
+        setTtnApiKeySet(settings.api_key_set || false);
+        setTtnWebhookSecretSet(settings.webhook_secret_set || false);
         // Don't load actual secrets, just show preview
-        setTtnApiKey(''); // Reset to empty, user must re-enter to save
+        setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
+        
+        // Update parent config
+        if (settings.enabled) {
+          updateTTN({ 
+            enabled: settings.enabled, 
+            applicationId: settings.application_id || '', 
+            cluster: settings.cluster 
+          });
+        }
       }
     } catch (err: any) {
       console.error('Error loading settings:', err);
@@ -190,7 +206,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           enabled: ttnEnabled,
           cluster: ttnCluster,
           application_id: ttnApplicationId,
-          api_key: ttnApiKey || undefined,
+          api_key: ttnApiKey || undefined, // Only send if new value provided
           webhook_secret: ttnWebhookSecret || undefined,
         },
       });
@@ -210,10 +226,22 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           title: 'Settings Saved',
           description: 'TTN configuration saved successfully',
         });
-        if (ttnApiKey) {
-          setTtnApiKeyPreview(`****${ttnApiKey.slice(-4)}`);
-          setTtnApiKey('');
+        
+        // Update local state from response
+        if (data.api_key_set !== undefined) {
+          setTtnApiKeySet(data.api_key_set);
         }
+        if (data.api_key_preview) {
+          setTtnApiKeyPreview(data.api_key_preview);
+        }
+        if (data.webhook_secret_set !== undefined) {
+          setTtnWebhookSecretSet(data.webhook_secret_set);
+        }
+        
+        // Clear input fields after successful save
+        setTtnApiKey('');
+        setTtnWebhookSecret('');
+        
         updateTTN({ 
           enabled: ttnEnabled, 
           applicationId: ttnApplicationId, 
@@ -237,7 +265,86 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     }
   };
 
-  const testTTNConnection = async () => {
+  // Test connection using stored API key (no key in request)
+  const testTTNConnectionStored = async () => {
+    if (!orgId) {
+      toast({ title: 'No Organization', description: 'Select an organization first', variant: 'destructive' });
+      return;
+    }
+
+    setIsTestingTTN(true);
+    setTestResult(null);
+    
+    try {
+      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'test_stored',
+          org_id: orgId,
+        },
+      });
+
+      if (error) {
+        const result: TTNTestResult = {
+          ok: false,
+          requestId: data?.requestId || 'unknown',
+          error: data?.error || error.message,
+          code: data?.code || 'UNKNOWN_ERROR',
+          hint: data?.hint,
+        };
+        setTestResult(result);
+        toast({
+          title: 'Connection Test Failed',
+          description: result.error,
+          variant: 'destructive',
+        });
+        return;
+      }
+
+      const result: TTNTestResult = data;
+      setTestResult(result);
+
+      if (result.ok && result.connected) {
+        toast({
+          title: 'TTN Connected',
+          description: result.message || 'Successfully connected to The Things Network',
+        });
+        updateTTN({
+          lastStatus: {
+            code: 200,
+            message: result.message || 'Connected',
+            timestamp: new Date(),
+          }
+        });
+      } else {
+        toast({
+          title: 'TTN Test Failed',
+          description: result.error || result.ttn_message || 'Unknown error',
+          variant: 'destructive',
+        });
+        updateTTN({
+          lastStatus: {
+            code: result.ttn_status || 500,
+            message: result.error || result.ttn_message || 'Unknown error',
+            timestamp: new Date(),
+          }
+        });
+      }
+    } catch (err: any) {
+      const result: TTNTestResult = {
+        ok: false,
+        requestId: 'network-error',
+        error: `Network error: ${err.message}`,
+        hint: 'Check your internet connection',
+      };
+      setTestResult(result);
+      toast({ title: 'Connection failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setIsTestingTTN(false);
+    }
+  };
+
+  // Test connection with a new API key (key in request)
+  const testTTNConnectionWithKey = async () => {
     if (!ttnApplicationId) {
       toast({ title: 'Missing Config', description: 'Enter TTN Application ID first', variant: 'destructive' });
       return;
@@ -319,6 +426,23 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       toast({ title: 'Connection failed', description: err.message, variant: 'destructive' });
     } finally {
       setIsTestingTTN(false);
+    }
+  };
+
+  // Main test connection handler - decides which method to use
+  const handleTestConnection = () => {
+    if (ttnApiKey) {
+      // User entered a new key - test with that
+      testTTNConnectionWithKey();
+    } else if (ttnApiKeySet) {
+      // No new key entered, but one is stored - test with stored key
+      testTTNConnectionStored();
+    } else {
+      toast({ 
+        title: 'No API Key', 
+        description: 'Enter an API key and save before testing', 
+        variant: 'destructive' 
+      });
     }
   };
 
@@ -473,6 +597,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     );
   };
 
+  // Check if we can test connection
+  const canTestConnection = !disabled && !isTestingTTN && ttnApplicationId && (ttnApiKey || ttnApiKeySet);
+  
+  // Check if we can save - allow saving if we have app ID and either a new key or an existing key
+  const canSave = !disabled && !isSaving && orgId && (!ttnEnabled || (ttnApplicationId && (ttnApiKey || ttnApiKeySet)));
+
   return (
     <div className="space-y-4">
       {/* Setup Wizard Modal */}
@@ -572,28 +702,42 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="ttnApiKey">API Key</Label>
+                  <Label htmlFor="ttnApiKey" className="flex items-center gap-2">
+                    API Key
+                    {ttnApiKeySet && (
+                      <Badge variant="outline" className="text-green-600 border-green-600 text-xs">
+                        Saved
+                      </Badge>
+                    )}
+                  </Label>
                   <Input
                     id="ttnApiKey"
                     type="password"
-                    placeholder={ttnApiKeyPreview || "NNSXS.XXXXXXX..."}
+                    placeholder={ttnApiKeySet ? "Enter new key to replace..." : "NNSXS.XXXXXXX..."}
                     value={ttnApiKey}
                     onChange={e => setTtnApiKey(e.target.value)}
                     disabled={disabled || isLoading}
                   />
                   <p className="text-xs text-muted-foreground">
-                    {ttnApiKeyPreview 
-                      ? `Current: ${ttnApiKeyPreview} (enter new value to change)` 
+                    {ttnApiKeySet 
+                      ? `Current: ${ttnApiKeyPreview} (leave blank to keep, enter new to replace)` 
                       : 'From TTN Console → API keys'}
                   </p>
                 </div>
 
                 <div className="space-y-2">
-                  <Label htmlFor="ttnWebhookSecret">Webhook Secret (optional)</Label>
+                  <Label htmlFor="ttnWebhookSecret" className="flex items-center gap-2">
+                    Webhook Secret (optional)
+                    {ttnWebhookSecretSet && (
+                      <Badge variant="outline" className="text-green-600 border-green-600 text-xs">
+                        Saved
+                      </Badge>
+                    )}
+                  </Label>
                   <Input
                     id="ttnWebhookSecret"
                     type="password"
-                    placeholder="Optional"
+                    placeholder={ttnWebhookSecretSet ? "Enter new to replace..." : "Optional"}
                     value={ttnWebhookSecret}
                     onChange={e => setTtnWebhookSecret(e.target.value)}
                     disabled={disabled || isLoading}
@@ -648,8 +792,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={testTTNConnection}
-                    disabled={disabled || isTestingTTN || !ttnApplicationId || (!ttnApiKey && !ttnApiKeyPreview)}
+                    onClick={handleTestConnection}
+                    disabled={!canTestConnection}
                     className="flex items-center gap-1"
                   >
                     {isTestingTTN ? (
@@ -664,7 +808,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                 <Button
                   size="sm"
                   onClick={saveSettings}
-                  disabled={disabled || isSaving || !orgId || (ttnEnabled && (!ttnApplicationId || (!ttnApiKey && !ttnApiKeyPreview)))}
+                  disabled={!canSave}
                   className="flex items-center gap-1"
                 >
                   {isSaving ? (
@@ -676,9 +820,11 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                 </Button>
               </div>
 
-              {ttnEnabled && (!ttnApplicationId || (!ttnApiKey && !ttnApiKeyPreview)) && (
+              {ttnEnabled && (!ttnApplicationId || (!ttnApiKey && !ttnApiKeySet)) && (
                 <p className="text-xs text-amber-600">
-                  Enter Application ID and API Key to save settings
+                  {!ttnApplicationId 
+                    ? 'Enter Application ID to save settings'
+                    : 'Enter API Key and save to enable TTN integration'}
                 </p>
               )}
 

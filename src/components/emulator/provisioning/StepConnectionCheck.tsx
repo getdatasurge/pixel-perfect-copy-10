@@ -27,7 +27,7 @@ export default function StepConnectionCheck({
     { name: 'TTN Integration Enabled', status: 'pending' },
     { name: 'Cluster Configured', status: 'pending' },
     { name: 'Application ID Set', status: 'pending' },
-    { name: 'API Key Valid', status: 'pending' },
+    { name: 'API Key Saved', status: 'pending' },
     { name: 'Required Permissions', status: 'pending' },
   ]);
   const [isValidating, setIsValidating] = useState(false);
@@ -84,38 +84,44 @@ export default function StepConnectionCheck({
       return;
     }
 
-    // Check 4 & 5: API Key and Permissions (via edge function)
+    // Check 4 & 5: API Key and Permissions (via edge function using stored key)
     newChecks[3] = { ...newChecks[3], status: 'checking' };
     newChecks[4] = { ...newChecks[4], status: 'checking' };
     setChecks([...newChecks]);
 
     try {
+      // Use test_stored to validate using the server-side stored API key
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
         body: {
-          action: 'test',
+          action: 'test_stored',
           org_id: orgId,
-          cluster: ttnConfig.cluster,
-          application_id: ttnConfig.applicationId,
         },
       });
 
       if (error) throw error;
 
-      if (data?.ok) {
-        newChecks[3] = { name: 'API Key Valid', status: 'passed', message: 'API key verified' };
+      if (data?.ok && data?.connected) {
+        newChecks[3] = { name: 'API Key Saved', status: 'passed', message: 'API key verified' };
         newChecks[4] = { name: 'Required Permissions', status: 'passed', message: 'All permissions available' };
         setChecks([...newChecks]);
         setOverallStatus('success');
         onValidationComplete(true);
       } else {
         const errorMsg = data?.error || 'Connection test failed';
-        const isPermissionError = errorMsg.toLowerCase().includes('permission') || errorMsg.toLowerCase().includes('403');
+        const errorCode = data?.code || '';
         
-        if (isPermissionError) {
-          newChecks[3] = { name: 'API Key Valid', status: 'passed' };
+        // Check specific error codes
+        if (errorCode === 'NO_API_KEY' || errorCode === 'NOT_CONFIGURED') {
+          newChecks[3] = { name: 'API Key Saved', status: 'failed', message: 'No API key saved. Save settings first.' };
+          newChecks[4] = { name: 'Required Permissions', status: 'pending' };
+        } else if (errorCode === 'PERMISSION_DENIED' || errorMsg.toLowerCase().includes('permission') || errorMsg.toLowerCase().includes('403')) {
+          newChecks[3] = { name: 'API Key Saved', status: 'passed' };
           newChecks[4] = { name: 'Required Permissions', status: 'failed', message: errorMsg };
+        } else if (errorCode === 'AUTH_INVALID') {
+          newChecks[3] = { name: 'API Key Saved', status: 'failed', message: 'API key invalid or expired' };
+          newChecks[4] = { name: 'Required Permissions', status: 'pending' };
         } else {
-          newChecks[3] = { name: 'API Key Valid', status: 'failed', message: errorMsg };
+          newChecks[3] = { name: 'API Key Saved', status: 'failed', message: errorMsg };
           newChecks[4] = { name: 'Required Permissions', status: 'pending' };
         }
         setChecks([...newChecks]);
@@ -123,7 +129,7 @@ export default function StepConnectionCheck({
         onValidationComplete(false);
       }
     } catch (err: any) {
-      newChecks[3] = { name: 'API Key Valid', status: 'failed', message: err.message };
+      newChecks[3] = { name: 'API Key Saved', status: 'failed', message: err.message };
       newChecks[4] = { name: 'Required Permissions', status: 'pending' };
       setChecks([...newChecks]);
       setOverallStatus('failed');
