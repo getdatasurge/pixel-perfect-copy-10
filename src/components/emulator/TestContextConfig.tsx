@@ -3,7 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
-import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle } from 'lucide-react';
+import { Building2, MapPin, Box, ExternalLink, Cloud, Loader2, Check, AlertTriangle, Users, RefreshCw } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -29,6 +29,8 @@ export default function TestContextConfig({
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
   const [lastSyncSummary, setLastSyncSummary] = useState<string | null>(null);
+  const [isSyncingUsers, setIsSyncingUsers] = useState(false);
+  const [userSyncResult, setUserSyncResult] = useState<string | null>(null);
 
   // Normalize saved URL on initial load
   useEffect(() => {
@@ -57,6 +59,43 @@ export default function TestContextConfig({
       }
     }
     update({ frostguardApiUrl: normalizedUrl || undefined });
+  };
+
+  const syncUsersFromFrostguard = async () => {
+    if (!config.frostguardApiUrl) {
+      toast({ 
+        title: 'Missing Configuration', 
+        description: 'FrostGuard API URL is required to sync users', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    setIsSyncingUsers(true);
+    setUserSyncResult(null);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('sync-users-from-frostguard', {
+        body: { frostguardApiUrl: config.frostguardApiUrl },
+      });
+
+      if (error) throw error;
+
+      if (data.success) {
+        setUserSyncResult(`✓ ${data.message}`);
+        toast({ title: 'Users Synced', description: data.message });
+      } else {
+        const errorMsg = data.details ? `${data.error}: ${data.details}` : data.error;
+        setUserSyncResult(`✗ ${errorMsg}`);
+        toast({ title: 'Sync Failed', description: errorMsg, variant: 'destructive' });
+      }
+    } catch (err) {
+      const errorMsg = err instanceof Error ? err.message : String(err);
+      setUserSyncResult(`✗ ${errorMsg}`);
+      toast({ title: 'Sync Failed', description: errorMsg, variant: 'destructive' });
+    } finally {
+      setIsSyncingUsers(false);
+    }
   };
 
   const canSync = config.testOrgId && config.frostguardApiUrl && (gateways.length > 0 || devices.length > 0);
@@ -170,7 +209,33 @@ export default function TestContextConfig({
             disabled={disabled}
           />
           <span className="text-sm text-muted-foreground">Search users to auto-fill context</span>
+          <div className="ml-auto">
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={syncUsersFromFrostguard}
+              disabled={disabled || isSyncingUsers || !config.frostguardApiUrl}
+              className="flex items-center gap-2"
+            >
+              {isSyncingUsers ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Syncing...
+                </>
+              ) : (
+                <>
+                  <RefreshCw className="h-4 w-4" />
+                  Sync Users
+                </>
+              )}
+            </Button>
+          </div>
         </div>
+        {userSyncResult && (
+          <p className={`text-xs ${userSyncResult.startsWith('✓') ? 'text-green-600' : 'text-destructive'}`}>
+            {userSyncResult}
+          </p>
+        )}
 
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">
