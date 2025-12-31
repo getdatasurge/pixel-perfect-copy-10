@@ -17,3 +17,12 @@ verify_jwt = false
 
 [functions.frostguard-search-users]
 verify_jwt = false
+
+[functions.sync-users-from-frostguard]
+verify_jwt = false
+
+[functions.search-users]
+verify_jwt = false
+
+[functions.user-sync]
+verify_jwt = false
