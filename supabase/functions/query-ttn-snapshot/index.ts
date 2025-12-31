@@ -65,61 +65,49 @@ serve(async (req: Request) => {
 
     let settings: TTNSettingsRow | null = null;
     let settingsSource = 'unknown';
+    let derivedApplicationId = '';
 
-    // Step 1: Try FrostGuard FIRST to get user-specific settings
-    const frostguardUrl = Deno.env.get("FROSTGUARD_SUPABASE_URL");
-    const sharedSecret = Deno.env.get("FROSTGUARD_SYNC_SHARED_SECRET");
+    // Step 1: DERIVE application_id from site_name (pattern: ft-{site_name})
+    if (site_id) {
+      console.log(`[${requestId}] Looking up site_name for site_id: ${site_id}`);
+      const { data: siteData, error: siteErr } = await supabase
+        .from("user_site_memberships")
+        .select("site_name")
+        .eq("site_id", site_id)
+        .limit(1)
+        .maybeSingle();
 
-    if (frostguardUrl && sharedSecret) {
-      console.log(`[${requestId}] Trying FrostGuard first for user: ${user_id}`);
-      try {
-        const snapshotUrl = `${frostguardUrl}/functions/v1/get-ttn-integration-snapshot`;
-        const fgResponse = await fetch(snapshotUrl, {
-          method: "POST",
-          headers: {
-            "Content-Type": "application/json",
-            "x-sync-shared-secret": sharedSecret,
-          },
-          body: JSON.stringify({ user_id, org_id, site_id }),
-        });
-
-        if (fgResponse.ok) {
-          const fgData = await fgResponse.json();
-          if (fgData.ok && fgData.settings) {
-            settings = {
-              cluster: fgData.settings.cluster || 'nam1',
-              application_id: fgData.settings.application_id,
-              api_key: fgData.settings.api_key,
-              enabled: fgData.settings.enabled ?? true,
-              webhook_secret: fgData.settings.webhook_secret,
-              updated_at: fgData.settings.updated_at || new Date().toISOString(),
-              last_test_at: fgData.settings.last_test_at,
-              last_test_success: fgData.settings.last_test_success,
-            };
-            settingsSource = 'frostguard';
-            console.log(`[${requestId}] Got TTN settings from FrostGuard - cluster: ${settings.cluster}, app: ${settings.application_id}`);
-          }
-        } else {
-          console.log(`[${requestId}] FrostGuard returned: ${fgResponse.status}`);
-        }
-      } catch (fgErr) {
-        console.log(`[${requestId}] FrostGuard error: ${fgErr}`);
+      if (siteErr) {
+        console.log(`[${requestId}] Site lookup error: ${siteErr.message}`);
+      } else if (siteData?.site_name) {
+        // Normalize site name: lowercase, remove spaces
+        const normalizedSiteName = siteData.site_name.toLowerCase().replace(/\s+/g, "");
+        derivedApplicationId = `ft-${normalizedSiteName}`;
+        console.log(`[${requestId}] Derived application_id: ${derivedApplicationId} from site: ${siteData.site_name}`);
       }
     }
 
-    // Step 2: Fall back to local ttn_settings if FrostGuard didn't return settings
-    if (!settings && org_id) {
-      console.log(`[${requestId}] Falling back to local ttn_settings for org: ${org_id}`);
+    // Step 2: Get API key from local ttn_settings (org-level)
+    if (org_id) {
+      console.log(`[${requestId}] Getting API key from local ttn_settings for org: ${org_id}`);
       const { data: localSettings, error: dbError } = await supabase
         .from("ttn_settings")
         .select("cluster, application_id, api_key, enabled, webhook_secret, updated_at, last_test_at, last_test_success")
         .eq("org_id", org_id)
         .single();
 
-      if (!dbError && localSettings && localSettings.application_id && localSettings.api_key) {
+      if (!dbError && localSettings && localSettings.api_key) {
         settings = localSettings as TTNSettingsRow;
-        settingsSource = 'local';
-        console.log(`[${requestId}] Found local TTN settings - cluster: ${settings.cluster}, app: ${settings.application_id}`);
+        
+        // Override application_id with derived value if available
+        if (derivedApplicationId) {
+          settings.application_id = derivedApplicationId;
+          settingsSource = 'derived';
+          console.log(`[${requestId}] Using derived application_id: ${derivedApplicationId} with org API key`);
+        } else {
+          settingsSource = 'local';
+          console.log(`[${requestId}] Using local application_id: ${settings.application_id}`);
+        }
       } else {
         console.log(`[${requestId}] No local TTN settings found for org: ${org_id}`);
       }
