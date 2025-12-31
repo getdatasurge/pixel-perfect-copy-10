@@ -19,6 +19,27 @@ interface TestDashboardProps {
 
 export default function TestDashboard({ results, syncResults = [], onClearResults }: TestDashboardProps) {
   const [errorsExpanded, setErrorsExpanded] = useState(false);
+  const [expandedSyncIds, setExpandedSyncIds] = useState<Set<string>>(new Set());
+
+  const toggleSyncExpanded = (id: string) => {
+    setExpandedSyncIds(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        next.add(id);
+      }
+      return next;
+    });
+  };
+
+  const formatSyncTime = (date: Date) => {
+    const now = new Date();
+    const isToday = date.toDateString() === now.toDateString();
+    return isToday 
+      ? date.toLocaleTimeString() 
+      : `${date.toLocaleDateString(undefined, { month: 'short', day: 'numeric' })} ${date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}`;
+  };
   
   // Get latest results for summary
   const latestResult = results[0];
@@ -210,6 +231,72 @@ export default function TestDashboard({ results, syncResults = [], onClearResult
             <p className="text-xs text-center text-muted-foreground font-mono">
               sync_run_id: {latestSync.sync_run_id.slice(0, 8)}...
             </p>
+          </CardContent>
+        </Card>
+      )}
+
+      {/* Sync History Section */}
+      {syncResults.length > 0 && (
+        <Card>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-sm flex items-center gap-2">
+              <Clock className="h-4 w-4" />
+              Sync History
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-60">
+              <div className="space-y-2">
+                {syncResults.slice(0, 15).map(sync => (
+                  <div 
+                    key={sync.id} 
+                    className={`p-3 rounded-md border-l-4 ${
+                      sync.status === 'success' ? 'border-l-green-500 bg-green-500/5' :
+                      sync.status === 'partial' ? 'border-l-yellow-500 bg-yellow-500/5' :
+                      'border-l-destructive bg-destructive/5'
+                    }`}
+                  >
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs font-mono text-muted-foreground">
+                          {formatSyncTime(sync.timestamp)}
+                        </span>
+                        <SyncStatusBadge status={sync.status} />
+                        <MethodBadge method={sync.method} />
+                      </div>
+                      <span className="text-xs text-muted-foreground">
+                        {sync.counts.gatewaysSynced} GW, {sync.counts.devicesSynced} dev
+                      </span>
+                    </div>
+                    
+                    <div className="flex items-center justify-between mt-1">
+                      <span className="text-xs font-mono text-muted-foreground">
+                        {sync.sync_run_id.slice(0, 8)}...
+                      </span>
+                      {sync.errors.length > 0 && (
+                        <Button 
+                          variant="ghost" 
+                          size="sm" 
+                          className="h-5 px-2 text-xs text-destructive"
+                          onClick={() => toggleSyncExpanded(sync.id)}
+                        >
+                          {sync.errors.length} error{sync.errors.length > 1 ? 's' : ''}
+                          <ChevronDown className={`h-3 w-3 ml-1 transition-transform ${expandedSyncIds.has(sync.id) ? 'rotate-180' : ''}`} />
+                        </Button>
+                      )}
+                    </div>
+
+                    {expandedSyncIds.has(sync.id) && sync.errors.length > 0 && (
+                      <div className="mt-2 bg-destructive/10 rounded p-2 space-y-1">
+                        {sync.errors.map((error, i) => (
+                          <p key={i} className="text-xs text-destructive font-mono">{error}</p>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
           </CardContent>
         </Card>
       )}
