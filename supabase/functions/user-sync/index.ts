@@ -65,6 +65,17 @@ serve(async (req) => {
     const results = [];
     
     for (const user of payload.users) {
+      // Validate that organization_id is present (required field)
+      if (!user.organization_id) {
+        console.error(`[user-sync] Rejected user ${user.user_id}: organization_id is required`);
+        results.push({ 
+          user_id: user.user_id, 
+          success: false, 
+          error: 'organization_id is required for all users' 
+        });
+        continue;
+      }
+
       // Upsert user data into synced_users table
       const { data, error } = await supabase
         .from('synced_users')

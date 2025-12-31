@@ -11,7 +11,7 @@ interface UserProfile {
   id: string;
   email?: string;
   full_name?: string;
-  organization_id?: string;
+  organization_id: string; // Required - always present from sync
   site_id?: string;
   unit_id?: string;
 }

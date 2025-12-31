@@ -175,12 +175,14 @@ export default function TestContextConfig({
         </div>
 
         <div className="mb-2">
-          <UserSearchDialog
+        <UserSearchDialog
             onSelectUser={(user) => {
+              // organization_id is always present (required field)
+              // site_id and unit_id are optional - only update if present
               update({
-                testOrgId: user.organization_id || config.testOrgId,
-                testSiteId: user.site_id || config.testSiteId,
-                testUnitId: user.unit_id || config.testUnitId,
+                testOrgId: user.organization_id,
+                testSiteId: user.site_id || undefined,
+                testUnitId: user.unit_id || undefined,
               });
             }}
             disabled={disabled}
