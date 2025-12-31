@@ -44,6 +44,39 @@ export type Database = {
         }
         Relationships: []
       }
+      users_cache: {
+        Row: {
+          user_id: string
+          email: string | null
+          full_name: string | null
+          organization_id: string | null
+          site_id: string | null
+          unit_id: string | null
+          updated_at: string
+          synced_at: string
+        }
+        Insert: {
+          user_id: string
+          email?: string | null
+          full_name?: string | null
+          organization_id?: string | null
+          site_id?: string | null
+          unit_id?: string | null
+          updated_at: string
+          synced_at?: string
+        }
+        Update: {
+          user_id?: string
+          email?: string | null
+          full_name?: string | null
+          organization_id?: string | null
+          site_id?: string | null
+          unit_id?: string | null
+          updated_at?: string
+          synced_at?: string
+        }
+        Relationships: []
+      }
       sensor_readings: {
         Row: {
           battery_level: number | null
