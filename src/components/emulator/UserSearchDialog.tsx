@@ -19,9 +19,10 @@ interface UserProfile {
 interface UserSearchDialogProps {
   onSelectUser: (user: UserProfile) => void;
   disabled?: boolean;
+  cachedUserCount?: number | null;
 }
 
-export default function UserSearchDialog({ onSelectUser, disabled }: UserSearchDialogProps) {
+export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCount }: UserSearchDialogProps) {
   const [open, setOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -146,14 +147,18 @@ export default function UserSearchDialog({ onSelectUser, disabled }: UserSearchD
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogTrigger asChild>
-        <Button
-          variant="outline"
-          size="icon"
+        <button
+          className="flex items-center w-full h-10 px-3 py-2 border rounded-md bg-background text-left text-muted-foreground hover:bg-accent cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
           disabled={disabled}
-          title="Search users"
         >
-          <Search className="h-4 w-4" />
-        </Button>
+          <Search className="h-4 w-4 mr-2 flex-shrink-0" />
+          <span className="flex-1 truncate">Search users to auto-fill context...</span>
+          {cachedUserCount !== null && cachedUserCount > 0 && (
+            <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded flex-shrink-0">
+              {cachedUserCount} users
+            </span>
+          )}
+        </button>
       </DialogTrigger>
       <DialogContent className="sm:max-w-md">
         <DialogHeader>
