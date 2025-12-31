@@ -1,5 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -8,9 +8,16 @@ import { Slider } from '@/components/ui/slider';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Play, Square, Zap, Radio, Settings, Activity, FileText, Webhook, Cloud, FlaskConical } from 'lucide-react';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { 
+  Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, 
+  Radio, Settings, Activity, FileText, Webhook, FlaskConical,
+  ClipboardList, Info
+} from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
+import EmulatorHeader from './emulator/EmulatorHeader';
 import GatewayConfig from './emulator/GatewayConfig';
 import WebhookSettings from './emulator/WebhookSettings';
 import DeviceManager from './emulator/DeviceManager';
@@ -52,6 +59,14 @@ interface DoorSensorState {
   doorOpen: boolean;
   intervalSeconds: number;
 }
+
+const INTERVAL_OPTIONS = [
+  { value: 15, label: 'Every 15 seconds' },
+  { value: 30, label: 'Every 30 seconds' },
+  { value: 60, label: 'Every 1 minute' },
+  { value: 300, label: 'Every 5 minutes' },
+  { value: 900, label: 'Every 15 minutes' },
+];
 
 export default function LoRaWANEmulator() {
   const [isRunning, setIsRunning] = useState(false);
@@ -484,116 +499,123 @@ export default function LoRaWANEmulator() {
   const tempDevice = getActiveDevice('temperature');
   const doorDevice = getActiveDevice('door');
 
+  const getLogBadgeVariant = (type: LogEntry['type']) => {
+    switch (type) {
+      case 'error': return 'destructive';
+      case 'webhook': return 'default';
+      case 'temp': return 'secondary';
+      case 'door': return 'outline';
+      default: return 'secondary';
+    }
+  };
+
+  const getLogBadgeLabel = (type: LogEntry['type']) => {
+    switch (type) {
+      case 'error': return 'ERR';
+      case 'webhook': return 'TX';
+      case 'temp': return 'TEMP';
+      case 'door': return 'DOOR';
+      default: return 'INFO';
+    }
+  };
+
   return (
-    <>
-      <Card className="w-full">
-        <CardHeader>
-          <div className="flex items-center justify-between">
-            <div>
-              <CardTitle className="flex items-center gap-2">
-                <Signal className="h-5 w-5" />
-                LoRaWAN Ecosystem Emulator
-              </CardTitle>
-              <CardDescription>Simulate gateways, sensors, and TTN webhook payloads</CardDescription>
-            </div>
-            <div className="flex items-center gap-2">
-              <Badge variant={isRunning ? 'default' : 'secondary'}>
-                {isRunning ? 'Running' : 'Stopped'}
-              </Badge>
-              <Badge variant="outline">{readingCount} readings</Badge>
-              {webhookConfig.testOrgId && (
-                <Badge variant="outline" className="bg-purple-500/10 text-purple-600 border-purple-500/30">
-                  Org: {webhookConfig.testOrgId}
-                </Badge>
-              )}
-              {webhookConfig.ttnConfig?.enabled && (
-                <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
-                  <Cloud className="h-3 w-3 mr-1" />
-                  TTN
-                </Badge>
-              )}
-              {webhookConfig.enabled && !webhookConfig.ttnConfig?.enabled && (
-                <Badge variant="outline" className="bg-green-500/10 text-green-600 border-green-500/30">
-                  <Webhook className="h-3 w-3 mr-1" />
-                  Webhook
-                </Badge>
-              )}
-            </div>
-          </div>
-        </CardHeader>
-        <CardContent>
-          <Tabs defaultValue="sensors">
-            <TabsList className="grid w-full grid-cols-7">
-              <TabsTrigger value="sensors" className="flex items-center gap-1">
-                <Thermometer className="h-4 w-4" />
-                Sensors
-              </TabsTrigger>
-              <TabsTrigger value="gateways" className="flex items-center gap-1">
-                <Radio className="h-4 w-4" />
-                Gateways
-              </TabsTrigger>
-              <TabsTrigger value="devices" className="flex items-center gap-1">
-                <Settings className="h-4 w-4" />
-                Devices
-              </TabsTrigger>
-              <TabsTrigger value="webhook" className="flex items-center gap-1">
-                <Webhook className="h-4 w-4" />
-                Webhook
-              </TabsTrigger>
-              <TabsTrigger value="testing" className="flex items-center gap-1">
-                <FlaskConical className="h-4 w-4" />
-                Testing
-              </TabsTrigger>
-              <TabsTrigger value="monitor" className="flex items-center gap-1">
-                <Activity className="h-4 w-4" />
-                Monitor
-              </TabsTrigger>
-              <TabsTrigger value="logs" className="flex items-center gap-1">
-                <FileText className="h-4 w-4" />
-                Logs
-              </TabsTrigger>
-            </TabsList>
+    <div className="flex flex-col min-h-screen">
+      <EmulatorHeader
+        isRunning={isRunning}
+        readingCount={readingCount}
+        webhookConfig={webhookConfig}
+        onStartEmulation={startEmulation}
+        onStopEmulation={stopEmulation}
+        onSingleReading={sendTempReading}
+      />
 
-            <TabsContent value="sensors" className="space-y-6 mt-4">
-              {/* Temperature Sensor Config */}
-              <div className="space-y-4">
-                <h3 className="font-medium flex items-center gap-2">
-                  <Thermometer className="h-4 w-4" />
-                  Temperature Sensor Settings
-                </h3>
-                
-                <div className="space-y-2">
-                  <Label>Temperature Range: {tempState.minTemp}°F - {tempState.maxTemp}°F</Label>
-                  <div className="flex gap-4">
-                    <Input
-                      type="number"
-                      value={tempState.minTemp}
-                      onChange={e => setTempState(prev => ({ ...prev, minTemp: Number(e.target.value) }))}
-                      disabled={isRunning}
-                      className="w-24"
-                    />
-                    <Slider
-                      value={[tempState.minTemp, tempState.maxTemp]}
-                      min={-20}
-                      max={80}
-                      step={1}
-                      onValueChange={([min, max]) => setTempState(prev => ({ ...prev, minTemp: min, maxTemp: max }))}
-                      disabled={isRunning}
-                      className="flex-1"
-                    />
-                    <Input
-                      type="number"
-                      value={tempState.maxTemp}
-                      onChange={e => setTempState(prev => ({ ...prev, maxTemp: Number(e.target.value) }))}
-                      disabled={isRunning}
-                      className="w-24"
-                    />
+      <main className="flex-1 p-6">
+        <Tabs defaultValue="sensors" className="w-full">
+          <TabsList className="grid w-full grid-cols-7 mb-6">
+            <TabsTrigger value="sensors" className="gap-2">
+              <Thermometer className="h-4 w-4" />
+              <span className="hidden sm:inline">Sensors</span>
+            </TabsTrigger>
+            <TabsTrigger value="gateways" className="gap-2">
+              <Radio className="h-4 w-4" />
+              <span className="hidden sm:inline">Gateways</span>
+            </TabsTrigger>
+            <TabsTrigger value="devices" className="gap-2">
+              <Settings className="h-4 w-4" />
+              <span className="hidden sm:inline">Devices</span>
+            </TabsTrigger>
+            <TabsTrigger value="webhook" className="gap-2">
+              <Webhook className="h-4 w-4" />
+              <span className="hidden sm:inline">Webhook</span>
+            </TabsTrigger>
+            <TabsTrigger value="testing" className="gap-2">
+              <FlaskConical className="h-4 w-4" />
+              <span className="hidden sm:inline">Testing</span>
+            </TabsTrigger>
+            <TabsTrigger value="monitor" className="gap-2">
+              <Activity className="h-4 w-4" />
+              <span className="hidden sm:inline">Monitor</span>
+            </TabsTrigger>
+            <TabsTrigger value="logs" className="gap-2">
+              <FileText className="h-4 w-4" />
+              <span className="hidden sm:inline">Logs</span>
+            </TabsTrigger>
+          </TabsList>
+
+          {/* Sensors Tab */}
+          <TabsContent value="sensors" className="space-y-6">
+            <div className="grid gap-6 lg:grid-cols-2">
+              {/* Temperature Sensor Card */}
+              <Card>
+                <CardHeader>
+                  <CardTitle className="text-base flex items-center gap-2">
+                    <Thermometer className="h-4 w-4 text-blue-500" />
+                    Temperature Sensor Settings
+                  </CardTitle>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  <div className="space-y-3">
+                    <Label className="text-sm">Temperature Range</Label>
+                    <div className="flex items-center gap-3">
+                      <Input
+                        type="number"
+                        value={tempState.minTemp}
+                        onChange={e => setTempState(prev => ({ ...prev, minTemp: Number(e.target.value) }))}
+                        disabled={isRunning}
+                        className="w-20 h-9 text-center"
+                      />
+                      <div className="flex-1">
+                        <Slider
+                          value={[tempState.minTemp, tempState.maxTemp]}
+                          min={-20}
+                          max={80}
+                          step={1}
+                          onValueChange={([min, max]) => setTempState(prev => ({ ...prev, minTemp: min, maxTemp: max }))}
+                          disabled={isRunning}
+                        />
+                      </div>
+                      <Input
+                        type="number"
+                        value={tempState.maxTemp}
+                        onChange={e => setTempState(prev => ({ ...prev, maxTemp: Number(e.target.value) }))}
+                        disabled={isRunning}
+                        className="w-20 h-9 text-center"
+                      />
+                    </div>
+                    <p className="text-xs text-muted-foreground text-center">
+                      {tempState.minTemp}°F — {tempState.maxTemp}°F
+                    </p>
                   </div>
-                </div>
 
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Humidity: {tempState.humidity}%</Label>
+                  <div className="space-y-3">
+                    <div className="flex items-center justify-between">
+                      <Label className="text-sm flex items-center gap-2">
+                        <Droplets className="h-3 w-3" />
+                        Humidity
+                      </Label>
+                      <span className="text-sm font-medium">{tempState.humidity}%</span>
+                    </div>
                     <Slider
                       value={[tempState.humidity]}
                       min={0}
@@ -603,254 +625,305 @@ export default function LoRaWANEmulator() {
                       disabled={isRunning}
                     />
                   </div>
+
                   <div className="space-y-2">
-                    <Label>Interval: {tempState.intervalSeconds}s</Label>
-                    <Slider
-                      value={[tempState.intervalSeconds]}
-                      min={5}
-                      max={300}
-                      step={5}
-                      onValueChange={([v]) => setTempState(prev => ({ ...prev, intervalSeconds: v }))}
+                    <Label className="text-sm">Reading Interval</Label>
+                    <Select
+                      value={String(tempState.intervalSeconds)}
+                      onValueChange={(v) => setTempState(prev => ({ ...prev, intervalSeconds: Number(v) }))}
+                      disabled={isRunning}
+                    >
+                      <SelectTrigger className="h-9">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        {INTERVAL_OPTIONS.map(opt => (
+                          <SelectItem key={opt.value} value={String(opt.value)}>
+                            {opt.label}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                  </div>
+                </CardContent>
+              </Card>
+
+              {/* Door Sensor Card */}
+              <Card>
+                <CardHeader>
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-base flex items-center gap-2">
+                      <DoorOpen className="h-4 w-4 text-orange-500" />
+                      Door Sensor Settings
+                    </CardTitle>
+                    <Switch
+                      checked={doorState.enabled}
+                      onCheckedChange={enabled => setDoorState(prev => ({ ...prev, enabled }))}
                       disabled={isRunning}
                     />
                   </div>
-                </div>
-              </div>
+                </CardHeader>
+                <CardContent className="space-y-6">
+                  {doorState.enabled ? (
+                    <>
+                      <div className="space-y-3">
+                        <div className="flex items-center justify-between">
+                          <Label className="text-sm">Status Interval</Label>
+                          <span className="text-sm font-medium">{doorState.intervalSeconds}s</span>
+                        </div>
+                        <Slider
+                          value={[doorState.intervalSeconds]}
+                          min={30}
+                          max={600}
+                          step={30}
+                          onValueChange={([v]) => setDoorState(prev => ({ ...prev, intervalSeconds: v }))}
+                          disabled={isRunning}
+                        />
+                      </div>
 
-              {/* Door Sensor Config */}
-              <div className="space-y-4 border-t pt-4">
-                <div className="flex items-center justify-between">
-                  <h3 className="font-medium flex items-center gap-2">
-                    <DoorOpen className="h-4 w-4" />
-                    Door Sensor Settings
-                  </h3>
-                  <Switch
-                    checked={doorState.enabled}
-                    onCheckedChange={enabled => setDoorState(prev => ({ ...prev, enabled }))}
-                    disabled={isRunning}
-                  />
-                </div>
-
-                {doorState.enabled && (
-                  <>
-                    <div className="space-y-2">
-                      <Label>Status Interval: {doorState.intervalSeconds}s</Label>
-                      <Slider
-                        value={[doorState.intervalSeconds]}
-                        min={30}
-                        max={600}
-                        step={30}
-                        onValueChange={([v]) => setDoorState(prev => ({ ...prev, intervalSeconds: v }))}
-                        disabled={isRunning}
-                      />
+                      <div className="flex flex-col items-center gap-4 py-4">
+                        <div className={`text-4xl font-bold ${doorState.doorOpen ? 'text-destructive' : 'text-green-500'}`}>
+                          {doorState.doorOpen ? 'OPEN' : 'CLOSED'}
+                        </div>
+                        <Button
+                          variant={doorState.doorOpen ? 'destructive' : 'outline'}
+                          onClick={toggleDoor}
+                          className="gap-2"
+                        >
+                          {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
+                          {doorState.doorOpen ? 'Close Door' : 'Open Door'}
+                        </Button>
+                      </div>
+                    </>
+                  ) : (
+                    <div className="flex flex-col items-center justify-center py-8 text-center">
+                      <DoorClosed className="h-12 w-12 text-muted-foreground mb-3" />
+                      <p className="text-muted-foreground">Door sensor disabled</p>
+                      <p className="text-xs text-muted-foreground">Enable to configure settings</p>
                     </div>
+                  )}
+                </CardContent>
+              </Card>
+            </div>
 
-                    <div className="flex items-center gap-4">
-                      <Button
-                        variant={doorState.doorOpen ? 'destructive' : 'outline'}
-                        onClick={toggleDoor}
-                        className="flex items-center gap-2"
-                      >
-                        {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
-                        {doorState.doorOpen ? 'Close Door' : 'Open Door'}
-                      </Button>
-                      <Badge variant={doorState.doorOpen ? 'destructive' : 'secondary'}>
-                        Door is {doorState.doorOpen ? 'OPEN' : 'CLOSED'}
-                      </Badge>
-                    </div>
-                  </>
-                )}
-              </div>
-
-              {/* Scenario Presets */}
-              <div className="border-t pt-4">
+            {/* Scenario Presets */}
+            <Card>
+              <CardContent className="pt-6">
                 <ScenarioPresets onApply={applyScenario} disabled={isRunning} />
-              </div>
-            </TabsContent>
+              </CardContent>
+            </Card>
+          </TabsContent>
 
-            <TabsContent value="gateways" className="mt-4">
-              <GatewayConfig
-                gateways={gateways}
-                onGatewaysChange={setGateways}
-                disabled={isRunning}
-                webhookConfig={webhookConfig}
-              />
-            </TabsContent>
+          {/* Gateways Tab */}
+          <TabsContent value="gateways">
+            <GatewayConfig
+              gateways={gateways}
+              onGatewaysChange={setGateways}
+              disabled={isRunning}
+              webhookConfig={webhookConfig}
+            />
+          </TabsContent>
 
-            <TabsContent value="devices" className="mt-4">
-              <DeviceManager
-                devices={devices}
-                gateways={gateways}
-                onDevicesChange={setDevices}
-                onShowQR={setQrDevice}
-                disabled={isRunning}
-                webhookConfig={webhookConfig}
-              />
-            </TabsContent>
+          {/* Devices Tab */}
+          <TabsContent value="devices">
+            <DeviceManager
+              devices={devices}
+              gateways={gateways}
+              onDevicesChange={setDevices}
+              onShowQR={setQrDevice}
+              disabled={isRunning}
+              webhookConfig={webhookConfig}
+            />
+          </TabsContent>
 
-            <TabsContent value="webhook" className="mt-4">
-              <WebhookSettings
-                config={webhookConfig}
-                onConfigChange={setWebhookConfig}
-                disabled={isRunning}
-                currentDevEui={tempDevice?.devEui}
-              />
-            </TabsContent>
+          {/* Webhook Tab */}
+          <TabsContent value="webhook">
+            <WebhookSettings
+              config={webhookConfig}
+              onConfigChange={setWebhookConfig}
+              disabled={isRunning}
+              currentDevEui={tempDevice?.devEui}
+            />
+          </TabsContent>
 
-            <TabsContent value="testing" className="space-y-4 mt-4">
-              <TestContextConfig
-                config={webhookConfig}
-                onConfigChange={setWebhookConfig}
-                disabled={isRunning}
-                gateways={gateways}
-                devices={devices}
-                onSyncResult={addSyncResult}
-              />
-              <TestDashboard
-                results={testResults}
-                syncResults={syncResults}
-                onClearResults={() => {
-                  setTestResults([]);
-                  setSyncResults([]);
-                }}
-              />
-            </TabsContent>
+          {/* Testing Tab */}
+          <TabsContent value="testing" className="space-y-6">
+            <TestContextConfig
+              config={webhookConfig}
+              onConfigChange={setWebhookConfig}
+              disabled={isRunning}
+              gateways={gateways}
+              devices={devices}
+              onSyncResult={addSyncResult}
+            />
+            <TestDashboard
+              results={testResults}
+              syncResults={syncResults}
+              onClearResults={() => {
+                setTestResults([]);
+                setSyncResults([]);
+              }}
+            />
+          </TabsContent>
 
-            <TabsContent value="monitor" className="space-y-4 mt-4">
-              <div className="grid grid-cols-2 gap-4">
-                <Card>
+          {/* Monitor Tab - Dark Theme */}
+          <TabsContent value="monitor">
+            <div className="bg-slate-900 rounded-lg p-6 space-y-6">
+              <div className="grid gap-6 md:grid-cols-2">
+                {/* Temperature Sensor Monitor */}
+                <Card className="bg-slate-800 border-slate-700">
                   <CardHeader className="pb-2">
-                    <CardTitle className="text-sm flex items-center gap-2">
-                      <Thermometer className="h-4 w-4" />
+                    <CardTitle className="text-sm flex items-center gap-2 text-slate-200">
+                      <Thermometer className="h-4 w-4 text-blue-400" />
                       Temperature Sensor
                     </CardTitle>
                   </CardHeader>
                   <CardContent>
-                    <div className="text-3xl font-bold">
-                      {currentTemp !== null ? `${currentTemp.toFixed(1)}°F` : '--'}
+                    <div className="text-5xl font-bold text-white mb-4">
+                      {currentTemp !== null ? `${currentTemp.toFixed(1)}°F` : '-- --'}
                     </div>
-                    <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                      <span className="flex items-center gap-1">
-                        <Battery className="h-3 w-3" />
+                    <div className="flex items-center gap-6 text-sm text-slate-400">
+                      <span className="flex items-center gap-2">
+                        <Battery className="h-4 w-4" />
                         {tempState.batteryLevel.toFixed(0)}%
                       </span>
-                      <span className="flex items-center gap-1">
-                        <Signal className="h-3 w-3" />
+                      <span className="flex items-center gap-2">
+                        <Signal className="h-4 w-4" />
                         {tempState.signalStrength}dBm
                       </span>
                     </div>
+                    <p className="text-xs text-slate-500 mt-3">Last Seen: Just now</p>
                     {tempDevice && (
-                      <div className="text-xs text-muted-foreground mt-1 font-mono">
-                        DevEUI: {tempDevice.devEui}
-                      </div>
+                      <p className="text-xs text-slate-600 mt-1 font-mono">
+                        {tempDevice.devEui}
+                      </p>
                     )}
                   </CardContent>
                 </Card>
 
-                {doorState.enabled && (
-                  <Card>
-                    <CardHeader className="pb-2">
-                      <CardTitle className="text-sm flex items-center gap-2">
-                        {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
-                        Door Sensor
-                      </CardTitle>
-                    </CardHeader>
-                    <CardContent>
-                      <div className={`text-3xl font-bold ${doorState.doorOpen ? 'text-destructive' : 'text-green-500'}`}>
-                        {doorState.doorOpen ? 'OPEN' : 'CLOSED'}
-                      </div>
-                      <div className="flex items-center gap-4 mt-2 text-sm text-muted-foreground">
-                        <span className="flex items-center gap-1">
-                          <Battery className="h-3 w-3" />
-                          {doorState.batteryLevel.toFixed(0)}%
-                        </span>
-                        <span className="flex items-center gap-1">
-                          <Signal className="h-3 w-3" />
-                          {doorState.signalStrength}dBm
-                        </span>
-                      </div>
-                      {doorDevice && (
-                        <div className="text-xs text-muted-foreground mt-1 font-mono">
-                          DevEUI: {doorDevice.devEui}
-                        </div>
-                      )}
-                    </CardContent>
-                  </Card>
-                )}
+                {/* Door Sensor Monitor */}
+                <Card className="bg-slate-800 border-slate-700">
+                  <CardHeader className="pb-2">
+                    <CardTitle className="text-sm flex items-center gap-2 text-slate-200">
+                      {doorState.doorOpen ? <DoorOpen className="h-4 w-4 text-red-400" /> : <DoorClosed className="h-4 w-4 text-green-400" />}
+                      Door Sensor
+                    </CardTitle>
+                  </CardHeader>
+                  <CardContent>
+                    <div className={`text-5xl font-bold mb-4 ${doorState.doorOpen ? 'text-red-400' : 'text-green-400'}`}>
+                      {doorState.enabled ? (doorState.doorOpen ? 'OPEN' : 'CLOSED') : 'DISABLED'}
+                    </div>
+                    <div className="flex items-center gap-6 text-sm text-slate-400">
+                      <span className="flex items-center gap-2">
+                        <Battery className="h-4 w-4" />
+                        {doorState.batteryLevel.toFixed(0)}%
+                      </span>
+                      <span className="flex items-center gap-2">
+                        <Signal className="h-4 w-4" />
+                        {doorState.signalStrength}dBm
+                      </span>
+                    </div>
+                    <p className="text-xs text-slate-500 mt-3">Last Seen: Just now</p>
+                    {doorDevice && (
+                      <p className="text-xs text-slate-600 mt-1 font-mono">
+                        {doorDevice.devEui}
+                      </p>
+                    )}
+                  </CardContent>
+                </Card>
               </div>
 
               {/* Gateway Status */}
-              <Card>
+              <Card className="bg-slate-800 border-slate-700">
                 <CardHeader className="pb-2">
-                  <CardTitle className="text-sm flex items-center gap-2">
+                  <CardTitle className="text-sm flex items-center gap-2 text-slate-200">
                     <Radio className="h-4 w-4" />
                     Gateway Status
                   </CardTitle>
                 </CardHeader>
                 <CardContent>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap gap-3">
                     {gateways.map(gw => (
-                      <Badge key={gw.id} variant={gw.isOnline ? 'default' : 'secondary'}>
-                        {gw.name}: {gw.isOnline ? 'Online' : 'Offline'}
-                      </Badge>
+                      <div key={gw.id} className="flex items-center gap-2">
+                        <div className={`w-2 h-2 rounded-full ${gw.isOnline ? 'bg-green-400' : 'bg-slate-500'}`} />
+                        <span className="text-sm text-slate-300">{gw.name}</span>
+                        <Badge variant={gw.isOnline ? 'default' : 'secondary'} className="text-xs">
+                          {gw.isOnline ? 'Online' : 'Offline'}
+                        </Badge>
+                      </div>
                     ))}
                   </div>
                 </CardContent>
               </Card>
-            </TabsContent>
+            </div>
+          </TabsContent>
 
-            <TabsContent value="logs" className="mt-4">
-              <ScrollArea className="h-64 rounded-md border p-4">
-                {logs.length === 0 ? (
-                  <div className="text-muted-foreground text-center py-8">No logs yet</div>
-                ) : (
-                  <div className="space-y-1">
-                    {logs.map(log => (
-                      <div key={log.id} className="text-sm font-mono">
-                        <span className="text-muted-foreground">
-                          [{log.timestamp.toLocaleTimeString()}]
-                        </span>{' '}
-                        <span className={
-                          log.type === 'error' ? 'text-destructive' : 
-                          log.type === 'webhook' ? 'text-green-500' : ''
-                        }>
-                          {log.message}
-                        </span>
-                      </div>
-                    ))}
+          {/* Logs Tab */}
+          <TabsContent value="logs">
+            {logs.length === 0 ? (
+              <Card>
+                <CardContent className="flex flex-col items-center justify-center py-16 text-center">
+                  <div className="p-4 rounded-full bg-muted mb-4">
+                    <ClipboardList className="h-10 w-10 text-muted-foreground" />
                   </div>
-                )}
-              </ScrollArea>
-            </TabsContent>
-          </Tabs>
-
-          <div className="flex gap-2 mt-6">
-            {!isRunning ? (
-              <>
-                <Button onClick={startEmulation} className="flex items-center gap-2">
-                  <Play className="h-4 w-4" />
-                  Start Emulation
-                </Button>
-                <Button variant="outline" onClick={sendTempReading} className="flex items-center gap-2">
-                  <Zap className="h-4 w-4" />
-                  Single Reading
-                </Button>
-              </>
+                  <h3 className="font-medium mb-2">No logs yet</h3>
+                  <p className="text-sm text-muted-foreground mb-6 max-w-sm">
+                    Logs will appear here when you start emulation or send readings
+                  </p>
+                  <div className="flex gap-3">
+                    <Button onClick={startEmulation} disabled={isRunning}>
+                      Enable Logging
+                    </Button>
+                    <Button variant="outline" onClick={sendTempReading}>
+                      Run Single Reading
+                    </Button>
+                  </div>
+                </CardContent>
+              </Card>
             ) : (
-              <Button variant="destructive" onClick={stopEmulation} className="flex items-center gap-2">
-                <Square className="h-4 w-4" />
-                Stop Emulation
-              </Button>
+              <Card>
+                <CardHeader className="pb-3">
+                  <div className="flex items-center justify-between">
+                    <CardTitle className="text-sm">Recent Logs</CardTitle>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={() => setLogs([])}
+                    >
+                      Clear
+                    </Button>
+                  </div>
+                </CardHeader>
+                <CardContent>
+                  <ScrollArea className="h-96">
+                    <div className="space-y-2">
+                      {logs.map(log => (
+                        <div key={log.id} className="flex items-start gap-3 py-2 border-b border-border/50 last:border-0">
+                          <span className="text-xs text-muted-foreground font-mono w-20 shrink-0">
+                            {log.timestamp.toLocaleTimeString()}
+                          </span>
+                          <Badge variant={getLogBadgeVariant(log.type)} className="text-xs shrink-0">
+                            {getLogBadgeLabel(log.type)}
+                          </Badge>
+                          <span className={`text-sm font-mono flex-1 ${log.type === 'error' ? 'text-destructive' : ''}`}>
+                            {log.message}
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  </ScrollArea>
+                </CardContent>
+              </Card>
             )}
-          </div>
-        </CardContent>
-      </Card>
+          </TabsContent>
+        </Tabs>
+      </main>
 
       <QRCodeModal
         device={qrDevice}
         open={!!qrDevice}
         onClose={() => setQrDevice(null)}
       />
-    </>
+    </div>
   );
 }
