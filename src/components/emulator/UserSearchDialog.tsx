@@ -2,18 +2,26 @@ import { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle } from 'lucide-react';
+import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle, Star } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import { FunctionsHttpError, FunctionsRelayError, FunctionsFetchError } from '@supabase/supabase-js';
 
-interface UserProfile {
+export interface UserSite {
+  site_id: string;
+  site_name?: string | null;
+  is_default?: boolean;
+}
+
+export interface UserProfile {
   id: string;
   email?: string;
   full_name?: string;
   organization_id: string; // Required - always present from sync
-  site_id?: string;
+  site_id?: string;        // Legacy single site
   unit_id?: string;
+  default_site_id?: string;
+  user_sites?: UserSite[];
 }
 
 interface UserSearchDialogProps {
@@ -211,15 +219,24 @@ export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCou
                     {user.organization_id && (
                       <span className="flex items-center gap-1 bg-primary/10 text-primary px-2 py-0.5 rounded">
                         <Building2 className="h-3 w-3" />
-                        {user.organization_id}
+                        {user.organization_id.slice(0, 8)}...
                       </span>
                     )}
-                    {user.site_id && (
+                    {/* Show site count or default site */}
+                    {user.user_sites && user.user_sites.length > 0 ? (
                       <span className="flex items-center gap-1 bg-secondary px-2 py-0.5 rounded">
                         <MapPin className="h-3 w-3" />
-                        {user.site_id}
+                        {user.user_sites.length} site{user.user_sites.length !== 1 ? 's' : ''}
+                        {user.default_site_id && (
+                          <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />
+                        )}
                       </span>
-                    )}
+                    ) : user.site_id ? (
+                      <span className="flex items-center gap-1 bg-secondary px-2 py-0.5 rounded">
+                        <MapPin className="h-3 w-3" />
+                        {user.site_id.slice(0, 8)}...
+                      </span>
+                    ) : null}
                     {user.unit_id && (
                       <span className="flex items-center gap-1 bg-secondary px-2 py-0.5 rounded">
                         <Box className="h-3 w-3" />

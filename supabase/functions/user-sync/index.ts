@@ -6,14 +6,22 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+interface UserSite {
+  site_id: string;
+  site_name?: string;
+}
+
 interface SyncedUser {
   user_id: string;
   email: string;
   full_name: string | null;
   organization_id: string | null;
-  site_id: string | null;
+  site_id: string | null;        // Legacy single site (backward compatible)
   unit_id: string | null;
   updated_at: string;
+  // New fields from Project 1
+  default_site_id?: string | null;
+  user_sites?: UserSite[];
 }
 
 interface SyncPayload {
@@ -86,6 +94,7 @@ serve(async (req) => {
           source_organization_id: user.organization_id,
           source_site_id: user.site_id,
           source_unit_id: user.unit_id,
+          default_site_id: user.default_site_id || null,
           synced_at: user.updated_at,
           last_updated_at: new Date().toISOString(),
         }, {
@@ -97,10 +106,50 @@ serve(async (req) => {
       if (error) {
         console.error(`[user-sync] Error upserting user ${user.user_id}:`, error);
         results.push({ user_id: user.user_id, success: false, error: error.message });
-      } else {
-        console.log(`[user-sync] Successfully synced user ${user.user_id}`);
-        results.push({ user_id: user.user_id, success: true });
+        continue;
       }
+
+      // Handle user_sites if provided
+      if (user.user_sites && user.user_sites.length > 0) {
+        console.log(`[user-sync] Syncing ${user.user_sites.length} site memberships for user ${user.user_id}`);
+        
+        // Delete existing memberships for this user
+        const { error: deleteError } = await supabase
+          .from('user_site_memberships')
+          .delete()
+          .eq('source_user_id', user.user_id);
+        
+        if (deleteError) {
+          console.error(`[user-sync] Error deleting old memberships for ${user.user_id}:`, deleteError);
+        }
+        
+        // Insert new memberships
+        const memberships = user.user_sites.map(site => ({
+          source_user_id: user.user_id,
+          site_id: site.site_id,
+          site_name: site.site_name || null,
+          is_default: site.site_id === user.default_site_id,
+        }));
+        
+        const { error: insertError } = await supabase
+          .from('user_site_memberships')
+          .insert(memberships);
+        
+        if (insertError) {
+          console.error(`[user-sync] Error inserting memberships for ${user.user_id}:`, insertError);
+          results.push({ 
+            user_id: user.user_id, 
+            success: true, 
+            warning: `User synced but site memberships failed: ${insertError.message}` 
+          });
+          continue;
+        }
+        
+        console.log(`[user-sync] Successfully synced ${memberships.length} site memberships for user ${user.user_id}`);
+      }
+
+      console.log(`[user-sync] Successfully synced user ${user.user_id}`);
+      results.push({ user_id: user.user_id, success: true });
     }
 
     const successCount = results.filter(r => r.success).length;

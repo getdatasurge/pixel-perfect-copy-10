@@ -4,11 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw } from 'lucide-react';
+import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw, Star } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import UserSearchDialog from './UserSearchDialog';
+import UserSearchDialog, { UserSite } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
 
@@ -42,9 +42,9 @@ export default function TestContextConfig({
   const [lastSyncError, setLastSyncError] = useState<string | null>(null);
   const [cachedUserCount, setCachedUserCount] = useState<number | null>(null);
   
-  // Site dropdown options
-  const [availableSites, setAvailableSites] = useState<Array<{ id: string; name: string }>>([]);
-  const [isLoadingSites, setIsLoadingSites] = useState(false);
+  // Site dropdown options from selected user
+  const [selectedUserSites, setSelectedUserSites] = useState<UserSite[]>([]);
+  const [selectedUserDefaultSite, setSelectedUserDefaultSite] = useState<string | null>(null);
   
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
@@ -85,47 +85,8 @@ export default function TestContextConfig({
     fetchUserCount();
   }, []);
 
-  // Fetch available sites when org_id changes
-  useEffect(() => {
-    const fetchSitesForOrg = async () => {
-      if (!config.testOrgId) {
-        setAvailableSites([]);
-        return;
-      }
-      
-      setIsLoadingSites(true);
-      try {
-        const { data, error } = await supabase
-          .from('synced_users')
-          .select('source_site_id')
-          .eq('source_organization_id', config.testOrgId)
-          .not('source_site_id', 'is', null);
-        
-        if (error) {
-          console.error('Error fetching sites:', error);
-          setAvailableSites([]);
-          return;
-        }
-        
-        // Extract unique site IDs
-        const uniqueSiteIds = [...new Set(
-          data?.map(u => u.source_site_id).filter((id): id is string => !!id)
-        )];
-        
-        setAvailableSites(uniqueSiteIds.map(id => ({ 
-          id, 
-          name: `Site ${id.slice(0, 8)}...` // Truncate UUID for display
-        })));
-      } catch (err) {
-        console.error('Error fetching sites:', err);
-        setAvailableSites([]);
-      } finally {
-        setIsLoadingSites(false);
-      }
-    };
-    
-    fetchSitesForOrg();
-  }, [config.testOrgId]);
+  // Clear user sites when org changes (but keep sites if just switching org field)
+  // Sites are populated when a user is selected via UserSearchDialog
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
@@ -143,7 +104,10 @@ export default function TestContextConfig({
       selectedUserId: null,
       selectedUserDisplayName: null,
       contextSetAt: null,
+      testSiteId: undefined, // Also clear site when clearing user
     });
+    setSelectedUserSites([]);
+    setSelectedUserDefaultSite(null);
   };
 
   // Validation: require valid preflight + at least one entity
@@ -393,11 +357,24 @@ export default function TestContextConfig({
         <div className="mb-2">
           <UserSearchDialog
             onSelectUser={(user) => {
-              // organization_id is always present (required field)
-              // site_id and unit_id are optional - only update if present
+              // Store user sites for dropdown
+              setSelectedUserSites(user.user_sites || []);
+              setSelectedUserDefaultSite(user.default_site_id || null);
+              
+              // Auto-select site logic
+              let siteToSelect: string | undefined = undefined;
+              if (user.default_site_id) {
+                siteToSelect = user.default_site_id;
+              } else if (user.user_sites && user.user_sites.length === 1) {
+                siteToSelect = user.user_sites[0].site_id;
+              } else if (user.site_id) {
+                // Fallback to legacy single site
+                siteToSelect = user.site_id;
+              }
+              
               update({
                 testOrgId: user.organization_id,
-                testSiteId: user.site_id || undefined,
+                testSiteId: siteToSelect,
                 testUnitId: user.unit_id || undefined,
                 selectedUserId: user.id,
                 selectedUserDisplayName: user.full_name || user.email || user.id,
@@ -464,30 +441,35 @@ export default function TestContextConfig({
             <Select
               value={config.testSiteId || '__org_level__'}
               onValueChange={(val) => update({ testSiteId: val === '__org_level__' ? undefined : val })}
-              disabled={disabled || !config.testOrgId || isLoadingSites}
+              disabled={disabled || !config.selectedUserId || selectedUserSites.length === 0}
             >
               <SelectTrigger id="testSiteId">
                 <SelectValue placeholder={
-                  !config.testOrgId 
-                    ? "Select org first" 
-                    : isLoadingSites 
-                      ? "Loading..." 
+                  !config.selectedUserId 
+                    ? "Select user first" 
+                    : selectedUserSites.length === 0
+                      ? "No sites for user"
                       : "Select site..."
                 } />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="__org_level__">Org-level (no site)</SelectItem>
-                {availableSites.map(site => (
-                  <SelectItem key={site.id} value={site.id}>{site.name}</SelectItem>
+                {selectedUserSites.map(site => (
+                  <SelectItem key={site.site_id} value={site.site_id}>
+                    <span className="flex items-center gap-1">
+                      {site.site_name || `Site ${site.site_id.slice(0, 8)}...`}
+                      {site.is_default && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500 ml-1" />}
+                    </span>
+                  </SelectItem>
                 ))}
               </SelectContent>
             </Select>
             <p className="text-xs text-muted-foreground">
-              {availableSites.length > 0 
-                ? `${availableSites.length} site(s) available`
-                : config.testOrgId 
-                  ? 'No sites found for org'
-                  : 'Optional for sync'}
+              {selectedUserSites.length > 0 
+                ? `${selectedUserSites.length} site(s) for selected user`
+                : config.selectedUserId 
+                  ? 'No sites available for this user'
+                  : 'Select a user to see available sites'}
             </p>
           </div>
 
