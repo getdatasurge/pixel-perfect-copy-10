@@ -8,8 +8,9 @@ import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
-  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2
+  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw
 } from 'lucide-react';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -62,6 +63,8 @@ interface TTNSettingsFromDB {
   webhook_secret_preview: string | null;
   webhook_secret_set: boolean;
   updated_at: string;
+  last_test_at: string | null;
+  last_test_success: boolean | null;
 }
 
 export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, devices = [] }: WebhookSettingsProps) {
@@ -82,6 +85,11 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [ttnApiKeyPreview, setTtnApiKeyPreview] = useState<string | null>(null);
   const [ttnApiKeySet, setTtnApiKeySet] = useState(false);
   const [ttnWebhookSecretSet, setTtnWebhookSecretSet] = useState(false);
+  
+  // Connection status tracking
+  const [lastTestAt, setLastTestAt] = useState<Date | null>(null);
+  const [lastTestSuccess, setLastTestSuccess] = useState<boolean | null>(null);
+  const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   
   // Test result state
   const [testResult, setTestResult] = useState<TTNTestResult | null>(null);
@@ -171,12 +179,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
         
+        // Load connection status
+        if (settings.last_test_at) {
+          setLastTestAt(new Date(settings.last_test_at));
+        }
+        setLastTestSuccess(settings.last_test_success ?? null);
+        
         // Update parent config
         if (settings.enabled) {
           updateTTN({ 
             enabled: settings.enabled, 
             applicationId: settings.application_id || '', 
-            cluster: settings.cluster 
+            cluster: settings.cluster,
+            lastTestAt: settings.last_test_at ? new Date(settings.last_test_at) : null,
+            lastTestSuccess: settings.last_test_success,
           });
         }
       }
@@ -303,7 +319,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const result: TTNTestResult = data;
       setTestResult(result);
 
+      // Update connection status
+      const now = new Date();
+      setLastTestAt(now);
+
       if (result.ok && result.connected) {
+        setLastTestSuccess(true);
         toast({
           title: 'TTN Connected',
           description: result.message || 'Successfully connected to The Things Network',
@@ -312,10 +333,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           lastStatus: {
             code: 200,
             message: result.message || 'Connected',
-            timestamp: new Date(),
-          }
+            timestamp: now,
+          },
+          lastTestAt: now,
+          lastTestSuccess: true,
         });
       } else {
+        setLastTestSuccess(false);
         toast({
           title: 'TTN Test Failed',
           description: result.error || result.ttn_message || 'Unknown error',
@@ -325,8 +349,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           lastStatus: {
             code: result.ttn_status || 500,
             message: result.error || result.ttn_message || 'Unknown error',
-            timestamp: new Date(),
-          }
+            timestamp: now,
+          },
+          lastTestAt: now,
+          lastTestSuccess: false,
         });
       }
     } catch (err: any) {
@@ -389,7 +415,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const result: TTNTestResult = data;
       setTestResult(result);
 
+      // Update connection status
+      const now = new Date();
+      setLastTestAt(now);
+
       if (result.ok && result.connected) {
+        setLastTestSuccess(true);
         toast({
           title: 'TTN Connected',
           description: result.message || 'Successfully connected to The Things Network',
@@ -398,10 +429,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           lastStatus: {
             code: 200,
             message: result.message || 'Connected',
-            timestamp: new Date(),
-          }
+            timestamp: now,
+          },
+          lastTestAt: now,
+          lastTestSuccess: true,
         });
       } else {
+        setLastTestSuccess(false);
         toast({
           title: 'TTN Test Failed',
           description: result.error || result.ttn_message || 'Unknown error',
@@ -411,8 +445,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           lastStatus: {
             code: result.ttn_status || 500,
             message: result.error || result.ttn_message || 'Unknown error',
-            timestamp: new Date(),
-          }
+            timestamp: now,
+          },
+          lastTestAt: now,
+          lastTestSuccess: false,
         });
       }
     } catch (err: any) {
@@ -453,6 +489,35 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const updateTTN = (updates: Partial<TTNConfig>) => {
     update({ ttnConfig: { ...ttnConfig, ...updates } });
   };
+
+  // Format relative time for display
+  const formatRelativeTime = (date: Date): string => {
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    const diffHours = Math.floor(diffMins / 60);
+    
+    if (diffMins < 1) return 'Just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    if (diffHours < 24) return `${diffHours}h ago`;
+    return date.toLocaleDateString();
+  };
+
+  // Auto-refresh connection status every 5 minutes
+  useEffect(() => {
+    if (!autoRefreshEnabled || !ttnEnabled || !ttnApiKeySet || !orgId) {
+      return;
+    }
+
+    const REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+
+    const intervalId = setInterval(() => {
+      console.log('[TTN] Auto-refreshing connection status...');
+      testTTNConnectionStored();
+    }, REFRESH_INTERVAL_MS);
+
+    return () => clearInterval(intervalId);
+  }, [autoRefreshEnabled, ttnEnabled, ttnApiKeySet, orgId]);
 
   const copyLocalUrl = () => {
     navigator.clipboard.writeText(localWebhookUrl);
@@ -747,6 +812,73 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   </p>
                 </div>
               </div>
+
+              {/* TTN Connection Status Indicator */}
+              {ttnApiKeySet && (
+                <TooltipProvider>
+                  <div className="flex items-center justify-between p-3 rounded-lg bg-muted/50 border">
+                    <div className="flex items-center gap-3">
+                      {/* Status Icon */}
+                      {lastTestSuccess === null ? (
+                        <div className="h-3 w-3 rounded-full bg-gray-400" />
+                      ) : lastTestSuccess ? (
+                        <div className="h-3 w-3 rounded-full bg-green-500 animate-pulse" />
+                      ) : (
+                        <div className="h-3 w-3 rounded-full bg-red-500" />
+                      )}
+                      
+                      {/* Status Text */}
+                      <div className="text-sm">
+                        {lastTestSuccess === null ? (
+                          <span className="text-muted-foreground">Not tested yet</span>
+                        ) : lastTestSuccess ? (
+                          <span className="text-green-600 font-medium">Connected</span>
+                        ) : (
+                          <span className="text-red-600 font-medium">Disconnected</span>
+                        )}
+                      </div>
+                      
+                      {/* Last Test Timestamp */}
+                      {lastTestAt && (
+                        <span className="text-xs text-muted-foreground">
+                          Last checked: {formatRelativeTime(lastTestAt)}
+                        </span>
+                      )}
+                    </div>
+                    
+                    {/* Auto-refresh indicator and manual refresh button */}
+                    <div className="flex items-center gap-2">
+                      {autoRefreshEnabled && ttnEnabled && ttnApiKeySet && (
+                        <Tooltip>
+                          <TooltipTrigger asChild>
+                            <Badge variant="outline" className="text-xs gap-1 cursor-help">
+                              <RefreshCw className="h-3 w-3" />
+                              Auto
+                            </Badge>
+                          </TooltipTrigger>
+                          <TooltipContent>
+                            <p>Connection status refreshes every 5 minutes</p>
+                          </TooltipContent>
+                        </Tooltip>
+                      )}
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleTestConnection}
+                        disabled={!canTestConnection}
+                        className="gap-1"
+                      >
+                        {isTestingTTN ? (
+                          <Loader2 className="h-3 w-3 animate-spin" />
+                        ) : (
+                          <RefreshCw className="h-3 w-3" />
+                        )}
+                        Refresh
+                      </Button>
+                    </div>
+                  </div>
+                </TooltipProvider>
+              )}
 
               {/* Test Result Diagnostics */}
               {renderTestDiagnostics()}
