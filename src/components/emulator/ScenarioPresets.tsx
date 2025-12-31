@@ -1,5 +1,4 @@
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
-import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Snowflake, Thermometer, AlertTriangle, DoorOpen, BatteryLow, WifiOff } from 'lucide-react';
 
@@ -7,6 +6,7 @@ export interface ScenarioConfig {
   name: string;
   description: string;
   icon: React.ReactNode;
+  category: 'Freezer' | 'Fridge' | 'Alert' | 'Sensor';
   tempRange?: { min: number; max: number };
   humidity?: number;
   doorBehavior?: 'normal' | 'stuck-open' | 'rapid';
@@ -17,8 +17,9 @@ export interface ScenarioConfig {
 const scenarios: ScenarioConfig[] = [
   {
     name: 'Normal Freezer',
-    description: 'Stable freezer operation at -18°F to -10°F',
+    description: 'Stable freezer at -18°F to -10°F',
     icon: <Snowflake className="h-4 w-4" />,
+    category: 'Freezer',
     tempRange: { min: -18, max: -10 },
     humidity: 30,
     batteryLevel: 95,
@@ -26,17 +27,19 @@ const scenarios: ScenarioConfig[] = [
   },
   {
     name: 'Normal Refrigerator',
-    description: 'Stable fridge operation at 35°F to 40°F',
+    description: 'Stable fridge at 35°F to 40°F',
     icon: <Thermometer className="h-4 w-4" />,
+    category: 'Fridge',
     tempRange: { min: 35, max: 40 },
     humidity: 45,
     batteryLevel: 95,
     signalStrength: -65,
   },
   {
-    name: 'Temperature Excursion',
-    description: 'Rising temperature simulating failure',
+    name: 'Temp Excursion',
+    description: 'Rising temp simulating failure',
     icon: <AlertTriangle className="h-4 w-4" />,
+    category: 'Alert',
     tempRange: { min: 45, max: 60 },
     humidity: 70,
     batteryLevel: 95,
@@ -44,8 +47,9 @@ const scenarios: ScenarioConfig[] = [
   },
   {
     name: 'Door Left Open',
-    description: 'Door sensor stuck in open state',
+    description: 'Door sensor stuck open',
     icon: <DoorOpen className="h-4 w-4" />,
+    category: 'Alert',
     tempRange: { min: 40, max: 55 },
     humidity: 60,
     doorBehavior: 'stuck-open',
@@ -56,6 +60,7 @@ const scenarios: ScenarioConfig[] = [
     name: 'Low Battery',
     description: 'Critical battery level alert',
     icon: <BatteryLow className="h-4 w-4" />,
+    category: 'Sensor',
     tempRange: { min: 35, max: 40 },
     batteryLevel: 8,
     signalStrength: -65,
@@ -64,11 +69,26 @@ const scenarios: ScenarioConfig[] = [
     name: 'Poor Signal',
     description: 'Weak gateway connection',
     icon: <WifiOff className="h-4 w-4" />,
+    category: 'Sensor',
     tempRange: { min: 35, max: 40 },
     batteryLevel: 95,
     signalStrength: -95,
   },
 ];
+
+const categoryColors: Record<ScenarioConfig['category'], string> = {
+  Freezer: 'bg-blue-500/10 text-blue-600 border-blue-500/30',
+  Fridge: 'bg-green-500/10 text-green-600 border-green-500/30',
+  Alert: 'bg-amber-500/10 text-amber-600 border-amber-500/30',
+  Sensor: 'bg-purple-500/10 text-purple-600 border-purple-500/30',
+};
+
+const iconBgColors: Record<ScenarioConfig['category'], string> = {
+  Freezer: 'bg-blue-500/10 text-blue-500',
+  Fridge: 'bg-green-500/10 text-green-500',
+  Alert: 'bg-amber-500/10 text-amber-500',
+  Sensor: 'bg-purple-500/10 text-purple-500',
+};
 
 interface ScenarioPresetsProps {
   onApply: (scenario: ScenarioConfig) => void;
@@ -79,34 +99,41 @@ export default function ScenarioPresets({ onApply, disabled }: ScenarioPresetsPr
   return (
     <div className="space-y-4">
       <div>
-        <h3 className="text-lg font-medium">Test Scenarios</h3>
-        <p className="text-sm text-muted-foreground">
-          Quick presets to simulate various conditions
+        <h3 className="text-sm font-medium">Test Scenarios</h3>
+        <p className="text-xs text-muted-foreground">
+          Quick presets for common conditions
         </p>
       </div>
 
-      <div className="grid grid-cols-2 gap-3">
+      <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
         {scenarios.map(scenario => (
           <Card 
             key={scenario.name} 
-            className="cursor-pointer hover:border-primary transition-colors"
+            className={`cursor-pointer transition-all hover:border-primary hover:shadow-sm ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
             onClick={() => !disabled && onApply(scenario)}
           >
-            <CardContent className="p-4">
+            <CardContent className="p-3">
               <div className="flex items-start gap-3">
-                <div className="p-2 rounded-md bg-muted">
+                <div className={`p-2 rounded-md ${iconBgColors[scenario.category]}`}>
                   {scenario.icon}
                 </div>
-                <div className="flex-1 min-w-0">
-                  <h4 className="font-medium text-sm truncate">{scenario.name}</h4>
-                  <p className="text-xs text-muted-foreground line-clamp-2">
+                <div className="flex-1 min-w-0 space-y-1">
+                  <div className="flex items-center gap-2">
+                    <h4 className="font-medium text-sm truncate">{scenario.name}</h4>
+                  </div>
+                  <p className="text-xs text-muted-foreground line-clamp-1">
                     {scenario.description}
                   </p>
-                  {scenario.tempRange && (
-                    <Badge variant="outline" className="mt-2 text-xs">
-                      {scenario.tempRange.min}°F - {scenario.tempRange.max}°F
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <Badge variant="outline" className={`text-xs ${categoryColors[scenario.category]}`}>
+                      {scenario.category}
                     </Badge>
-                  )}
+                    {scenario.tempRange && (
+                      <span className="text-xs text-muted-foreground">
+                        {scenario.tempRange.min}°F — {scenario.tempRange.max}°F
+                      </span>
+                    )}
+                  </div>
                 </div>
               </div>
             </CardContent>

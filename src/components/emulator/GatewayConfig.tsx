@@ -5,7 +5,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
-import { Radio, Plus, Trash2, Copy, Check, Cloud, Loader2 } from 'lucide-react';
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
+import { Radio, Plus, Trash2, Copy, Check, Cloud, Loader2, Pencil } from 'lucide-react';
 import { GatewayConfig as GatewayConfigType, WebhookConfig, createGateway } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -22,13 +23,16 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
   const [copiedId, setCopiedId] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const canSync = !!webhookConfig?.testOrgId;
+  const primaryGateway = gateways[0];
+  const secondaryGateways = gateways.slice(1);
 
   const addGateway = () => {
     const newGateway = createGateway(`Gateway ${gateways.length + 1}`);
     onGatewaysChange([...gateways, newGateway]);
-    toast({ title: 'Gateway added', description: `Created ${newGateway.name} with EUI ${newGateway.eui}` });
+    toast({ title: 'Gateway added', description: `Created ${newGateway.name}` });
   };
 
   const removeGateway = (id: string) => {
@@ -42,7 +46,6 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
 
   const updateGateway = (id: string, updates: Partial<GatewayConfigType>) => {
     onGatewaysChange(gateways.map(g => (g.id === id ? { ...g, ...updates } : g)));
-    // Mark as unsynced when changed
     setSyncedIds(prev => {
       const next = new Set(prev);
       next.delete(id);
@@ -54,7 +57,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
     await navigator.clipboard.writeText(eui);
     setCopiedId(id);
     setTimeout(() => setCopiedId(null), 2000);
-    toast({ title: 'Copied', description: 'Gateway EUI copied to clipboard' });
+    toast({ title: 'Copied', description: 'Gateway EUI copied' });
   };
 
   const syncGateway = async (gateway: GatewayConfigType) => {
@@ -115,7 +118,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
           <Tooltip>
             <TooltipTrigger asChild>
               <span>
-                <Button variant="ghost" size="icon" disabled>
+                <Button variant="ghost" size="icon" disabled className="h-8 w-8">
                   <Cloud className="h-4 w-4 text-muted-foreground" />
                 </Button>
               </span>
@@ -132,6 +135,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
       <Button
         variant="ghost"
         size="icon"
+        className="h-8 w-8"
         onClick={() => syncGateway(gateway)}
         disabled={disabled || isSyncing}
         title="Sync to Dashboard"
@@ -148,7 +152,8 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h3 className="text-lg font-medium">Gateways</h3>
@@ -156,7 +161,7 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
             Emulated LoRaWAN gateways that receive sensor data
           </p>
         </div>
-        <Button onClick={addGateway} disabled={disabled} size="sm" className="flex items-center gap-1">
+        <Button onClick={addGateway} disabled={disabled} size="sm" className="gap-1">
           <Plus className="h-4 w-4" />
           Add Gateway
         </Button>
@@ -164,94 +169,197 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
 
       {gateways.length === 0 ? (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-8 text-center">
-            <Radio className="h-12 w-12 text-muted-foreground mb-4" />
-            <p className="text-muted-foreground">No gateways configured</p>
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
+            <div className="p-3 rounded-full bg-muted mb-4">
+              <Radio className="h-8 w-8 text-muted-foreground" />
+            </div>
+            <p className="font-medium">No gateways configured</p>
             <p className="text-sm text-muted-foreground">Add a gateway to start emulating</p>
           </CardContent>
         </Card>
       ) : (
-        <div className="grid gap-4">
-          {gateways.map(gateway => (
-            <Card key={gateway.id}>
-              <CardHeader className="pb-2">
+        <div className="space-y-4">
+          {/* Primary Gateway Card */}
+          {primaryGateway && (
+            <Card className="border-primary/30">
+              <CardHeader className="pb-3">
                 <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-3">
+                    <div className="p-2 rounded-md bg-primary/10">
+                      <Radio className="h-5 w-5 text-primary" />
+                    </div>
+                    <div>
+                      <CardTitle className="text-base flex items-center gap-2">
+                        {editingId === primaryGateway.id ? (
+                          <Input
+                            value={primaryGateway.name}
+                            onChange={e => updateGateway(primaryGateway.id, { name: e.target.value })}
+                            onBlur={() => setEditingId(null)}
+                            onKeyDown={e => e.key === 'Enter' && setEditingId(null)}
+                            className="h-7 w-40"
+                            autoFocus
+                          />
+                        ) : (
+                          <>
+                            {primaryGateway.name}
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-6 w-6"
+                              onClick={() => setEditingId(primaryGateway.id)}
+                            >
+                              <Pencil className="h-3 w-3" />
+                            </Button>
+                          </>
+                        )}
+                      </CardTitle>
+                      <p className="text-xs text-muted-foreground">Primary Gateway</p>
+                    </div>
+                  </div>
                   <div className="flex items-center gap-2">
-                    <Radio className="h-4 w-4" />
-                    <CardTitle className="text-base">{gateway.name}</CardTitle>
-                    <Badge variant={gateway.isOnline ? 'default' : 'secondary'}>
-                      {gateway.isOnline ? 'Online' : 'Offline'}
+                    <Badge variant={primaryGateway.isOnline ? 'default' : 'secondary'}>
+                      {primaryGateway.isOnline ? 'Online' : 'Offline'}
                     </Badge>
-                    {syncedIds.has(gateway.id) && (
+                    {syncedIds.has(primaryGateway.id) && (
                       <Badge variant="outline" className="text-green-600 border-green-600">
                         Synced
                       </Badge>
                     )}
                   </div>
-                  <div className="flex gap-1">
-                    <SyncButton gateway={gateway} />
-                    <Button
-                      variant="ghost"
-                      size="icon"
-                      onClick={() => removeGateway(gateway.id)}
-                      disabled={disabled}
-                    >
-                      <Trash2 className="h-4 w-4 text-destructive" />
-                    </Button>
-                  </div>
                 </div>
               </CardHeader>
               <CardContent className="space-y-4">
-                <div className="grid grid-cols-2 gap-4">
-                  <div className="space-y-2">
-                    <Label>Gateway Name</Label>
-                    <Input
-                      value={gateway.name}
-                      onChange={e => updateGateway(gateway.id, { name: e.target.value })}
-                      disabled={disabled}
-                    />
-                  </div>
-                  <div className="space-y-2">
-                    <Label>Gateway EUI</Label>
-                    <div className="flex gap-2">
-                      <Input
-                        value={gateway.eui}
-                        onChange={e => updateGateway(gateway.id, { eui: e.target.value.toUpperCase() })}
-                        disabled={disabled}
-                        className="font-mono text-sm"
-                        maxLength={16}
-                      />
-                      <Button
-                        variant="outline"
-                        size="icon"
-                        onClick={() => copyEui(gateway.eui, gateway.id)}
-                      >
-                        {copiedId === gateway.id ? (
-                          <Check className="h-4 w-4 text-green-500" />
-                        ) : (
-                          <Copy className="h-4 w-4" />
-                        )}
-                      </Button>
-                    </div>
-                  </div>
-                </div>
-
                 <div className="flex items-center justify-between">
                   <div className="space-y-0.5">
-                    <Label>Online Status</Label>
+                    <Label className="text-sm">Connection Status</Label>
                     <p className="text-xs text-muted-foreground">
-                      Toggle to simulate gateway going offline
+                      Emulates a Semtech UDP Packet Forwarder gateway
                     </p>
                   </div>
                   <Switch
-                    checked={gateway.isOnline}
-                    onCheckedChange={isOnline => updateGateway(gateway.id, { isOnline })}
+                    checked={primaryGateway.isOnline}
+                    onCheckedChange={isOnline => updateGateway(primaryGateway.id, { isOnline })}
                     disabled={disabled}
                   />
                 </div>
+                
+                <div className="space-y-2">
+                  <Label className="text-sm">Gateway EUI</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      value={primaryGateway.eui}
+                      onChange={e => updateGateway(primaryGateway.id, { eui: e.target.value.toUpperCase() })}
+                      disabled={disabled}
+                      className="font-mono text-sm"
+                      maxLength={16}
+                    />
+                    <Button
+                      variant="outline"
+                      size="icon"
+                      onClick={() => copyEui(primaryGateway.eui, primaryGateway.id)}
+                    >
+                      {copiedId === primaryGateway.id ? (
+                        <Check className="h-4 w-4 text-green-500" />
+                      ) : (
+                        <Copy className="h-4 w-4" />
+                      )}
+                    </Button>
+                    <SyncButton gateway={primaryGateway} />
+                  </div>
+                </div>
               </CardContent>
             </Card>
-          ))}
+          )}
+
+          {/* Secondary Gateways Table */}
+          {secondaryGateways.length > 0 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-sm font-medium">Secondary Gateways</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <Table>
+                  <TableHeader>
+                    <TableRow>
+                      <TableHead>Name</TableHead>
+                      <TableHead>EUI</TableHead>
+                      <TableHead>Status</TableHead>
+                      <TableHead className="text-right">Actions</TableHead>
+                    </TableRow>
+                  </TableHeader>
+                  <TableBody>
+                    {secondaryGateways.map(gateway => (
+                      <TableRow key={gateway.id}>
+                        <TableCell className="font-medium">
+                          {editingId === gateway.id ? (
+                            <Input
+                              value={gateway.name}
+                              onChange={e => updateGateway(gateway.id, { name: e.target.value })}
+                              onBlur={() => setEditingId(null)}
+                              onKeyDown={e => e.key === 'Enter' && setEditingId(null)}
+                              className="h-7 w-32"
+                              autoFocus
+                            />
+                          ) : (
+                            gateway.name
+                          )}
+                        </TableCell>
+                        <TableCell className="font-mono text-xs text-muted-foreground">
+                          {gateway.eui}
+                        </TableCell>
+                        <TableCell>
+                          <div className="flex items-center gap-2">
+                            <Switch
+                              checked={gateway.isOnline}
+                              onCheckedChange={isOnline => updateGateway(gateway.id, { isOnline })}
+                              disabled={disabled}
+                            />
+                            <span className="text-xs text-muted-foreground">
+                              {gateway.isOnline ? 'Online' : 'Offline'}
+                            </span>
+                          </div>
+                        </TableCell>
+                        <TableCell className="text-right">
+                          <div className="flex items-center justify-end gap-1">
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => setEditingId(gateway.id)}
+                            >
+                              <Pencil className="h-4 w-4" />
+                            </Button>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => copyEui(gateway.eui, gateway.id)}
+                            >
+                              {copiedId === gateway.id ? (
+                                <Check className="h-4 w-4 text-green-500" />
+                              ) : (
+                                <Copy className="h-4 w-4" />
+                              )}
+                            </Button>
+                            <SyncButton gateway={gateway} />
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              className="h-8 w-8"
+                              onClick={() => removeGateway(gateway.id)}
+                              disabled={disabled}
+                            >
+                              <Trash2 className="h-4 w-4 text-destructive" />
+                            </Button>
+                          </div>
+                        </TableCell>
+                      </TableRow>
+                    ))}
+                  </TableBody>
+                </Table>
+              </CardContent>
+            </Card>
+          )}
         </div>
       )}
     </div>

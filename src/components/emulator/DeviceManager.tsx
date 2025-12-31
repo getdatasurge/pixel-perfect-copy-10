@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Card, CardContent, CardHeader } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -55,7 +55,6 @@ export default function DeviceManager({
 
   const updateDevice = (id: string, updates: Partial<LoRaWANDevice>) => {
     onDevicesChange(devices.map(d => (d.id === id ? { ...d, ...updates } : d)));
-    // Mark as unsynced when changed
     setSyncedIds(prev => {
       const next = new Set(prev);
       next.delete(id);
@@ -69,7 +68,7 @@ export default function DeviceManager({
       joinEui: generateEUI(),
       appKey: generateAppKey(),
     });
-    toast({ title: 'Regenerated', description: 'New device credentials generated' });
+    toast({ title: 'Regenerated', description: 'New credentials generated' });
   };
 
   const copyField = async (value: string, fieldId: string) => {
@@ -101,7 +100,7 @@ export default function DeviceManager({
       if (error) throw error;
       if (!data?.success) throw new Error(data?.error || 'Registration failed');
 
-      toast({ title: 'Registered in TTN', description: `Device ${device.name} registered successfully` });
+      toast({ title: 'Registered in TTN', description: `Device ${device.name} registered` });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       toast({ title: 'TTN Registration Failed', description: errorMessage, variant: 'destructive' });
@@ -153,7 +152,7 @@ export default function DeviceManager({
       if (!data?.success) throw new Error(data?.results?.sensors?.errors?.[0] || 'Sync failed');
 
       setSyncedIds(prev => new Set(prev).add(device.id));
-      toast({ title: 'Sensor Synced', description: `${device.name} synced to dashboard` });
+      toast({ title: 'Sensor Synced', description: `${device.name} synced` });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
       toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
@@ -166,7 +165,7 @@ export default function DeviceManager({
     <Button
       variant="ghost"
       size="icon"
-      className="h-8 w-8"
+      className="h-8 w-8 shrink-0"
       onClick={() => copyField(value, fieldId)}
     >
       {copiedField === fieldId ? (
@@ -187,7 +186,7 @@ export default function DeviceManager({
           <Tooltip>
             <TooltipTrigger asChild>
               <span>
-                <Button variant="ghost" size="icon" disabled>
+                <Button variant="ghost" size="icon" disabled className="h-8 w-8">
                   <Cloud className="h-4 w-4 text-muted-foreground" />
                 </Button>
               </span>
@@ -204,6 +203,7 @@ export default function DeviceManager({
       <Button
         variant="ghost"
         size="icon"
+        className="h-8 w-8"
         onClick={() => syncDevice(device)}
         disabled={disabled || isSyncing}
         title="Sync to Dashboard"
@@ -220,23 +220,24 @@ export default function DeviceManager({
   };
 
   return (
-    <div className="space-y-4">
+    <div className="space-y-6">
+      {/* Header */}
       <div className="flex items-center justify-between">
-      <div>
-        <h3 className="text-lg font-medium">Devices</h3>
-        <p className="text-sm text-muted-foreground">
-          LoRaWAN devices with DevEUI/JoinEUI/AppKey credentials (persisted across sessions)
-        </p>
-      </div>
+        <div>
+          <h3 className="text-lg font-medium">Devices</h3>
+          <p className="text-sm text-muted-foreground">
+            LoRaWAN devices with OTAA credentials
+          </p>
+        </div>
         <div className="flex gap-2">
           <Button 
             onClick={() => addDevice('temperature')} 
             disabled={disabled || gateways.length === 0} 
             size="sm" 
             variant="outline"
-            className="flex items-center gap-1"
+            className="gap-1"
           >
-            <Thermometer className="h-4 w-4" />
+            <Plus className="h-4 w-4" />
             Add Temp
           </Button>
           <Button 
@@ -244,9 +245,9 @@ export default function DeviceManager({
             disabled={disabled || gateways.length === 0} 
             size="sm" 
             variant="outline"
-            className="flex items-center gap-1"
+            className="gap-1"
           >
-            <DoorOpen className="h-4 w-4" />
+            <Plus className="h-4 w-4" />
             Add Door
           </Button>
         </div>
@@ -254,7 +255,7 @@ export default function DeviceManager({
 
       {gateways.length === 0 && (
         <Card>
-          <CardContent className="py-6 text-center text-muted-foreground">
+          <CardContent className="py-8 text-center text-muted-foreground">
             Add a gateway first before creating devices
           </CardContent>
         </Card>
@@ -262,12 +263,16 @@ export default function DeviceManager({
 
       {devices.length === 0 && gateways.length > 0 && (
         <Card>
-          <CardContent className="flex flex-col items-center justify-center py-8 text-center">
+          <CardContent className="flex flex-col items-center justify-center py-12 text-center">
             <div className="flex gap-4 mb-4">
-              <Thermometer className="h-12 w-12 text-muted-foreground" />
-              <DoorOpen className="h-12 w-12 text-muted-foreground" />
+              <div className="p-3 rounded-full bg-blue-500/10">
+                <Thermometer className="h-6 w-6 text-blue-500" />
+              </div>
+              <div className="p-3 rounded-full bg-orange-500/10">
+                <DoorOpen className="h-6 w-6 text-orange-500" />
+              </div>
             </div>
-            <p className="text-muted-foreground">No devices configured</p>
+            <p className="font-medium">No devices configured</p>
             <p className="text-sm text-muted-foreground">Add temperature or door sensors</p>
           </CardContent>
         </Card>
@@ -276,28 +281,36 @@ export default function DeviceManager({
       <div className="grid gap-4">
         {devices.map(device => (
           <Card key={device.id}>
-            <CardHeader className="pb-2">
+            <CardHeader className="pb-3">
               <div className="flex items-center justify-between">
-                <div className="flex items-center gap-2">
-                  {device.type === 'temperature' ? (
-                    <Thermometer className="h-4 w-4 text-blue-500" />
-                  ) : (
-                    <DoorOpen className="h-4 w-4 text-orange-500" />
-                  )}
-                  <CardTitle className="text-base">{device.name}</CardTitle>
-                  <Badge variant="outline">
-                    {device.type === 'temperature' ? 'Temperature' : 'Door'}
-                  </Badge>
-                  {syncedIds.has(device.id) && (
-                    <Badge variant="outline" className="text-green-600 border-green-600">
-                      Synced
-                    </Badge>
-                  )}
+                <div className="flex items-center gap-3">
+                  <div className={`p-2 rounded-md ${device.type === 'temperature' ? 'bg-blue-500/10' : 'bg-orange-500/10'}`}>
+                    {device.type === 'temperature' ? (
+                      <Thermometer className="h-4 w-4 text-blue-500" />
+                    ) : (
+                      <DoorOpen className="h-4 w-4 text-orange-500" />
+                    )}
+                  </div>
+                  <div>
+                    <div className="flex items-center gap-2">
+                      <span className="font-medium">{device.name}</span>
+                      <Badge variant="outline" className="text-xs">
+                        {device.type === 'temperature' ? 'Temperature' : 'Door'}
+                      </Badge>
+                      <Badge variant="outline" className="text-xs">Class A</Badge>
+                      {syncedIds.has(device.id) && (
+                        <Badge variant="outline" className="text-xs text-green-600 border-green-600">
+                          Synced
+                        </Badge>
+                      )}
+                    </div>
+                  </div>
                 </div>
-                <div className="flex gap-1">
+                <div className="flex items-center gap-1">
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="h-8 w-8"
                     onClick={() => onShowQR(device)}
                     title="Show QR Code"
                   >
@@ -307,6 +320,7 @@ export default function DeviceManager({
                     <Button
                       variant="ghost"
                       size="icon"
+                      className="h-8 w-8"
                       onClick={() => registerInTTN(device)}
                       disabled={disabled || ttnRegistering === device.id}
                       title="Register in TTN"
@@ -322,6 +336,7 @@ export default function DeviceManager({
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="h-8 w-8"
                     onClick={() => regenerateCredentials(device.id)}
                     disabled={disabled}
                     title="Regenerate credentials"
@@ -331,6 +346,7 @@ export default function DeviceManager({
                   <Button
                     variant="ghost"
                     size="icon"
+                    className="h-8 w-8"
                     onClick={() => removeDevice(device.id)}
                     disabled={disabled}
                   >
@@ -340,23 +356,25 @@ export default function DeviceManager({
               </div>
             </CardHeader>
             <CardContent className="space-y-4">
+              {/* Row 1: Name + Gateway */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>Device Name</Label>
+                  <Label className="text-xs text-muted-foreground">Device Name</Label>
                   <Input
                     value={device.name}
                     onChange={e => updateDevice(device.id, { name: e.target.value })}
                     disabled={disabled}
+                    className="h-9"
                   />
                 </div>
                 <div className="space-y-2">
-                  <Label>Gateway</Label>
+                  <Label className="text-xs text-muted-foreground">Gateway</Label>
                   <Select
                     value={device.gatewayId}
                     onValueChange={gatewayId => updateDevice(device.id, { gatewayId })}
                     disabled={disabled}
                   >
-                    <SelectTrigger>
+                    <SelectTrigger className="h-9">
                       <SelectValue placeholder="Select gateway" />
                     </SelectTrigger>
                     <SelectContent>
@@ -370,42 +388,45 @@ export default function DeviceManager({
                 </div>
               </div>
 
+              {/* Row 2: DevEUI (full width) */}
               <div className="space-y-2">
-                <Label>DevEUI</Label>
+                <Label className="text-xs text-muted-foreground">DevEUI</Label>
                 <div className="flex gap-2">
                   <Input
                     value={device.devEui}
                     onChange={e => updateDevice(device.id, { devEui: e.target.value.toUpperCase() })}
                     disabled={disabled}
-                    className="font-mono text-sm"
+                    className="font-mono text-sm h-9"
                     maxLength={16}
                   />
                   <CopyButton value={device.devEui} fieldId={`${device.id}-deveui`} />
                 </div>
+                <p className="text-xs text-muted-foreground">16 hex characters</p>
               </div>
 
+              {/* Row 3: JoinEUI + AppKey */}
               <div className="grid grid-cols-2 gap-4">
                 <div className="space-y-2">
-                  <Label>JoinEUI (AppEUI)</Label>
+                  <Label className="text-xs text-muted-foreground">JoinEUI (AppEUI)</Label>
                   <div className="flex gap-2">
                     <Input
                       value={device.joinEui}
                       onChange={e => updateDevice(device.id, { joinEui: e.target.value.toUpperCase() })}
                       disabled={disabled}
-                      className="font-mono text-xs"
+                      className="font-mono text-xs h-9"
                       maxLength={16}
                     />
                     <CopyButton value={device.joinEui} fieldId={`${device.id}-joineui`} />
                   </div>
                 </div>
                 <div className="space-y-2">
-                  <Label>AppKey</Label>
+                  <Label className="text-xs text-muted-foreground">AppKey</Label>
                   <div className="flex gap-2">
                     <Input
                       value={device.appKey}
                       onChange={e => updateDevice(device.id, { appKey: e.target.value.toUpperCase() })}
                       disabled={disabled}
-                      className="font-mono text-xs"
+                      className="font-mono text-xs h-9"
                       maxLength={32}
                     />
                     <CopyButton value={device.appKey} fieldId={`${device.id}-appkey`} />
