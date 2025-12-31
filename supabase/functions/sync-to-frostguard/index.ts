@@ -95,7 +95,29 @@ serve(async (req) => {
       
       try {
         // Transform payload to match Project 1's expected schema
-        // Project 1 expects: org_id at top level, synced_at field
+        // Project 1 expects:
+        // - org_id at top level, synced_at field
+        // - gateways[].gateway_eui (not eui)
+        // - devices[].serial_number (required)
+        
+        const transformedGateways = entities.gateways.map(gw => ({
+          id: gw.id,
+          name: gw.name,
+          gateway_eui: gw.eui,  // Rename eui → gateway_eui
+          is_online: gw.is_online,
+        }));
+
+        const transformedDevices = entities.devices.map(device => ({
+          id: device.id,
+          name: device.name,
+          dev_eui: device.dev_eui,
+          join_eui: device.join_eui,
+          app_key: device.app_key,
+          type: device.type,
+          gateway_id: device.gateway_id,
+          serial_number: device.dev_eui,  // Use dev_eui as serial_number
+        }));
+
         const project1Payload = {
           org_id: context.org_id,
           synced_at: metadata.initiated_at || new Date().toISOString(),
@@ -103,8 +125,8 @@ serve(async (req) => {
           sync_run_id: metadata.sync_run_id,
           selected_user_id: context.selected_user_id || null,
           source_project: metadata.source_project,
-          gateways: entities.gateways,
-          devices: entities.devices,
+          gateways: transformedGateways,
+          devices: transformedDevices,
         };
 
         console.log('Transformed payload for Project 1:', JSON.stringify(project1Payload, null, 2));
