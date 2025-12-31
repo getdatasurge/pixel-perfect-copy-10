@@ -80,8 +80,11 @@ serve(async (req: Request) => {
       if (siteErr) {
         console.log(`[${requestId}] Site lookup error: ${siteErr.message}`);
       } else if (siteData?.site_name) {
-        // Normalize site name: lowercase, remove spaces
-        const normalizedSiteName = siteData.site_name.toLowerCase().replace(/\s+/g, "");
+        // Normalize site name: lowercase, remove spaces (and fix common typo: resturant -> restaurant)
+        const normalizedSiteName = siteData.site_name
+          .toLowerCase()
+          .replace(/\s+/g, "")
+          .replace(/resturant/gi, "restaurant");
         derivedApplicationId = `ft-${normalizedSiteName}`;
         console.log(`[${requestId}] Derived application_id: ${derivedApplicationId} from site: ${siteData.site_name}`);
       }

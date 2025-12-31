@@ -184,8 +184,11 @@ async function deriveApplicationIdFromSite(siteId: string): Promise<string | nul
       return null;
     }
     
-    // Normalize: lowercase, remove spaces
-    const normalized = data.site_name.toLowerCase().replace(/\s+/g, '');
+    // Normalize: lowercase, remove spaces (and fix common typo: resturant -> restaurant)
+    const normalized = data.site_name
+      .toLowerCase()
+      .replace(/\s+/g, '')
+      .replace(/resturant/gi, 'restaurant');
     const applicationId = `ft-${normalized}`;
     console.log(`Derived application_id: ${applicationId} from site: ${data.site_name}`);
     return applicationId;
