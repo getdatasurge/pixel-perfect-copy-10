@@ -169,9 +169,30 @@ export function generateAppKey(): string {
     .join('');
 }
 
-// Generate device ID from DevEUI
-export function generateDeviceId(devEui: string, prefix: string = 'eui'): string {
-  return `${prefix}-${devEui.toLowerCase()}`;
+// Normalize DevEUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
+export function normalizeDevEui(devEui: string): string | null {
+  const cleaned = devEui.replace(/[:\s-]/g, '').toLowerCase();
+  if (!/^[a-f0-9]{16}$/.test(cleaned)) {
+    return null; // Invalid format
+  }
+  return cleaned;
+}
+
+// Generate canonical TTN device_id from DevEUI
+// Format: sensor-{normalized_deveui}
+// Example: DevEUI "0F8FE95CABA665D4" -> "sensor-0f8fe95caba665d4"
+export function generateTTNDeviceId(devEui: string): string {
+  const normalized = normalizeDevEui(devEui);
+  if (!normalized) {
+    throw new Error(`Invalid DevEUI format: ${devEui}. Must be 16 hex characters.`);
+  }
+  return `sensor-${normalized}`;
+}
+
+// Generate device ID from DevEUI (legacy - now defaults to 'sensor' prefix)
+export function generateDeviceId(devEui: string, prefix: string = 'sensor'): string {
+  const normalized = devEui.replace(/[:\s-]/g, '').toLowerCase();
+  return `${prefix}-${normalized}`;
 }
 
 // Encode payload data to base64 (simulating raw LoRaWAN payload)
