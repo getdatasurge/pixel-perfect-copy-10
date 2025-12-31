@@ -17,12 +17,11 @@ interface UserProfile {
 }
 
 interface UserSearchDialogProps {
-  frostguardApiUrl?: string;
   onSelectUser: (user: UserProfile) => void;
   disabled?: boolean;
 }
 
-export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disabled }: UserSearchDialogProps) {
+export default function UserSearchDialog({ onSelectUser, disabled }: UserSearchDialogProps) {
   const [open, setOpen] = useState(false);
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -32,23 +31,15 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
 
   const searchUsers = useCallback(async (term?: string) => {
     const searchValue = term ?? searchTerm;
-    if (!frostguardApiUrl) {
-      toast({
-        title: 'Missing URL',
-        description: 'Set the FrostGuard Supabase URL first',
-        variant: 'destructive',
-      });
-      return;
-    }
 
     setIsLoading(true);
     setHasSearched(true);
     setLastError(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke('frostguard-search-users', {
+      // Use local search-users function that queries users_cache table
+      const { data, error } = await supabase.functions.invoke('search-users', {
         body: {
-          frostguardApiUrl,
           searchTerm: searchValue.trim() || undefined,
         },
       });
@@ -111,25 +102,25 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
     } finally {
       setIsLoading(false);
     }
-  }, [frostguardApiUrl, searchTerm]);
+  }, [searchTerm]);
 
   // Auto-search with debounce when typing
   useEffect(() => {
-    if (!open || !frostguardApiUrl) return;
-    
+    if (!open) return;
+
     const debounceTimer = setTimeout(() => {
       searchUsers(searchTerm);
     }, 300);
-    
+
     return () => clearTimeout(debounceTimer);
-  }, [searchTerm, open, frostguardApiUrl]);
+  }, [searchTerm, open]);
 
   // Load users when dialog opens
   useEffect(() => {
-    if (open && frostguardApiUrl && !hasSearched) {
+    if (open && !hasSearched) {
       searchUsers('');
     }
-  }, [open, frostguardApiUrl, hasSearched]);
+  }, [open, hasSearched]);
 
   const handleSelect = (user: UserProfile) => {
     onSelectUser(user);
@@ -158,8 +149,8 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
         <Button
           variant="outline"
           size="icon"
-          disabled={disabled || !frostguardApiUrl}
-          title={frostguardApiUrl ? 'Search FrostGuard users' : 'Set FrostGuard URL first'}
+          disabled={disabled}
+          title="Search users"
         >
           <Search className="h-4 w-4" />
         </Button>
@@ -168,13 +159,13 @@ export default function UserSearchDialog({ frostguardApiUrl, onSelectUser, disab
         <DialogHeader>
           <DialogTitle className="flex items-center gap-2">
             <User className="h-5 w-5" />
-            Search FrostGuard Users
+            Search Users
           </DialogTitle>
           <DialogDescription>
             Search for users to auto-fill organization context
           </DialogDescription>
         </DialogHeader>
-        
+
         <div className="space-y-4">
           <div className="flex gap-2">
             <Input

@@ -160,7 +160,6 @@ export default function TestContextConfig({
 
         <div className="flex items-center gap-2 mb-2">
           <UserSearchDialog
-            frostguardApiUrl={config.frostguardApiUrl}
             onSelectUser={(user) => {
               update({
                 testOrgId: user.organization_id || config.testOrgId,
