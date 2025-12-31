@@ -44,6 +44,57 @@ export type Database = {
         }
         Relationships: []
       }
+      lora_sensors: {
+        Row: {
+          app_key: string | null
+          created_at: string | null
+          dev_eui: string
+          id: string
+          join_eui: string | null
+          name: string | null
+          org_id: string
+          sensor_kind: Database["public"]["Enums"]["sensor_kind"]
+          site_id: string | null
+          status: Database["public"]["Enums"]["sensor_status"] | null
+          ttn_application_id: string | null
+          ttn_region: string | null
+          unit_id: string
+          updated_at: string | null
+        }
+        Insert: {
+          app_key?: string | null
+          created_at?: string | null
+          dev_eui: string
+          id?: string
+          join_eui?: string | null
+          name?: string | null
+          org_id: string
+          sensor_kind?: Database["public"]["Enums"]["sensor_kind"]
+          site_id?: string | null
+          status?: Database["public"]["Enums"]["sensor_status"] | null
+          ttn_application_id?: string | null
+          ttn_region?: string | null
+          unit_id: string
+          updated_at?: string | null
+        }
+        Update: {
+          app_key?: string | null
+          created_at?: string | null
+          dev_eui?: string
+          id?: string
+          join_eui?: string | null
+          name?: string | null
+          org_id?: string
+          sensor_kind?: Database["public"]["Enums"]["sensor_kind"]
+          site_id?: string | null
+          status?: Database["public"]["Enums"]["sensor_status"] | null
+          ttn_application_id?: string | null
+          ttn_region?: string | null
+          unit_id?: string
+          updated_at?: string | null
+        }
+        Relationships: []
+      }
       org_members: {
         Row: {
           created_at: string
@@ -100,6 +151,45 @@ export type Database = {
           reading_type?: string | null
           signal_strength?: number | null
           temperature?: number | null
+          unit_id?: string | null
+        }
+        Relationships: []
+      }
+      sensor_uplinks: {
+        Row: {
+          battery_pct: number | null
+          dev_eui: string
+          f_port: number | null
+          id: string
+          org_id: string
+          payload_json: Json | null
+          received_at: string | null
+          rssi_dbm: number | null
+          snr_db: number | null
+          unit_id: string | null
+        }
+        Insert: {
+          battery_pct?: number | null
+          dev_eui: string
+          f_port?: number | null
+          id?: string
+          org_id: string
+          payload_json?: Json | null
+          received_at?: string | null
+          rssi_dbm?: number | null
+          snr_db?: number | null
+          unit_id?: string | null
+        }
+        Update: {
+          battery_pct?: number | null
+          dev_eui?: string
+          f_port?: number | null
+          id?: string
+          org_id?: string
+          payload_json?: Json | null
+          received_at?: string | null
+          rssi_dbm?: number | null
+          snr_db?: number | null
           unit_id?: string | null
         }
         Relationships: []
@@ -182,6 +272,60 @@ export type Database = {
         }
         Relationships: []
       }
+      unit_telemetry: {
+        Row: {
+          battery_pct: number | null
+          critical_after_missed: number | null
+          door_state: Database["public"]["Enums"]["door_state"] | null
+          expected_checkin_minutes: number | null
+          id: string
+          last_door_event_at: string | null
+          last_humidity: number | null
+          last_temp_f: number | null
+          last_uplink_at: string | null
+          org_id: string
+          rssi_dbm: number | null
+          snr_db: number | null
+          unit_id: string
+          updated_at: string | null
+          warn_after_missed: number | null
+        }
+        Insert: {
+          battery_pct?: number | null
+          critical_after_missed?: number | null
+          door_state?: Database["public"]["Enums"]["door_state"] | null
+          expected_checkin_minutes?: number | null
+          id?: string
+          last_door_event_at?: string | null
+          last_humidity?: number | null
+          last_temp_f?: number | null
+          last_uplink_at?: string | null
+          org_id: string
+          rssi_dbm?: number | null
+          snr_db?: number | null
+          unit_id: string
+          updated_at?: string | null
+          warn_after_missed?: number | null
+        }
+        Update: {
+          battery_pct?: number | null
+          critical_after_missed?: number | null
+          door_state?: Database["public"]["Enums"]["door_state"] | null
+          expected_checkin_minutes?: number | null
+          id?: string
+          last_door_event_at?: string | null
+          last_humidity?: number | null
+          last_temp_f?: number | null
+          last_uplink_at?: string | null
+          org_id?: string
+          rssi_dbm?: number | null
+          snr_db?: number | null
+          unit_id?: string
+          updated_at?: string | null
+          warn_after_missed?: number | null
+        }
+        Relationships: []
+      }
       user_site_memberships: {
         Row: {
           created_at: string
@@ -232,6 +376,9 @@ export type Database = {
     }
     Enums: {
       app_role: "owner" | "admin" | "member"
+      door_state: "open" | "closed" | "unknown"
+      sensor_kind: "temp" | "door" | "combo"
+      sensor_status: "pending" | "active" | "disabled"
     }
     CompositeTypes: {
       [_ in never]: never
@@ -360,6 +507,9 @@ export const Constants = {
   public: {
     Enums: {
       app_role: ["owner", "admin", "member"],
+      door_state: ["open", "closed", "unknown"],
+      sensor_kind: ["temp", "door", "combo"],
+      sensor_status: ["pending", "active", "disabled"],
     },
   },
 } as const
