@@ -153,7 +153,7 @@ async function handleLoad(
 
   const { data, error } = await supabase
     .from('ttn_settings')
-    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at')
+    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success')
     .eq('org_id', org_id)
     .maybeSingle();
 
@@ -173,6 +173,8 @@ async function handleLoad(
         api_key_set: false,
         webhook_secret_preview: null,
         webhook_secret_set: false,
+        last_test_at: null,
+        last_test_success: null,
       }
     }, 200, requestId);
   }
@@ -191,6 +193,8 @@ async function handleLoad(
       webhook_secret_preview: maskSecret(data.webhook_secret),
       webhook_secret_set: hasWebhookSecret,
       updated_at: data.updated_at,
+      last_test_at: data.last_test_at,
+      last_test_success: data.last_test_success,
     }
   }, 200, requestId);
 }
@@ -341,11 +345,27 @@ async function handleTestStored(
   }
 
   // Now test with the stored credentials
-  return await handleTest({
+  const result = await handleTest({
     cluster: settings.cluster,
     application_id: settings.application_id,
     api_key: settings.api_key,
   }, requestId);
+
+  // Save test result to database
+  const resultBody = await result.clone().json();
+  const testSuccess = resultBody.ok && resultBody.connected === true;
+  
+  await supabase
+    .from('ttn_settings')
+    .update({
+      last_test_at: new Date().toISOString(),
+      last_test_success: testSuccess,
+    })
+    .eq('org_id', org_id);
+
+  console.log(`[${requestId}] Saved test result: success=${testSuccess}`);
+  
+  return result;
 }
 
 // Test TTN connection - SIMPLIFIED to only check application access

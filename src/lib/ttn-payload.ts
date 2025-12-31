@@ -55,6 +55,8 @@ export interface TTNConfig {
     message: string;
     timestamp: Date;
   };
+  lastTestAt?: Date | null;
+  lastTestSuccess?: boolean | null;
 }
 
 export interface WebhookConfig {

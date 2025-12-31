@@ -1,7 +1,9 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Play, Square, Zap, Cloud, Webhook, Radio } from 'lucide-react';
+import { Play, Square, Zap, Cloud, Webhook, Radio, Check, X } from 'lucide-react';
 import { WebhookConfig } from '@/lib/ttn-payload';
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 
 interface EmulatorHeaderProps {
   isRunning: boolean;
@@ -11,6 +13,19 @@ interface EmulatorHeaderProps {
   onStopEmulation: () => void;
   onSingleReading: () => void;
 }
+
+// Format relative time for display
+const formatRelativeTime = (date: Date): string => {
+  const now = new Date();
+  const diffMs = now.getTime() - date.getTime();
+  const diffMins = Math.floor(diffMs / 60000);
+  const diffHours = Math.floor(diffMins / 60);
+  
+  if (diffMins < 1) return 'Just now';
+  if (diffMins < 60) return `${diffMins}m ago`;
+  if (diffHours < 24) return `${diffHours}h ago`;
+  return date.toLocaleDateString();
+};
 
 export default function EmulatorHeader({
   isRunning,
@@ -55,10 +70,37 @@ export default function EmulatorHeader({
             </Badge>
 
             {webhookConfig.ttnConfig?.enabled && (
-              <Badge variant="outline" className="bg-primary/10 text-primary border-primary/30">
-                <Cloud className="h-3 w-3 mr-1" />
-                TTN
-              </Badge>
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge 
+                      variant="outline" 
+                      className={cn(
+                        "gap-1 cursor-help",
+                        webhookConfig.ttnConfig.lastTestSuccess === true && "bg-green-500/10 text-green-600 border-green-500/30",
+                        webhookConfig.ttnConfig.lastTestSuccess === false && "bg-red-500/10 text-red-600 border-red-500/30",
+                        webhookConfig.ttnConfig.lastTestSuccess === null || webhookConfig.ttnConfig.lastTestSuccess === undefined && "bg-primary/10 text-primary border-primary/30"
+                      )}
+                    >
+                      <Cloud className="h-3 w-3" />
+                      TTN
+                      {webhookConfig.ttnConfig.lastTestSuccess === true && <Check className="h-3 w-3" />}
+                      {webhookConfig.ttnConfig.lastTestSuccess === false && <X className="h-3 w-3" />}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    {webhookConfig.ttnConfig.lastTestSuccess === true && webhookConfig.ttnConfig.lastTestAt && (
+                      <p>Connected - Last checked {formatRelativeTime(new Date(webhookConfig.ttnConfig.lastTestAt))}</p>
+                    )}
+                    {webhookConfig.ttnConfig.lastTestSuccess === false && (
+                      <p>Disconnected - Check Webhook settings</p>
+                    )}
+                    {(webhookConfig.ttnConfig.lastTestSuccess === null || webhookConfig.ttnConfig.lastTestSuccess === undefined) && (
+                      <p>TTN enabled - Not tested yet</p>
+                    )}
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
 
             {webhookConfig.enabled && !webhookConfig.ttnConfig?.enabled && (
