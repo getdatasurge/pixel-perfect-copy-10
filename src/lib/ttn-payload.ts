@@ -73,7 +73,6 @@ export interface WebhookConfig {
   testOrgId?: string;
   testSiteId?: string;
   testUnitId?: string;
-  frostguardApiUrl?: string;
   // User tracking fields
   selectedUserId?: string | null;
   selectedUserDisplayName?: string | null;
@@ -89,7 +88,7 @@ export interface SyncBundle {
   };
   context: {
     org_id: string;
-    site_id: string;
+    site_id?: string;
     unit_id_override?: string;
     selected_user_id?: string;
   };
@@ -110,8 +109,6 @@ export interface SyncBundle {
       gateway_id: string;
     }>;
   };
-  // Legacy fallback for direct DB writes when endpoint unavailable
-  frostguardApiUrl?: string;
 }
 
 export interface TestResult {

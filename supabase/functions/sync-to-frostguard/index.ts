@@ -6,6 +6,9 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 };
 
+// Hardcoded FrostGuard base URL for direct writes fallback
+const FROSTGUARD_BASE_URL = 'https://mfwyiifehsvwnjwqoxht.supabase.co';
+
 // Sync bundle structure matching frontend SyncBundle interface
 interface SyncBundle {
   metadata: {
@@ -15,7 +18,7 @@ interface SyncBundle {
   };
   context: {
     org_id: string;
-    site_id: string;
+    site_id?: string;
     unit_id_override?: string;
     selected_user_id?: string;
   };
@@ -36,8 +39,6 @@ interface SyncBundle {
       gateway_id: string;
     }>;
   };
-  // Legacy fallback fields (for direct DB writes)
-  frostguardApiUrl?: string;
 }
 
 interface SyncResponse {
@@ -64,7 +65,7 @@ serve(async (req) => {
     const body: SyncBundle = await req.json();
     console.log('Sync request received:', JSON.stringify(body, null, 2));
 
-    const { metadata, context, entities, frostguardApiUrl } = body;
+    const { metadata, context, entities } = body;
 
     // Validate required fields
     if (!metadata?.sync_run_id) {
@@ -81,11 +82,9 @@ serve(async (req) => {
       );
     }
 
+    // site_id is optional - sync can proceed with org-level context only
     if (!context?.site_id) {
-      return new Response(
-        JSON.stringify({ success: false, sync_run_id: metadata.sync_run_id, error: 'site_id is required in context' }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      console.log('No site_id provided, syncing with org-level context only');
     }
 
     // Try Project 1 endpoint first
@@ -133,17 +132,8 @@ serve(async (req) => {
       console.log('EMULATOR_SYNC_API_KEY not configured, using direct writes');
     }
 
-    // Fallback: Direct database writes to FrostGuard
-    if (!frostguardApiUrl) {
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          sync_run_id: metadata.sync_run_id,
-          error: 'Project 1 endpoint unavailable and no frostguardApiUrl provided for fallback' 
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
-    }
+    // Fallback: Direct database writes to FrostGuard using hardcoded URL
+    console.log('Using direct writes to FrostGuard:', FROSTGUARD_BASE_URL);
 
     const frostguardAnonKey = Deno.env.get('FROSTGUARD_ANON_KEY');
     if (!frostguardAnonKey) {
@@ -154,17 +144,7 @@ serve(async (req) => {
       );
     }
 
-    // Normalize the URL
-    let baseUrl = frostguardApiUrl;
-    if (frostguardApiUrl.includes('/functions/')) {
-      const match = frostguardApiUrl.match(/^(https?:\/\/[^\/]+)/);
-      if (match) {
-        baseUrl = match[1];
-        console.log('Normalized FrostGuard URL from', frostguardApiUrl, 'to', baseUrl);
-      }
-    }
-
-    const frostguardClient = createClient(baseUrl, frostguardAnonKey);
+    const frostguardClient = createClient(FROSTGUARD_BASE_URL, frostguardAnonKey);
 
     const results = {
       gateways: { synced: 0, failed: 0, errors: [] as string[] },
