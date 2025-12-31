@@ -744,6 +744,7 @@ export default function LoRaWANEmulator() {
               onConfigChange={setWebhookConfig}
               disabled={isRunning}
               currentDevEui={tempDevice?.devEui}
+              orgId={webhookConfig.testOrgId}
             />
           </TabsContent>
 
