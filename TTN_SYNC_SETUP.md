@@ -153,17 +153,19 @@ curl -X POST https://your-emulator.supabase.co/functions/v1/ttn-simulate \
 ✅ **API Key Auth**: user-sync endpoint requires Bearer token
 ✅ **HTTPS Only**: All communication encrypted in transit
 ✅ **No Client Access**: Frontend never sees full API keys
+✅ **User-Level Only**: TTN simulation uses ONLY user-specific credentials (no org fallback)
 
 ## Troubleshooting
 
 ### 403 Errors when simulating uplinks
 
-**Cause**: Edge function not deployed or missing API key
+**Cause**: API key lacks required TTN permissions, or using wrong credentials
 
 **Fix**:
-1. Wait for Lovable to deploy updated `ttn-simulate` function
-2. Verify user has TTN data: `SELECT ttn FROM synced_users WHERE source_user_id = '...'`
-3. Check that `ttn.api_key` is the full key, not just last 4 chars
+1. Verify user is synced with full API key: `SELECT email, ttn FROM synced_users WHERE source_user_id = '...'`
+2. Check that `ttn.api_key` is the full key (starts with `NNSXS.`), not just last 4 chars
+3. Ensure API key has "Write downlink application traffic" permission in TTN Console
+4. Note: TTN simulation now uses ONLY user-specific credentials (no org fallback)
 
 ### User sync fails with "Unauthorized"
 
@@ -173,14 +175,24 @@ curl -X POST https://your-emulator.supabase.co/functions/v1/ttn-simulate \
 1. Verify `SYNC_API_KEY` is set in Supabase Edge Functions secrets
 2. Ensure FrostGuard is sending the same key in `Authorization` header
 
-### TTN simulation returns "No TTN settings found"
+### TTN simulation returns "No user selected"
 
-**Cause**: User not synced or TTN data missing
+**Cause**: No user was selected in the user selector before attempting simulation
 
 **Fix**:
-1. Run user sync to populate `synced_users` table
-2. Verify: `SELECT email, ttn FROM synced_users WHERE ttn IS NOT NULL`
-3. Ensure `ttn.enabled = true` and `ttn.api_key` is not null
+1. Use the user selector dropdown at the top of the emulator page
+2. Select a user that has been synced from FrostGuard
+3. The selected user must have TTN credentials
+
+### TTN simulation returns "No TTN settings found" or "Incomplete TTN settings"
+
+**Cause**: User not synced or TTN data missing/incomplete
+
+**Fix**:
+1. Run user sync from FrostGuard to populate `synced_users` table
+2. Verify user exists and has TTN data: `SELECT email, ttn FROM synced_users WHERE source_user_id = 'USER_ID_HERE'`
+3. Ensure `ttn.enabled = true`, `ttn.api_key` is not null, and `ttn.application_id` is not null
+4. Check that `ttn.api_key` is the full key (starts with `NNSXS.`), not just last 4 characters
 
 ## Flow Diagram
 

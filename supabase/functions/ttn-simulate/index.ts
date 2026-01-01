@@ -270,47 +270,59 @@ serve(async (req) => {
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    // Priority 1: Try to load user's full API key from synced_users.ttn
-    if (selected_user_id) {
-      console.log(`[ttn-simulate] Checking user TTN settings for: ${selected_user_id}`);
-      const userSettings = await loadUserSettings(selected_user_id);
-
-      if (userSettings?.api_key && userSettings?.application_id) {
-        // User has full API key in synced_users.ttn
-        apiKey = userSettings.api_key;
-        applicationId = userSettings.application_id;
-        cluster = userSettings.cluster;
-        settingsSource = 'user_settings';
-        console.log(`[ttn-simulate] Using user's API key with app: ${applicationId}, cluster: ${cluster}`);
-      } else {
-        console.log(`[ttn-simulate] User has no full API key, will use org credentials with user's app`);
-      }
+    // ONLY use user's full API key from synced_users.ttn (no org fallback)
+    if (!selected_user_id) {
+      console.error('[ttn-simulate] No selected_user_id provided');
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'No user selected. Please select a user from the user selector to simulate TTN uplinks.',
+          errorType: 'no_user_selected',
+          hint: 'Use the user selector at the top of the page to choose a user with TTN credentials.',
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // If user doesn't have API key, use request body for app/cluster and org API key
-    if (!apiKey) {
-      applicationId = body.applicationId;
-      cluster = body.cluster;
+    console.log(`[ttn-simulate] Loading user TTN settings for: ${selected_user_id}`);
+    const userSettings = await loadUserSettings(selected_user_id);
 
-      // Priority 2: Load org's API key from ttn_settings
-      if (org_id) {
-        console.log(`[ttn-simulate] Loading org API key for: ${org_id}`);
-        const orgSettings = await loadOrgSettings(org_id);
-
-        if (orgSettings?.api_key) {
-          apiKey = orgSettings.api_key;
-          settingsSource = 'org_settings';
-          console.log(`[ttn-simulate] Using org API key with user's app: ${applicationId}, cluster: ${cluster}`);
-        }
-      }
+    if (!userSettings) {
+      console.error(`[ttn-simulate] No TTN settings found for user ${selected_user_id}`);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: `No TTN settings found for the selected user. User must be synced from FrostGuard first.`,
+          errorType: 'no_user_settings',
+          hint: 'Trigger a user sync from FrostGuard to populate TTN credentials for this user.',
+          userId: selected_user_id,
+        }),
+        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
-    // Priority 3: Fallback to global secret
-    if (!apiKey) {
-      apiKey = Deno.env.get('TTN_API_KEY');
-      settingsSource = 'global_secret';
-      console.log(`[ttn-simulate] Using global API key`);
+    if (!userSettings.api_key || !userSettings.application_id) {
+      console.error(`[ttn-simulate] User ${selected_user_id} has incomplete TTN settings`);
+      return new Response(
+        JSON.stringify({
+          success: false,
+          error: 'User has incomplete TTN settings. Missing API key or application ID.',
+          errorType: 'incomplete_user_settings',
+          hint: 'Verify that FrostGuard is sending the full decrypted API key in the sync payload.',
+          userId: selected_user_id,
+          hasApiKey: !!userSettings.api_key,
+          hasApplicationId: !!userSettings.application_id,
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
+
+    // Use user's full API key from synced_users.ttn
+    apiKey = userSettings.api_key;
+    applicationId = userSettings.application_id;
+    cluster = userSettings.cluster;
+    settingsSource = 'user_settings';
+    console.log(`[ttn-simulate] Using user's API key with app: ${applicationId}, cluster: ${cluster}`);
 
     // Convert legacy eui-xxx format to canonical sensor-xxx format
     if (deviceId && deviceId.startsWith('eui-')) {
@@ -320,22 +332,6 @@ serve(async (req) => {
         console.log(`Converting legacy device_id "${deviceId}" to canonical format "${canonicalId}"`);
         deviceId = canonicalId;
       }
-    }
-
-    // Validate we have required credentials
-    if (!apiKey) {
-      console.error('No TTN API key available');
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: org_id 
-            ? 'TTN not configured for this organization. Go to Webhook tab to configure TTN settings.'
-            : 'TTN_API_KEY not configured. Add your TTN API key in project secrets or configure per-org settings.',
-          errorType: 'missing_api_key',
-          hint: 'Configure TTN settings in the Webhook tab for your organization.',
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
     }
 
     // Validate configuration
