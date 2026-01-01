@@ -4,13 +4,39 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, MapPin, Box, Loader2, Check, AlertTriangle, User, X, Radio, Star, Cloud, RefreshCw } from 'lucide-react';
+import { Building2, MapPin, Box, Loader2, Check, AlertTriangle, User, X, Radio, Star, Cloud, RefreshCw, ChevronDown, Bug, Database, AlertCircle, Copy } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import UserSearchDialog, { UserSite, TTNConnection } from './UserSearchDialog';
+import UserSearchDialog, { UserSite, TTNConnection, UserProfile } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+
+// Context debug logger - always logs to help diagnose silent failures
+const contextDebug = {
+  log: (...args: unknown[]) => {
+    console.log('[EMULATOR_CONTEXT_DEBUG]', new Date().toISOString(), ...args);
+  },
+  warn: (...args: unknown[]) => {
+    console.warn('[EMULATOR_CONTEXT_DEBUG]', ...args);
+  },
+  error: (...args: unknown[]) => {
+    console.error('[EMULATOR_CONTEXT_DEBUG]', ...args);
+  },
+};
+
+interface ContextDiagnostics {
+  selectedUserId: string | null;
+  selectedOrgId: string | null;
+  selectedSiteId: string | null;
+  userSitesCount: number;
+  userSitesRaw: UserSite[];
+  ttnEnabled: boolean;
+  ttnCluster: string | null;
+  lastUserSelectAt: string | null;
+  rawUserPayload: UserProfile | null;
+}
 
 /**
  * TestContextConfig
@@ -63,6 +89,20 @@ export default function TestContextConfig({
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
   const lastSyncMethodRef = useRef<'endpoint' | 'direct' | null>(null);
+  
+  // Diagnostics state for debugging
+  const [diagnostics, setDiagnostics] = useState<ContextDiagnostics>({
+    selectedUserId: null,
+    selectedOrgId: null,
+    selectedSiteId: null,
+    userSitesCount: 0,
+    userSitesRaw: [],
+    ttnEnabled: false,
+    ttnCluster: null,
+    lastUserSelectAt: null,
+    rawUserPayload: null,
+  });
+  const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   
   // Note: TTN data now comes exclusively from user_sync (selectedUserTTN state)
   // There is no snapshot hook - all TTN config flows through user-sync pipeline
@@ -373,25 +413,81 @@ export default function TestContextConfig({
         </div>
 
         <div className="mb-2">
-          <UserSearchDialog
+        <UserSearchDialog
             onSelectUser={(user) => {
+              const selectTime = new Date().toISOString();
+              
+              // Debug log full user payload
+              contextDebug.log('User selected:', {
+                id: user.id,
+                email: user.email,
+                organization_id: user.organization_id,
+                default_site_id: user.default_site_id,
+                site_id: user.site_id,
+                user_sites_count: user.user_sites?.length || 0,
+                user_sites: user.user_sites,
+                ttn_enabled: user.ttn?.enabled || false,
+                ttn_cluster: user.ttn?.cluster || null,
+                full_payload: user,
+              });
+              
               // Store user sites for dropdown
-              setSelectedUserSites(user.user_sites || []);
+              const sites = user.user_sites || [];
+              setSelectedUserSites(sites);
               setSelectedUserDefaultSite(user.default_site_id || null);
               
               // Store TTN data from sync payload
-              setSelectedUserTTN(user.ttn || null);
+              const ttn = user.ttn || null;
+              setSelectedUserTTN(ttn);
+              
+              // Update diagnostics
+              setDiagnostics({
+                selectedUserId: user.id,
+                selectedOrgId: user.organization_id,
+                selectedSiteId: user.default_site_id || (sites.length === 1 ? sites[0].site_id : null),
+                userSitesCount: sites.length,
+                userSitesRaw: sites,
+                ttnEnabled: ttn?.enabled || false,
+                ttnCluster: ttn?.cluster || null,
+                lastUserSelectAt: selectTime,
+                rawUserPayload: user,
+              });
+              
+              // Warn if no sites
+              if (sites.length === 0) {
+                contextDebug.warn('No sites returned for user', {
+                  userId: user.id,
+                  orgId: user.organization_id,
+                  hint: 'Check user_site_memberships table or sync from FrostGuard',
+                });
+              }
+              
+              // Warn if no TTN
+              if (!ttn || !ttn.enabled) {
+                contextDebug.warn('No TTN integration for user', {
+                  userId: user.id,
+                  orgId: user.organization_id,
+                  ttnData: ttn,
+                  hint: 'TTN data comes from synced_users.ttn column via user-sync',
+                });
+              }
               
               // Auto-select site logic
               let siteToSelect: string | undefined = undefined;
               if (user.default_site_id) {
                 siteToSelect = user.default_site_id;
-              } else if (user.user_sites && user.user_sites.length === 1) {
-                siteToSelect = user.user_sites[0].site_id;
+              } else if (sites.length === 1) {
+                siteToSelect = sites[0].site_id;
               } else if (user.site_id) {
                 // Fallback to legacy single site
                 siteToSelect = user.site_id;
               }
+              
+              contextDebug.log('Site auto-selection:', {
+                default_site_id: user.default_site_id,
+                available_sites: sites.length,
+                selected: siteToSelect,
+              });
               
               update({
                 testOrgId: user.organization_id,
@@ -399,7 +495,7 @@ export default function TestContextConfig({
                 testUnitId: user.unit_id || undefined,
                 selectedUserId: user.id,
                 selectedUserDisplayName: user.full_name || user.email || user.id,
-                contextSetAt: new Date().toISOString(),
+                contextSetAt: selectTime,
               });
               
               // TTN data now comes from user.ttn via user_sync (already set in setSelectedUserTTN above)
@@ -517,10 +613,27 @@ export default function TestContextConfig({
               </div>
             </div>
             
-            {/* No TTN hint */}
-            {!selectedUserTTN?.enabled && (
+            {/* No TTN hint - more specific messaging */}
+            {!selectedUserTTN && (
+              <div className="flex items-start gap-2 mt-3 p-2 bg-yellow-50 dark:bg-yellow-900/20 rounded border border-yellow-200 dark:border-yellow-800">
+                <AlertCircle className="h-4 w-4 text-yellow-600 dark:text-yellow-500 mt-0.5 flex-shrink-0" />
+                <div className="text-xs text-yellow-700 dark:text-yellow-400">
+                  <p className="font-medium">TTN data not synced from FrostGuard</p>
+                  <p className="mt-1 text-yellow-600 dark:text-yellow-500">
+                    The <code className="bg-yellow-100 dark:bg-yellow-900/40 px-1 rounded">synced_users.ttn</code> column is null. 
+                    Ensure Project 1 (FrostGuard) includes TTN metadata in the user-sync payload.
+                  </p>
+                </div>
+              </div>
+            )}
+            {selectedUserTTN && !selectedUserTTN.enabled && (
               <p className="text-xs text-muted-foreground mt-3">
-                No TTN integration found. Set up TTN in FrostGuard to enable TTN-related features.
+                TTN integration not enabled for this organization. Enable TTN in FrostGuard settings.
+              </p>
+            )}
+            {selectedUserTTN?.updated_at && (
+              <p className="text-xs text-muted-foreground mt-2">
+                Last synced: {new Date(selectedUserTTN.updated_at).toLocaleString()}
               </p>
             )}
           </div>
@@ -582,13 +695,23 @@ export default function TestContextConfig({
                 ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              {selectedUserSites.length > 0 
-                ? `${selectedUserSites.length} site(s) for selected user`
-                : config.selectedUserId 
-                  ? 'No sites available for this user'
-                  : 'Select a user to see available sites'}
-            </p>
+            {/* Site count or warning */}
+            {selectedUserSites.length > 0 ? (
+              <p className="text-xs text-muted-foreground">
+                {selectedUserSites.length} site(s) for selected user
+              </p>
+            ) : config.selectedUserId ? (
+              <div className="flex items-start gap-1 mt-1">
+                <AlertTriangle className="h-3 w-3 text-yellow-600 mt-0.5 flex-shrink-0" />
+                <p className="text-xs text-yellow-600 dark:text-yellow-500">
+                  No sites returned for this user. Check <code className="bg-muted px-1 rounded">user_site_memberships</code> table.
+                </p>
+              </div>
+            ) : (
+              <p className="text-xs text-muted-foreground">
+                Select a user to see available sites
+              </p>
+            )}
           </div>
 
           <div className="space-y-2">
@@ -618,6 +741,95 @@ export default function TestContextConfig({
               {config.testSiteId && <span className="font-mono">site={config.testSiteId}</span>}
             </p>
           </div>
+        )}
+
+        {/* Diagnostics Panel - Collapsible */}
+        {config.selectedUserId && (
+          <Collapsible open={isDiagnosticsOpen} onOpenChange={setIsDiagnosticsOpen}>
+            <CollapsibleTrigger asChild>
+              <Button 
+                variant="ghost" 
+                size="sm" 
+                className="w-full justify-between text-xs text-muted-foreground hover:text-foreground"
+              >
+                <span className="flex items-center gap-2">
+                  <Bug className="h-3 w-3" />
+                  Context Diagnostics
+                </span>
+                <ChevronDown className={`h-3 w-3 transition-transform ${isDiagnosticsOpen ? 'rotate-180' : ''}`} />
+              </Button>
+            </CollapsibleTrigger>
+            <CollapsibleContent>
+              <div className="mt-2 p-3 bg-muted/30 rounded-lg border text-xs space-y-2 font-mono">
+                <div className="grid grid-cols-2 gap-x-4 gap-y-1">
+                  <span className="text-muted-foreground">selected_user_id:</span>
+                  <span className="truncate">{diagnostics.selectedUserId || '—'}</span>
+                  
+                  <span className="text-muted-foreground">selected_org_id:</span>
+                  <span className="truncate">{diagnostics.selectedOrgId || '—'}</span>
+                  
+                  <span className="text-muted-foreground">selected_site_id:</span>
+                  <span className="truncate">{diagnostics.selectedSiteId || '(none)'}</span>
+                  
+                  <span className="text-muted-foreground">user_sites.length:</span>
+                  <span className={diagnostics.userSitesCount === 0 ? 'text-yellow-600' : ''}>
+                    {diagnostics.userSitesCount}
+                    {diagnostics.userSitesCount === 0 && ' ⚠️'}
+                  </span>
+                  
+                  <span className="text-muted-foreground">ttn.enabled:</span>
+                  <span className={!diagnostics.ttnEnabled ? 'text-yellow-600' : 'text-green-600'}>
+                    {diagnostics.ttnEnabled ? 'true ✓' : 'false ⚠️'}
+                  </span>
+                  
+                  <span className="text-muted-foreground">ttn.cluster:</span>
+                  <span>{diagnostics.ttnCluster || '(null)'}</span>
+                  
+                  <span className="text-muted-foreground">last_select_at:</span>
+                  <span>{diagnostics.lastUserSelectAt ? new Date(diagnostics.lastUserSelectAt).toLocaleTimeString() : '—'}</span>
+                </div>
+                
+                {/* Sites detail */}
+                {diagnostics.userSitesRaw.length > 0 && (
+                  <div className="pt-2 border-t border-muted">
+                    <span className="text-muted-foreground">Sites:</span>
+                    <ul className="mt-1 space-y-0.5">
+                      {diagnostics.userSitesRaw.map(s => (
+                        <li key={s.site_id} className="flex items-center gap-1">
+                          <Database className="h-3 w-3 text-muted-foreground" />
+                          <span className="truncate">{s.site_name || s.site_id}</span>
+                          {s.is_default && <Star className="h-3 w-3 text-yellow-500 fill-yellow-500" />}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
+                
+                {/* Copy raw payload button */}
+                <Button
+                  variant="outline"
+                  size="sm"
+                  className="w-full mt-2 h-7 text-xs"
+                  onClick={() => {
+                    const report = JSON.stringify({
+                      diagnostics,
+                      config: {
+                        testOrgId: config.testOrgId,
+                        testSiteId: config.testSiteId,
+                        selectedUserId: config.selectedUserId,
+                      },
+                      timestamp: new Date().toISOString(),
+                    }, null, 2);
+                    navigator.clipboard.writeText(report);
+                    toast({ title: 'Copied', description: 'Diagnostics copied to clipboard' });
+                  }}
+                >
+                  <Copy className="h-3 w-3 mr-1" />
+                  Copy Debug Report
+                </Button>
+              </div>
+            </CollapsibleContent>
+          </Collapsible>
         )}
 
         <div className="border-t pt-4 space-y-3">
