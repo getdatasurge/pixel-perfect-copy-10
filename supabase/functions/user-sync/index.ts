@@ -81,7 +81,7 @@ serve(async (req) => {
       );
     }
 
-    console.log(`[user-sync] Received ${payload.users.length} user(s) to sync`);
+    console.log(`[user-sync] Received ${payload.users.length} user(s) to sync at ${new Date().toISOString()}`);
 
     const results = [];
     
