@@ -6,7 +6,7 @@ import { useTelemetrySubscription } from '@/hooks/useTelemetrySubscription';
 import { formatDistanceToNow } from 'date-fns';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 
 interface TelemetryMonitorProps {
   orgId?: string;
@@ -31,34 +31,16 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   const [isPulling, setIsPulling] = useState(false);
   const [autoPullEnabled, setAutoPullEnabled] = useState(true);
 
-  // Auto-pull from FrostGuard on mount and periodically
-  useEffect(() => {
-    if (!autoPullEnabled || (!orgId && !unitId)) return;
-
-    const pullData = async () => {
-      try {
-        await pullFromFrostGuard(true); // Silent pull (no toast)
-      } catch (error) {
-        console.error('Auto-pull error:', error);
-      }
-    };
-
-    // Initial pull
-    pullData();
-
-    // Pull every 30 seconds
-    const interval = setInterval(pullData, 30000);
-
-    return () => clearInterval(interval);
-  }, [orgId, unitId, autoPullEnabled]);
-
-  const pullFromFrostGuard = async (silent = false) => {
+  // Memoized pull function with proper dependencies
+  const pullFromFrostGuard = useCallback(async (silent = false) => {
     if (!orgId && !unitId) {
-      toast({
-        title: 'Error',
-        description: 'No organization or unit ID selected',
-        variant: 'destructive',
-      });
+      if (!silent) {
+        toast({
+          title: 'Error',
+          description: 'No organization or unit ID selected',
+          variant: 'destructive',
+        });
+      }
       return;
     }
 
@@ -96,7 +78,28 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
     } finally {
       setIsPulling(false);
     }
-  };
+  }, [orgId, unitId, refetch]);
+
+  // Auto-pull from FrostGuard on mount and periodically
+  useEffect(() => {
+    if (!autoPullEnabled || (!orgId && !unitId)) return;
+
+    const pullData = async () => {
+      try {
+        await pullFromFrostGuard(true); // Silent pull (no toast)
+      } catch (error) {
+        console.error('Auto-pull error:', error);
+      }
+    };
+
+    // Initial pull
+    pullData();
+
+    // Pull every 30 seconds
+    const interval = setInterval(pullData, 30000);
+
+    return () => clearInterval(interval);
+  }, [orgId, unitId, autoPullEnabled, pullFromFrostGuard]);
 
   // Determine data source
   const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
@@ -167,12 +170,35 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   return (
     <div className="space-y-4">
       {/* Data Source Indicator */}
-      <div className="flex items-center justify-between">
+      <div className="flex items-center justify-between flex-wrap gap-2">
         <Badge variant={useDbTelemetry ? "default" : "outline"}>
           {useDbTelemetry ? '📡 Live from Database' : '🔌 Local Emulator State'}
         </Badge>
         {useDbTelemetry && getStatusBadge()}
+        {(orgId || unitId) && (
+          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+            {orgId && <span className="font-mono">org: {orgId.slice(0, 8)}...</span>}
+            {unitId && <span className="font-mono">unit: {unitId}</span>}
+          </div>
+        )}
       </div>
+
+      {/* No Context Warning */}
+      {!orgId && !unitId && (
+        <Card className="border-amber-500/50 bg-amber-500/5">
+          <CardContent className="pt-6">
+            <div className="flex items-start gap-3">
+              <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5" />
+              <div>
+                <p className="font-medium text-sm mb-1">No Test Context Selected</p>
+                <p className="text-xs text-muted-foreground">
+                  Go to the <strong>Testing</strong> tab and select a user/organization context to pull telemetry data from FrostGuard.
+                </p>
+              </div>
+            </div>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Pull from FrostGuard Controls */}
       {(orgId || unitId) && (
