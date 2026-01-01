@@ -832,34 +832,76 @@ export default function LoRaWANEmulator() {
 
           {/* Webhook Tab */}
           <TabsContent value="webhook">
-            <WebhookSettings
-              config={webhookConfig}
-              onConfigChange={setWebhookConfig}
-              disabled={isRunning}
-              currentDevEui={tempDevice?.devEui}
-              orgId={webhookConfig.testOrgId}
-              devices={devices}
-            />
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div>
+                <WebhookSettings
+                  config={webhookConfig}
+                  onConfigChange={setWebhookConfig}
+                  disabled={isRunning}
+                  currentDevEui={tempDevice?.devEui}
+                  orgId={webhookConfig.testOrgId}
+                  devices={devices}
+                />
+              </div>
+              <div>
+                <h3 className="font-medium mb-4 flex items-center gap-2">
+                  <Activity className="h-4 w-4" />
+                  Live Telemetry
+                </h3>
+                <TelemetryMonitor
+                  orgId={webhookConfig.testOrgId}
+                  unitId={webhookConfig.testUnitId}
+                  localState={{
+                    currentTemp,
+                    humidity: tempState.humidity,
+                    doorOpen: doorState.doorOpen,
+                    batteryLevel: tempState.batteryLevel,
+                    signalStrength: tempState.signalStrength,
+                  }}
+                />
+              </div>
+            </div>
           </TabsContent>
 
           {/* Testing Tab */}
           <TabsContent value="testing" className="space-y-6">
-            <TestContextConfig
-              config={webhookConfig}
-              onConfigChange={setWebhookConfig}
-              disabled={isRunning}
-              gateways={gateways}
-              devices={devices}
-              onSyncResult={addSyncResult}
-            />
-            <TestDashboard
-              results={testResults}
-              syncResults={syncResults}
-              onClearResults={() => {
-                setTestResults([]);
-                setSyncResults([]);
-              }}
-            />
+            <div className="grid gap-6 lg:grid-cols-2">
+              <div className="space-y-6">
+                <TestContextConfig
+                  config={webhookConfig}
+                  onConfigChange={setWebhookConfig}
+                  disabled={isRunning}
+                  gateways={gateways}
+                  devices={devices}
+                  onSyncResult={addSyncResult}
+                />
+                <TestDashboard
+                  results={testResults}
+                  syncResults={syncResults}
+                  onClearResults={() => {
+                    setTestResults([]);
+                    setSyncResults([]);
+                  }}
+                />
+              </div>
+              <div>
+                <h3 className="font-medium mb-4 flex items-center gap-2">
+                  <Activity className="h-4 w-4" />
+                  Live Telemetry
+                </h3>
+                <TelemetryMonitor
+                  orgId={webhookConfig.testOrgId}
+                  unitId={webhookConfig.testUnitId}
+                  localState={{
+                    currentTemp,
+                    humidity: tempState.humidity,
+                    doorOpen: doorState.doorOpen,
+                    batteryLevel: tempState.batteryLevel,
+                    signalStrength: tempState.signalStrength,
+                  }}
+                />
+              </div>
+            </div>
           </TabsContent>
 
           {/* Monitor Tab - Database-Driven Telemetry */}
