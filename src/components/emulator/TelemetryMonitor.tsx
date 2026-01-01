@@ -215,19 +215,36 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
       {/* Pull from FrostGuard Controls */}
       {orgId && (
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => pullFromFrostGuard(false)}
-            disabled={isPulling}
-            size="sm"
-            variant="outline"
-          >
-            <RefreshCw className={`h-4 w-4 mr-2 ${isPulling ? 'animate-spin' : ''}`} />
-            Pull from FrostGuard
-          </Button>
-          <Badge variant={autoPullEnabled ? "default" : "secondary"} className="text-xs">
-            Auto-pull: {autoPullEnabled ? 'ON (every 30s)' : 'OFF'}
-          </Badge>
+        <div className="space-y-2">
+          <div className="flex items-center gap-2">
+            <Button
+              onClick={() => pullFromFrostGuard(false)}
+              disabled={isPulling}
+              size="sm"
+              variant="outline"
+            >
+              <RefreshCw className={`h-4 w-4 mr-2 ${isPulling ? 'animate-spin' : ''}`} />
+              {isPulling ? 'Pulling...' : 'Pull from FrostGuard'}
+            </Button>
+            <Badge variant={autoPullEnabled ? "default" : "secondary"} className="text-xs">
+              Auto-pull: {autoPullEnabled ? 'ON (every 30s)' : 'OFF'}
+            </Badge>
+          </div>
+          {loading && (
+            <div className="text-xs text-muted-foreground">
+              Loading telemetry from database...
+            </div>
+          )}
+          {!loading && !useDbTelemetry && (
+            <div className="text-xs text-amber-600">
+              No telemetry data found. Make sure: (1) Edge function is deployed, (2) Data exists in FrostGuard for org {orgId.slice(0, 8)}...
+            </div>
+          )}
+          {!loading && useDbTelemetry && (
+            <div className="text-xs text-green-600">
+              ✓ Telemetry data loaded from database
+            </div>
+          )}
         </div>
       )}
 
