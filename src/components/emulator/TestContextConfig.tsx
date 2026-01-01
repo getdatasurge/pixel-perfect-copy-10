@@ -4,11 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, MapPin, Box, Loader2, Check, AlertTriangle, User, X, Radio, Star, Cloud, RefreshCw, ChevronDown, Bug, Database, AlertCircle, Copy } from 'lucide-react';
+import { Building2, MapPin, Box, Loader2, Check, AlertTriangle, Radio, Star, Cloud, RefreshCw, ChevronDown, Bug, Database, AlertCircle, Copy } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import UserSearchDialog, { UserSite, TTNConnection, UserProfile } from './UserSearchDialog';
+import { UserSite, TTNConnection } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
@@ -35,7 +35,6 @@ interface ContextDiagnostics {
   ttnEnabled: boolean;
   ttnCluster: string | null;
   lastUserSelectAt: string | null;
-  rawUserPayload: UserProfile | null;
 }
 
 /**
@@ -100,7 +99,6 @@ export default function TestContextConfig({
     ttnEnabled: false,
     ttnCluster: null,
     lastUserSelectAt: null,
-    rawUserPayload: null,
   });
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
   
@@ -142,8 +140,57 @@ export default function TestContextConfig({
     fetchUserCount();
   }, []);
 
-  // Clear user sites when org changes (but keep sites if just switching org field)
-  // Sites are populated when a user is selected via UserSearchDialog
+  // Sync TTN data from global config to local state (for display in Testing tab)
+  useEffect(() => {
+    if (config.ttnConfig) {
+      setSelectedUserTTN({
+        enabled: config.ttnConfig.enabled,
+        cluster: config.ttnConfig.cluster,
+        application_id: config.ttnConfig.applicationId,
+        api_key_last4: config.ttnConfig.api_key_last4 || null,
+        webhook_secret_last4: config.ttnConfig.webhook_secret_last4 || null,
+        provisioning_status: null,
+        webhook_id: null,
+        webhook_url: null,
+        updated_at: null,
+      });
+    } else if (!config.selectedUserId) {
+      // Clear TTN data when user is deselected
+      setSelectedUserTTN(null);
+    }
+  }, [config.ttnConfig, config.selectedUserId]);
+
+  // Sync user sites and diagnostics from global config
+  useEffect(() => {
+    if (config.selectedUserSites) {
+      const sites: UserSite[] = config.selectedUserSites.map(s => ({
+        site_id: s.site_id,
+        site_name: s.site_name,
+        is_default: s.is_default,
+      }));
+      setSelectedUserSites(sites);
+
+      // Find default site
+      const defaultSite = sites.find(s => s.is_default);
+      setSelectedUserDefaultSite(defaultSite?.site_id || null);
+
+      // Update diagnostics
+      setDiagnostics({
+        selectedUserId: config.selectedUserId || null,
+        selectedOrgId: config.testOrgId || null,
+        selectedSiteId: config.testSiteId || null,
+        userSitesCount: sites.length,
+        userSitesRaw: sites,
+        ttnEnabled: config.ttnConfig?.enabled || false,
+        ttnCluster: config.ttnConfig?.cluster || null,
+        lastUserSelectAt: config.contextSetAt || null,
+      });
+    } else if (!config.selectedUserId) {
+      // Clear sites when user is deselected
+      setSelectedUserSites([]);
+      setSelectedUserDefaultSite(null);
+    }
+  }, [config.selectedUserSites, config.selectedUserId, config.testOrgId, config.testSiteId, config.ttnConfig, config.contextSetAt]);
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
@@ -412,135 +459,10 @@ export default function TestContextConfig({
           </p>
         </div>
 
+        {/* User selector moved to global position above tabs */}
         <div className="mb-2">
-        <UserSearchDialog
-            onSelectUser={(user) => {
-              const selectTime = new Date().toISOString();
-              
-              // Debug log full user payload
-              contextDebug.log('User selected:', {
-                id: user.id,
-                email: user.email,
-                organization_id: user.organization_id,
-                default_site_id: user.default_site_id,
-                site_id: user.site_id,
-                user_sites_count: user.user_sites?.length || 0,
-                user_sites: user.user_sites,
-                ttn_enabled: user.ttn?.enabled || false,
-                ttn_cluster: user.ttn?.cluster || null,
-                full_payload: user,
-              });
-              
-              // Store user sites for dropdown
-              const sites = user.user_sites || [];
-              setSelectedUserSites(sites);
-              setSelectedUserDefaultSite(user.default_site_id || null);
-              
-              // Store TTN data from sync payload
-              const ttn = user.ttn || null;
-              setSelectedUserTTN(ttn);
-              
-              // Update diagnostics
-              setDiagnostics({
-                selectedUserId: user.id,
-                selectedOrgId: user.organization_id,
-                selectedSiteId: user.default_site_id || (sites.length === 1 ? sites[0].site_id : null),
-                userSitesCount: sites.length,
-                userSitesRaw: sites,
-                ttnEnabled: ttn?.enabled || false,
-                ttnCluster: ttn?.cluster || null,
-                lastUserSelectAt: selectTime,
-                rawUserPayload: user,
-              });
-              
-              // Warn if no sites
-              if (sites.length === 0) {
-                contextDebug.warn('No sites returned for user', {
-                  userId: user.id,
-                  orgId: user.organization_id,
-                  hint: 'Check user_site_memberships table or sync from FrostGuard',
-                });
-              }
-              
-              // Warn if no TTN
-              if (!ttn || !ttn.enabled) {
-                contextDebug.warn('No TTN integration for user', {
-                  userId: user.id,
-                  orgId: user.organization_id,
-                  ttnData: ttn,
-                  hint: 'TTN data comes from synced_users.ttn column via user-sync',
-                });
-              }
-              
-              // Auto-select site logic
-              let siteToSelect: string | undefined = undefined;
-              if (user.default_site_id) {
-                siteToSelect = user.default_site_id;
-              } else if (sites.length === 1) {
-                siteToSelect = sites[0].site_id;
-              } else if (user.site_id) {
-                // Fallback to legacy single site
-                siteToSelect = user.site_id;
-              }
-              
-              contextDebug.log('Site auto-selection:', {
-                default_site_id: user.default_site_id,
-                available_sites: sites.length,
-                selected: siteToSelect,
-              });
-              
-              // Build TTN config from user data
-              const ttnConfig = ttn ? {
-                enabled: ttn.enabled || false,
-                applicationId: ttn.application_id || '',
-                cluster: ttn.cluster || 'eu1',
-                api_key_last4: ttn.api_key_last4 || null,
-                webhook_secret_last4: ttn.webhook_secret_last4 || null,
-              } : undefined;
-
-              update({
-                testOrgId: user.organization_id,
-                testSiteId: siteToSelect,
-                testUnitId: user.unit_id || undefined,
-                selectedUserId: user.id,
-                selectedUserDisplayName: user.full_name || user.email || user.id,
-                contextSetAt: selectTime,
-                ttnConfig, // Include TTN settings from selected user
-              });
-              
-              // TTN data now comes from user.ttn via user_sync (already set in setSelectedUserTTN above)
-            }}
-            disabled={disabled}
-            cachedUserCount={cachedUserCount}
-          />
-          
-          {/* Selected user context indicator */}
-          {config.selectedUserId && config.selectedUserDisplayName && (
-            <div className="flex items-center justify-between bg-muted/50 rounded-md px-3 py-2 mt-2">
-              <div className="flex items-center gap-2 text-sm">
-                <User className="h-4 w-4 text-muted-foreground" />
-                <span className="text-muted-foreground">Context from:</span>
-                <span className="font-medium">{config.selectedUserDisplayName}</span>
-                {config.contextSetAt && (
-                  <span className="text-xs text-muted-foreground">
-                    ({new Date(config.contextSetAt).toLocaleTimeString()})
-                  </span>
-                )}
-              </div>
-              <Button
-                variant="ghost"
-                size="sm"
-                className="h-6 w-6 p-0"
-                onClick={clearSelectedUser}
-                disabled={disabled}
-              >
-                <X className="h-4 w-4" />
-              </Button>
-            </div>
-          )}
-          
-          <p className="text-xs text-muted-foreground mt-2">
-            Users sync automatically from FrostGuard via database trigger
+          <p className="text-xs text-muted-foreground">
+            User context is now managed globally above the tabs. Select a user from the global selector to populate test context.
           </p>
         </div>
 

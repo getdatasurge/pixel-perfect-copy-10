@@ -53,13 +53,16 @@ interface DiagnosticsState {
 }
 
 interface UserSearchDialogProps {
-  onSelectUser: (user: UserProfile) => void;
+  open?: boolean;
+  onClose?: () => void;
+  onUserSelect: (user: UserProfile) => void;
   disabled?: boolean;
   cachedUserCount?: number | null;
 }
 
-export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCount }: UserSearchDialogProps) {
-  const [open, setOpen] = useState(false);
+export default function UserSearchDialog({ open: externalOpen, onClose, onUserSelect, disabled, cachedUserCount }: UserSearchDialogProps) {
+  const [internalOpen, setInternalOpen] = useState(false);
+  const open = externalOpen !== undefined ? externalOpen : internalOpen;
   const [searchTerm, setSearchTerm] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [users, setUsers] = useState<UserProfile[]>([]);
@@ -324,7 +327,11 @@ export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCou
   };
 
   const handleOpenChange = (newOpen: boolean) => {
-    setOpen(newOpen);
+    if (onClose && !newOpen) {
+      onClose();
+    } else {
+      setInternalOpen(newOpen);
+    }
     if (!newOpen) {
       setSearchTerm('');
       setUsers([]);
@@ -381,20 +388,22 @@ export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCou
   return (
     <>
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogTrigger asChild>
-          <button
-            className="flex items-center w-full h-10 px-3 py-2 border rounded-md bg-background text-left text-muted-foreground hover:bg-accent cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
-            disabled={disabled}
-          >
-            <Search className="h-4 w-4 mr-2 flex-shrink-0" />
-            <span className="flex-1 truncate">Search users to auto-fill context...</span>
-            {cachedUserCount !== null && cachedUserCount > 0 && (
-              <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded flex-shrink-0">
-                {cachedUserCount} users
-              </span>
-            )}
-          </button>
-        </DialogTrigger>
+        {externalOpen === undefined && (
+          <DialogTrigger asChild>
+            <button
+              className="flex items-center w-full h-10 px-3 py-2 border rounded-md bg-background text-left text-muted-foreground hover:bg-accent cursor-pointer transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              disabled={disabled}
+            >
+              <Search className="h-4 w-4 mr-2 flex-shrink-0" />
+              <span className="flex-1 truncate">Search users to auto-fill context...</span>
+              {cachedUserCount !== null && cachedUserCount > 0 && (
+                <span className="ml-2 text-xs bg-primary/10 text-primary px-2 py-0.5 rounded flex-shrink-0">
+                  {cachedUserCount} users
+                </span>
+              )}
+            </button>
+          </DialogTrigger>
+        )}
         <DialogContent className="sm:max-w-md">
           <DialogHeader>
             <DialogTitle className="flex items-center gap-2">

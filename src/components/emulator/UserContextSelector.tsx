@@ -51,6 +51,11 @@ export default function UserContextSelector({
       testUnitId: user.unit_id || undefined,
       selectedUserId: user.id,
       selectedUserDisplayName: user.full_name || user.email || user.id,
+      selectedUserSites: sites.map(s => ({
+        site_id: s.site_id,
+        site_name: s.site_name || null,
+        is_default: s.site_id === user.default_site_id || s.is_default || false,
+      })),
       contextSetAt: selectTime,
       ttnConfig,
     });
@@ -59,7 +64,7 @@ export default function UserContextSelector({
   };
 
   const handleClearUser = () => {
-    const { selectedUserId, selectedUserDisplayName, ttnConfig, ...restConfig } = config;
+    const { selectedUserId, selectedUserDisplayName, selectedUserSites, ttnConfig, ...restConfig } = config;
     onConfigChange(restConfig);
   };
 
