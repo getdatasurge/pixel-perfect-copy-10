@@ -1,14 +1,8 @@
-import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Button } from '@/components/ui/button';
-import { Switch } from '@/components/ui/switch';
-import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
 import { useTelemetrySubscription } from '@/hooks/useTelemetrySubscription';
 import { formatDistanceToNow } from 'date-fns';
-import { supabase } from '@/integrations/supabase/client';
-import { toast } from '@/hooks/use-toast';
 
 interface TelemetryMonitorProps {
   orgId?: string;
@@ -24,59 +18,11 @@ interface TelemetryMonitorProps {
 }
 
 export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
-  const [isPulling, setIsPulling] = useState(false);
-  const [autoPullEnabled, setAutoPullEnabled] = useState(true);
-
   const { telemetry, loading, getSensorStatus } = useTelemetrySubscription({
     orgId,
     unitId,
     enabled: !!(orgId || unitId),
   });
-
-  // Wrap pullFromFrostGuard in useCallback with proper dependencies
-  const pullFromFrostGuard = useCallback(async (silent = false) => {
-    if (!orgId && !unitId) return;
-    
-    setIsPulling(true);
-    try {
-      const { data, error } = await supabase.functions.invoke('pull-frostguard-telemetry', {
-        body: { org_id: orgId, unit_id: unitId }
-      });
-      
-      if (error) throw error;
-      if (!silent) {
-        toast({ title: 'Telemetry refreshed', description: 'Latest data pulled from FrostGuard' });
-      }
-    } catch (error) {
-      console.error('Pull error:', error);
-      if (!silent) {
-        toast({ title: 'Pull failed', description: String(error), variant: 'destructive' });
-      }
-    } finally {
-      setIsPulling(false);
-    }
-  }, [orgId, unitId]);
-
-  // Auto-pull from FrostGuard on mount and periodically
-  useEffect(() => {
-    if (!autoPullEnabled || (!orgId && !unitId)) return;
-    
-    const pullData = async () => {
-      try {
-        await pullFromFrostGuard(true); // Silent pull (no toast)
-      } catch (error) {
-        console.error('Auto-pull error:', error);
-      }
-    };
-    
-    // Initial pull
-    pullData();
-    
-    // Pull every 30 seconds
-    const interval = setInterval(pullData, 30000);
-    
-    return () => clearInterval(interval);
-  }, [autoPullEnabled, orgId, unitId, pullFromFrostGuard]); // Include pullFromFrostGuard in deps
 
   // Determine data source
   const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
@@ -147,53 +93,12 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   return (
     <div className="space-y-4">
       {/* Data Source Indicator */}
-      <div className="flex items-center justify-between flex-wrap gap-2">
+      <div className="flex items-center justify-between">
         <Badge variant={useDbTelemetry ? "default" : "outline"}>
           {useDbTelemetry ? '📡 Live from Database' : '🔌 Local Emulator State'}
         </Badge>
         {useDbTelemetry && getStatusBadge()}
-        {(orgId || unitId) && (
-          <div className="flex gap-2 text-xs text-muted-foreground">
-            {orgId && <span>org: {orgId.slice(0, 8)}...</span>}
-            {unitId && <span>unit: {unitId}</span>}
-          </div>
-        )}
       </div>
-
-      {/* Warning when no context selected */}
-      {!orgId && !unitId && (
-        <Alert className="mt-2">
-          <AlertTriangle className="h-4 w-4" />
-          <AlertDescription>
-            No test context selected. Go to the <strong>Testing</strong> tab and select a user to see live telemetry from FrostGuard.
-          </AlertDescription>
-        </Alert>
-      )}
-
-      {/* Pull Controls */}
-      {(orgId || unitId) && (
-        <div className="flex items-center justify-between py-2">
-          <div className="flex items-center gap-2">
-            <Button 
-              size="sm" 
-              variant="outline" 
-              onClick={() => pullFromFrostGuard(false)}
-              disabled={isPulling}
-            >
-              <RefreshCw className={`h-3 w-3 mr-1 ${isPulling ? 'animate-spin' : ''}`} />
-              {isPulling ? 'Pulling...' : 'Pull from FrostGuard'}
-            </Button>
-            <Badge variant="secondary" className="text-xs">
-              Auto-pull: {autoPullEnabled ? 'ON (30s)' : 'OFF'}
-            </Badge>
-          </div>
-          <Switch
-            checked={autoPullEnabled}
-            onCheckedChange={setAutoPullEnabled}
-            aria-label="Toggle auto-pull"
-          />
-        </div>
-      )}
 
       {/* Temperature & Humidity */}
       <Card>
