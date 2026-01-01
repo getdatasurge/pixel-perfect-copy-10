@@ -338,12 +338,21 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     setTestResult(null);
 
     try {
+      const requestBody = {
+        action: 'test_stored' as const,
+        org_id: orgId,
+        selected_user_id: config.selectedUserId || undefined, // Pass selected user ID to test their TTN settings
+      };
+
+      console.log('[WebhookSettings] Testing TTN connection with:', {
+        ...requestBody,
+        ttnApplicationId: ttnApplicationId,
+        ttnCluster: ttnCluster,
+        configSelectedUserId: config.selectedUserId,
+      });
+
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        body: {
-          action: 'test_stored',
-          org_id: orgId,
-          selected_user_id: config.selectedUserId || undefined, // Pass selected user ID to test their TTN settings
-        },
+        body: requestBody,
       });
 
       if (error) {
@@ -365,6 +374,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       const result: TTNTestResult = data;
       setTestResult(result);
+
+      console.log('[WebhookSettings] Test result:', {
+        ok: result.ok,
+        connected: result.connected,
+        application_id: result.application_id,
+        cluster: result.cluster,
+        expected_app: ttnApplicationId,
+      });
 
       // Update connection status
       const now = new Date();
@@ -461,6 +478,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       const result: TTNTestResult = data;
       setTestResult(result);
+
+      console.log('[WebhookSettings] Test result:', {
+        ok: result.ok,
+        connected: result.connected,
+        application_id: result.application_id,
+        cluster: result.cluster,
+        expected_app: ttnApplicationId,
+      });
 
       // Update connection status
       const now = new Date();
