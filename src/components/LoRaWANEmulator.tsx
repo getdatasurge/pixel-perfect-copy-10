@@ -27,6 +27,7 @@ import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
 import TelemetryMonitor from './emulator/TelemetryMonitor';
 import TTNProvisioningWizard from './emulator/TTNProvisioningWizard';
+import UserContextSelector from './emulator/UserContextSelector';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -644,6 +645,13 @@ export default function LoRaWANEmulator() {
               <span className="hidden sm:inline">Logs</span>
             </TabsTrigger>
           </TabsList>
+
+          {/* Global User Context Selector */}
+          <UserContextSelector
+            config={webhookConfig}
+            onConfigChange={setWebhookConfig}
+            disabled={isRunning}
+          />
 
           {/* Sensors Tab */}
           <TabsContent value="sensors" className="space-y-6">

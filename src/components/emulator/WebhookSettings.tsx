@@ -344,9 +344,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const requestBody = {
         action: 'test_stored' as const,
         org_id: orgId,
-        selected_user_id: config.selectedUserId || undefined,
-        cluster: config.selectedUserId ? ttnCluster : undefined,
-        application_id: config.selectedUserId ? ttnApplicationId : undefined,
+        // Note: Always test org's TTN settings, not user-specific
+        // User selector is for context (org/site/unit selection)
       };
 
       console.log('[WebhookSettings] Testing TTN connection with:', {
