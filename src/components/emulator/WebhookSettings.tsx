@@ -23,8 +23,6 @@ import {
 } from '@/components/ui/select';
 import TTNSetupWizard, { WizardConfig } from './TTNSetupWizard';
 
-import { TTNSnapshot } from '@/hooks/useTTNSnapshot';
-
 interface WebhookSettingsProps {
   config: WebhookConfig;
   onConfigChange: (config: WebhookConfig) => void;
@@ -32,7 +30,6 @@ interface WebhookSettingsProps {
   currentDevEui?: string;
   orgId?: string;
   devices?: LoRaWANDevice[];
-  ttnSnapshot?: TTNSnapshot | null;
 }
 
 const TTN_CLUSTERS = [
@@ -70,7 +67,7 @@ interface TTNSettingsFromDB {
   last_test_success: boolean | null;
 }
 
-export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, devices = [], ttnSnapshot }: WebhookSettingsProps) {
+export default function WebhookSettings({ config, onConfigChange, disabled, currentDevEui, orgId, devices = [] }: WebhookSettingsProps) {
   const [isTesting, setIsTesting] = useState(false);
   const [isTestingTTN, setIsTestingTTN] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
@@ -706,30 +703,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           Guided Setup
         </Button>
       </div>
-
-      {/* TTN Snapshot from FrostGuard */}
-      {ttnSnapshot && (
-        <Card className="border-blue-200 bg-blue-50/50 dark:border-blue-800 dark:bg-blue-950/20">
-          <CardContent className="pt-4">
-            <div className="flex items-center gap-2 mb-2">
-              <Cloud className="h-4 w-4 text-blue-500" />
-              <span className="text-sm font-medium">TTN Settings from FrostGuard</span>
-              <Badge variant="outline" className="text-xs">Auto-loaded</Badge>
-            </div>
-            <div className="grid grid-cols-2 gap-2 text-xs">
-              <div><span className="text-muted-foreground">Cluster:</span> <span className="font-mono">{ttnSnapshot.cluster}</span></div>
-              <div><span className="text-muted-foreground">App:</span> <span className="font-mono">{ttnSnapshot.application_id}</span></div>
-              <div><span className="text-muted-foreground">Key:</span> <span className="font-mono">****{ttnSnapshot.api_key_last4}</span></div>
-              <div>
-                <span className="text-muted-foreground">Webhook:</span>{' '}
-                <Badge variant={ttnSnapshot.webhook_enabled ? "default" : "secondary"} className="text-xs">
-                  {ttnSnapshot.webhook_enabled ? "Configured" : "Not Set"}
-                </Badge>
-              </div>
-            </div>
-          </CardContent>
-        </Card>
-      )}
 
       {/* TTN Settings - Primary */}
       <Card className="border-primary/50">
