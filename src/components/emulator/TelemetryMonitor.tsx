@@ -1,8 +1,12 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
 import { useTelemetrySubscription } from '@/hooks/useTelemetrySubscription';
 import { formatDistanceToNow } from 'date-fns';
+import { supabase } from '@/integrations/supabase/client';
+import { toast } from '@/hooks/use-toast';
+import { useState, useEffect } from 'react';
 
 interface TelemetryMonitorProps {
   orgId?: string;
@@ -18,11 +22,81 @@ interface TelemetryMonitorProps {
 }
 
 export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
-  const { telemetry, loading, getSensorStatus } = useTelemetrySubscription({
+  const { telemetry, loading, getSensorStatus, refetch } = useTelemetrySubscription({
     orgId,
     unitId,
     enabled: !!(orgId || unitId),
   });
+
+  const [isPulling, setIsPulling] = useState(false);
+  const [autoPullEnabled, setAutoPullEnabled] = useState(true);
+
+  // Auto-pull from FrostGuard on mount and periodically
+  useEffect(() => {
+    if (!autoPullEnabled || (!orgId && !unitId)) return;
+
+    const pullData = async () => {
+      try {
+        await pullFromFrostGuard(true); // Silent pull (no toast)
+      } catch (error) {
+        console.error('Auto-pull error:', error);
+      }
+    };
+
+    // Initial pull
+    pullData();
+
+    // Pull every 30 seconds
+    const interval = setInterval(pullData, 30000);
+
+    return () => clearInterval(interval);
+  }, [orgId, unitId, autoPullEnabled]);
+
+  const pullFromFrostGuard = async (silent = false) => {
+    if (!orgId && !unitId) {
+      toast({
+        title: 'Error',
+        description: 'No organization or unit ID selected',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    setIsPulling(true);
+
+    try {
+      const { data, error } = await supabase.functions.invoke('pull-frostguard-telemetry', {
+        body: {
+          org_id: orgId,
+          unit_id: unitId,
+          sync_to_local: true, // Sync to local database for realtime subscription to pick up
+        },
+      });
+
+      if (error) throw error;
+
+      if (!silent) {
+        toast({
+          title: 'Success',
+          description: `Pulled ${data.count} telemetry record(s) from FrostGuard`,
+        });
+      }
+
+      // Refetch to get the latest data
+      refetch();
+    } catch (error) {
+      console.error('Error pulling from FrostGuard:', error);
+      if (!silent) {
+        toast({
+          title: 'Error',
+          description: error instanceof Error ? error.message : 'Failed to pull telemetry data',
+          variant: 'destructive',
+        });
+      }
+    } finally {
+      setIsPulling(false);
+    }
+  };
 
   // Determine data source
   const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
@@ -99,6 +173,24 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
         </Badge>
         {useDbTelemetry && getStatusBadge()}
       </div>
+
+      {/* Pull from FrostGuard Controls */}
+      {(orgId || unitId) && (
+        <div className="flex items-center gap-2">
+          <Button
+            onClick={() => pullFromFrostGuard(false)}
+            disabled={isPulling}
+            size="sm"
+            variant="outline"
+          >
+            <RefreshCw className={`h-4 w-4 mr-2 ${isPulling ? 'animate-spin' : ''}`} />
+            Pull from FrostGuard
+          </Button>
+          <Badge variant={autoPullEnabled ? "default" : "secondary"} className="text-xs">
+            Auto-pull: {autoPullEnabled ? 'ON (every 30s)' : 'OFF'}
+          </Badge>
+        </div>
+      )}
 
       {/* Temperature & Humidity */}
       <Card>
