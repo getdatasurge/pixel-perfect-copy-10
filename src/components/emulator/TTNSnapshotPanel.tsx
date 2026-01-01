@@ -3,8 +3,7 @@ import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Cloud, RefreshCw, Loader2, Info, CheckCircle, XCircle, ChevronDown } from 'lucide-react';
+import { Cloud, RefreshCw, Loader2, Info, CheckCircle, XCircle } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { TTNSnapshot } from '@/hooks/useTTNSnapshot';
 
@@ -26,11 +25,7 @@ export function TTNSnapshotPanel({
   errorCode,
   onRefresh,
   selectedUserId,
-  orgId,
-  siteId,
 }: TTNSnapshotPanelProps) {
-  const [showDiagnostics, setShowDiagnostics] = React.useState(false);
-
   if (!selectedUserId) {
     return null;
   }
@@ -122,25 +117,6 @@ export function TTNSnapshotPanel({
             </AlertDescription>
           </Alert>
         )}
-
-        {/* Diagnostics Panel */}
-        <Collapsible open={showDiagnostics} onOpenChange={setShowDiagnostics}>
-          <CollapsibleTrigger className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground">
-            <ChevronDown className={cn("h-3 w-3 transition-transform", showDiagnostics && "rotate-180")} />
-            Show Diagnostics
-          </CollapsibleTrigger>
-          <CollapsibleContent>
-            <div className="mt-2 p-3 bg-muted/50 rounded text-xs font-mono space-y-1">
-              <div>selected_user_id: {selectedUserId || 'none'}</div>
-              <div>org_id: {orgId || 'none'}</div>
-              <div>site_id: {siteId || 'none'}</div>
-              <div>snapshot.updated_at: {snapshot?.updated_at || 'n/a'}</div>
-              <div>snapshot.fetched_at: {snapshot?.fetched_at || 'n/a'}</div>
-              <div>last_test_status: {snapshot?.last_test_success === true ? 'success' : snapshot?.last_test_success === false ? 'failed' : 'unknown'}</div>
-              <div>error_code: {errorCode || 'none'}</div>
-            </div>
-          </CollapsibleContent>
-        </Collapsible>
       </CardContent>
     </Card>
   );

@@ -11,6 +11,18 @@ interface UserSite {
   site_name?: string;
 }
 
+interface TTNConnection {
+  enabled: boolean;
+  provisioning_status?: string | null;
+  cluster?: string | null;
+  application_id?: string | null;
+  webhook_id?: string | null;
+  webhook_url?: string | null;
+  api_key_last4?: string | null;
+  webhook_secret_last4?: string | null;
+  updated_at?: string | null;
+}
+
 interface SyncedUser {
   user_id: string;
   email: string;
@@ -22,6 +34,7 @@ interface SyncedUser {
   // New fields from Project 1
   default_site_id?: string | null;
   user_sites?: UserSite[];
+  ttn?: TTNConnection; // NEW: TTN connection data
 }
 
 interface SyncPayload {
@@ -97,6 +110,8 @@ serve(async (req) => {
           default_site_id: user.default_site_id || null,
           synced_at: user.updated_at,
           last_updated_at: new Date().toISOString(),
+          // NEW: Store TTN connection data (null-safe)
+          ttn: user.ttn || null,
         }, {
           onConflict: 'source_user_id',
         })
@@ -108,6 +123,9 @@ serve(async (req) => {
         results.push({ user_id: user.user_id, success: false, error: error.message });
         continue;
       }
+      
+      // Debug logging for TTN data
+      console.log(`[user-sync] user=${user.email} org=${user.organization_id} sites=${user.user_sites?.length ?? 0} ttn_enabled=${user.ttn?.enabled ?? false} cluster=${user.ttn?.cluster ?? 'n/a'}`);
 
       // Handle user_sites if provided
       if (user.user_sites && user.user_sites.length > 0) {
