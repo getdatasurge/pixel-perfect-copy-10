@@ -28,7 +28,7 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   });
 
   const [isPulling, setIsPulling] = useState(false);
-  const [autoPullEnabled, setAutoPullEnabled] = useState(true);
+  const [autoPullEnabled, setAutoPullEnabled] = useState(false); // Disabled until edge function is deployed
 
   // Memoized pull function with proper dependencies
   const pullFromFrostGuard = useCallback(async (silent = false) => {
