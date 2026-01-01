@@ -18,6 +18,7 @@ interface TTNConnection {
   application_id?: string | null;
   webhook_id?: string | null;
   webhook_url?: string | null;
+  api_key?: string | null;  // FULL decrypted API key from FrostGuard
   api_key_last4?: string | null;
   webhook_secret_last4?: string | null;
   updated_at?: string | null;
