@@ -341,6 +341,19 @@ async function handleTestStored(
         api_key: null, // API key is not stored in synced_users, only last4
       };
     }
+
+    // If user TTN settings not found in synced_users, fall back to org settings
+    if (!settings) {
+      console.log(`[${requestId}] User TTN settings not found, falling back to org settings`);
+      const { data: orgData, error: orgError } = await supabase
+        .from('ttn_settings')
+        .select('enabled, cluster, application_id, api_key')
+        .eq('org_id', org_id)
+        .maybeSingle();
+
+      error = orgError;
+      settings = orgData;
+    }
   } else {
     console.log(`[${requestId}] Loading TTN settings from ttn_settings for org ${org_id}`);
     const { data, error: fetchError } = await supabase
