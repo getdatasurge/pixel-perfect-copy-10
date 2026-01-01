@@ -45,21 +45,17 @@ export function useTelemetrySubscription({ orgId, unitId, enabled = true }: UseT
 
   // Fetch initial telemetry
   const fetchTelemetry = useCallback(async () => {
-    if (!enabled || (!orgId && !unitId)) {
+    if (!enabled || !orgId) {
       setLoading(false);
       return;
     }
 
     try {
+      // Only query by org_id since unitId is just a string override, not the actual UUID
       let query = supabase
         .from('unit_telemetry')
-        .select('*');
-
-      if (unitId) {
-        query = query.eq('unit_id', unitId);
-      } else if (orgId) {
-        query = query.eq('org_id', orgId);
-      }
+        .select('*')
+        .eq('org_id', orgId);
 
       const { data, error: fetchError } = await query.limit(1).maybeSingle();
 
@@ -75,15 +71,15 @@ export function useTelemetrySubscription({ orgId, unitId, enabled = true }: UseT
     } finally {
       setLoading(false);
     }
-  }, [orgId, unitId, enabled]);
+  }, [orgId, enabled]);
 
   // Set up realtime subscription
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || !orgId) return;
 
     fetchTelemetry();
 
-    // Subscribe to realtime updates
+    // Subscribe to realtime updates (filter by org_id only)
     const channel = supabase
       .channel('unit_telemetry_changes')
       .on(
@@ -92,14 +88,13 @@ export function useTelemetrySubscription({ orgId, unitId, enabled = true }: UseT
           event: '*',
           schema: 'public',
           table: 'unit_telemetry',
-          ...(unitId ? { filter: `unit_id=eq.${unitId}` } : {}),
+          filter: `org_id=eq.${orgId}`,
         },
         (payload) => {
           if (payload.eventType === 'INSERT' || payload.eventType === 'UPDATE') {
             const newData = payload.new as UnitTelemetry;
-            // Only update if it matches our filter
-            if (unitId && newData.unit_id !== unitId) return;
-            if (orgId && newData.org_id !== orgId) return;
+            // Only update if it matches our org
+            if (newData.org_id !== orgId) return;
             setTelemetry(newData);
           }
         }
@@ -109,7 +104,7 @@ export function useTelemetrySubscription({ orgId, unitId, enabled = true }: UseT
     return () => {
       supabase.removeChannel(channel);
     };
-  }, [orgId, unitId, enabled, fetchTelemetry]);
+  }, [orgId, enabled, fetchTelemetry]);
 
   return {
     telemetry,
