@@ -206,6 +206,9 @@ async function checkDeviceExists(
 }
 
 serve(async (req) => {
+  // Debug logging for incoming requests
+  console.log(`[ttn-simulate] ${req.method} request from ${req.headers.get('origin') || 'unknown origin'}`);
+
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
