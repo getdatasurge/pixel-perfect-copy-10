@@ -23,8 +23,10 @@ export interface TTNConnection {
   application_id?: string | null;
   webhook_id?: string | null;
   webhook_url?: string | null;
-  api_key_last4?: string | null;
-  webhook_secret_last4?: string | null;
+  api_key?: string | null; // Full API key (server-side only, for ttn-simulate)
+  api_key_last4?: string | null; // Last 4 chars (for UI display)
+  webhook_secret?: string | null; // Full webhook secret (server-side only)
+  webhook_secret_last4?: string | null; // Last 4 chars (for UI display)
   updated_at?: string | null;
 }
 
