@@ -344,10 +344,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const requestBody = {
         action: 'test_stored' as const,
         org_id: orgId,
-        // TODO: Temporarily disabled until edge function is deployed
-        // selected_user_id: config.selectedUserId || undefined,
-        // cluster: config.selectedUserId ? ttnCluster : undefined,
-        // application_id: config.selectedUserId ? ttnApplicationId : undefined,
+        selected_user_id: config.selectedUserId || undefined,
+        cluster: config.selectedUserId ? ttnCluster : undefined,
+        application_id: config.selectedUserId ? ttnApplicationId : undefined,
       };
 
       console.log('[WebhookSettings] Testing TTN connection with:', {
