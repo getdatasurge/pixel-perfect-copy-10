@@ -342,6 +342,7 @@ export default function LoRaWANEmulator() {
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
+            selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
             applicationId: ttnConfig.applicationId,
             deviceId,
             cluster: ttnConfig.cluster,
@@ -460,6 +461,7 @@ export default function LoRaWANEmulator() {
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
+            selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
             applicationId: ttnConfig.applicationId,
             deviceId,
             cluster: ttnConfig.cluster,

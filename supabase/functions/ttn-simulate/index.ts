@@ -9,6 +9,7 @@ const corsHeaders = {
 
 interface SimulateUplinkRequest {
   org_id?: string;
+  selected_user_id?: string;
   applicationId?: string;
   deviceId: string;
   cluster?: string;
@@ -123,35 +124,83 @@ function validateConfig(applicationId: string, deviceId: string, cluster: string
   return null;
 }
 
+// Load TTN settings from synced_users table for a user
+async function loadUserSettings(userId: string): Promise<TTNSettings | null> {
+  try {
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
+
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error('Missing Supabase credentials');
+      return null;
+    }
+
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+
+    const { data, error } = await supabase
+      .from('synced_users')
+      .select('ttn')
+      .eq('source_user_id', userId)
+      .maybeSingle();
+
+    if (error) {
+      console.error('Error loading user TTN settings:', error);
+      return null;
+    }
+
+    if (!data || !data.ttn) {
+      console.log(`No TTN settings found for user ${userId}`);
+      return null;
+    }
+
+    const ttn = data.ttn as any;
+    if (!ttn.enabled) {
+      console.log(`TTN not enabled for user ${userId}`);
+      return null;
+    }
+
+    // Map synced_users.ttn structure to TTNSettings interface
+    return {
+      api_key: ttn.api_key || null,
+      application_id: ttn.application_id || null,
+      cluster: ttn.cluster || 'eu1',
+      enabled: ttn.enabled || false,
+    };
+  } catch (err) {
+    console.error('Exception loading user settings:', err);
+    return null;
+  }
+}
+
 // Load TTN settings from database for an organization
 async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
   try {
     const supabaseUrl = Deno.env.get('SUPABASE_URL');
     const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-    
+
     if (!supabaseUrl || !supabaseServiceKey) {
       console.error('Missing Supabase credentials');
       return null;
     }
-    
+
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
-    
+
     const { data, error } = await supabase
       .from('ttn_settings')
       .select('api_key, application_id, cluster, enabled')
       .eq('org_id', orgId)
       .maybeSingle();
-    
+
     if (error) {
       console.error('Error loading org TTN settings:', error);
       return null;
     }
-    
+
     if (!data || !data.enabled) {
       console.log(`No enabled TTN settings for org ${orgId}`);
       return null;
     }
-    
+
     return data as TTNSettings;
   } catch (err) {
     console.error('Exception loading org settings:', err);
@@ -213,18 +262,33 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    let { org_id, deviceId, decodedPayload, fPort } = body;
+    let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
 
-    // Try to load settings from org first, then fall back to request body / global secret
+    // Try to load settings: user first, then org, then fall back to request body / global secret
     let apiKey: string | undefined;
     let applicationId: string | undefined;
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    if (org_id) {
+    // Priority 1: Load from user's TTN settings in synced_users
+    if (selected_user_id) {
+      console.log(`Loading TTN settings for user: ${selected_user_id}`);
+      const userSettings = await loadUserSettings(selected_user_id);
+
+      if (userSettings?.api_key && userSettings?.application_id) {
+        apiKey = userSettings.api_key;
+        applicationId = userSettings.application_id;
+        cluster = userSettings.cluster;
+        settingsSource = 'user_settings';
+        console.log(`Using user TTN settings: cluster=${cluster}, app=${applicationId}`);
+      }
+    }
+
+    // Priority 2: Load from org's TTN settings in ttn_settings table
+    if (!apiKey && org_id) {
       console.log(`Loading TTN settings for org: ${org_id}`);
       const orgSettings = await loadOrgSettings(org_id);
-      
+
       if (orgSettings?.api_key && orgSettings?.application_id) {
         apiKey = orgSettings.api_key;
         applicationId = orgSettings.application_id;
@@ -234,7 +298,7 @@ serve(async (req) => {
       }
     }
 
-    // Fall back to request body values
+    // Priority 3: Fall back to request body values and global secret
     if (!apiKey) {
       apiKey = Deno.env.get('TTN_API_KEY');
       settingsSource = 'global_secret';
