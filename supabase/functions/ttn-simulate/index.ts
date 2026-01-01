@@ -264,50 +264,35 @@ serve(async (req) => {
     const body: SimulateUplinkRequest = await req.json();
     let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
 
-    // Load TTN API key - each user has their own TTN application
+    // Load TTN API key from org settings
+    // Frontend provides application_id and cluster (user-specific)
+    // We only need to fetch the API key (org-level credential)
     let apiKey: string | undefined;
     let applicationId: string | undefined;
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    // Priority 1: Load from user's TTN settings (each user has own app)
-    if (selected_user_id) {
-      console.log(`Loading TTN API key for user: ${selected_user_id}`);
-      const userSettings = await loadUserSettings(selected_user_id);
+    // Use application_id and cluster from request body (user-specific TTN app)
+    applicationId = body.applicationId;
+    cluster = body.cluster;
 
-      if (userSettings?.api_key && userSettings?.application_id) {
-        apiKey = userSettings.api_key;
-        applicationId = userSettings.application_id;
-        cluster = userSettings.cluster;
-        settingsSource = 'user_settings';
-        console.log(`Using user TTN settings: cluster=${cluster}, app=${applicationId}`);
-      }
-    }
-
-    // Priority 2: Fall back to org's TTN settings in ttn_settings table
-    if (!apiKey && org_id) {
-      console.log(`Falling back to org TTN settings for org: ${org_id}`);
+    // Fetch API key from org's TTN settings
+    if (org_id) {
+      console.log(`Loading TTN API key for org: ${org_id}`);
       const orgSettings = await loadOrgSettings(org_id);
 
-      if (orgSettings?.api_key && orgSettings?.application_id) {
+      if (orgSettings?.api_key) {
         apiKey = orgSettings.api_key;
-        applicationId = orgSettings.application_id;
-        cluster = orgSettings.cluster;
         settingsSource = 'org_settings';
-        console.log(`Using org TTN settings: cluster=${cluster}, app=${applicationId}`);
+        console.log(`Using org API key with user's TTN app: cluster=${cluster}, app=${applicationId}`);
       }
     }
 
-    // Priority 3: Fall back to request body values and global secret
+    // Fallback to global secret if no org API key
     if (!apiKey) {
       apiKey = Deno.env.get('TTN_API_KEY');
       settingsSource = 'global_secret';
-    }
-    if (!applicationId) {
-      applicationId = body.applicationId;
-    }
-    if (!cluster) {
-      cluster = body.cluster;
+      console.log(`Using global API key`);
     }
 
     // Convert legacy eui-xxx format to canonical sensor-xxx format
