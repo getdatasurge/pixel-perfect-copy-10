@@ -267,29 +267,15 @@ serve(async (req) => {
     const body: SimulateUplinkRequest = await req.json();
     let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
 
-    // Try to load settings: user first, then org, then fall back to request body / global secret
+    // Load TTN API key from org settings (synced_users only has last4 for security)
     let apiKey: string | undefined;
     let applicationId: string | undefined;
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    // Priority 1: Load from user's TTN settings in synced_users
-    if (selected_user_id) {
-      console.log(`Loading TTN settings for user: ${selected_user_id}`);
-      const userSettings = await loadUserSettings(selected_user_id);
-
-      if (userSettings?.api_key && userSettings?.application_id) {
-        apiKey = userSettings.api_key;
-        applicationId = userSettings.application_id;
-        cluster = userSettings.cluster;
-        settingsSource = 'user_settings';
-        console.log(`Using user TTN settings: cluster=${cluster}, app=${applicationId}`);
-      }
-    }
-
-    // Priority 2: Load from org's TTN settings in ttn_settings table
-    if (!apiKey && org_id) {
-      console.log(`Loading TTN settings for org: ${org_id}`);
+    // Priority 1: Load from org's TTN settings in ttn_settings table
+    if (org_id) {
+      console.log(`Loading TTN API key for org: ${org_id}`);
       const orgSettings = await loadOrgSettings(org_id);
 
       if (orgSettings?.api_key && orgSettings?.application_id) {
@@ -301,7 +287,7 @@ serve(async (req) => {
       }
     }
 
-    // Priority 3: Fall back to request body values and global secret
+    // Priority 2: Fall back to request body values and global secret
     if (!apiKey) {
       apiKey = Deno.env.get('TTN_API_KEY');
       settingsSource = 'global_secret';
