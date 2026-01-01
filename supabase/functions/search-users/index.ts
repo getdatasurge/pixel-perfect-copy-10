@@ -60,10 +60,10 @@ serve(async (req) => {
 
     console.log(`Searching synced_users for: "${searchTerm}" (limit: ${limit})`);
 
-    // Build query against synced_users table
+    // Build query against synced_users table (including ttn column)
     let query = supabase
       .from('synced_users')
-      .select('source_user_id, email, full_name, source_organization_id, source_site_id, source_unit_id, default_site_id')
+      .select('source_user_id, email, full_name, source_organization_id, source_site_id, source_unit_id, default_site_id, ttn')
       .limit(limit);
 
     // Apply search filter if provided
@@ -113,7 +113,7 @@ serve(async (req) => {
       }
     }
 
-    // Map results to expected format with user_sites array
+    // Map results to expected format with user_sites array and ttn data
     const mappedUsers = (users || []).map(user => ({
       id: user.source_user_id,
       email: user.email,
@@ -123,6 +123,8 @@ serve(async (req) => {
       unit_id: user.source_unit_id,
       default_site_id: user.default_site_id,
       user_sites: siteMemberships[user.source_user_id] || [],
+      // NEW: Include TTN data with safe defaults for backwards compatibility
+      ttn: user.ttn || { enabled: false, provisioning_status: 'not_started' },
     }));
 
     console.log(`Found ${mappedUsers.length} users with site memberships`);

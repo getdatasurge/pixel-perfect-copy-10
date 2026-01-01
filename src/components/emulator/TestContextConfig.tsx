@@ -4,11 +4,11 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw, Star } from 'lucide-react';
+import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw, Star, Radio } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
-import UserSearchDialog, { UserSite } from './UserSearchDialog';
+import UserSearchDialog, { UserSite, TTNConnection } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
 import { TTNSnapshotPanel } from './TTNSnapshotPanel';
 import { useTTNSnapshot, TTNSnapshot } from '@/hooks/useTTNSnapshot';
@@ -49,6 +49,9 @@ export default function TestContextConfig({
   // Site dropdown options from selected user
   const [selectedUserSites, setSelectedUserSites] = useState<UserSite[]>([]);
   const [selectedUserDefaultSite, setSelectedUserDefaultSite] = useState<string | null>(null);
+  
+  // TTN data from user sync payload (separate from TTN snapshot)
+  const [selectedUserTTN, setSelectedUserTTN] = useState<TTNConnection | null>(null);
   
   // Sync run ID for idempotency - persists across retries
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
@@ -122,6 +125,7 @@ export default function TestContextConfig({
     });
     setSelectedUserSites([]);
     setSelectedUserDefaultSite(null);
+    setSelectedUserTTN(null); // Clear TTN from sync payload
     clearSnapshot(); // Also clear TTN snapshot
   };
   
@@ -402,6 +406,9 @@ export default function TestContextConfig({
               setSelectedUserSites(user.user_sites || []);
               setSelectedUserDefaultSite(user.default_site_id || null);
               
+              // Store TTN data from sync payload
+              setSelectedUserTTN(user.ttn || null);
+              
               // Auto-select site logic
               let siteToSelect: string | undefined = undefined;
               if (user.default_site_id) {
@@ -470,6 +477,91 @@ export default function TestContextConfig({
           orgId={config.testOrgId}
           siteId={config.testSiteId}
         />
+
+        {/* TTN Settings from User Sync Payload (Read-Only) */}
+        {config.selectedUserId && (
+          <div className="border rounded-lg p-4 bg-muted/30">
+            <Label className="flex items-center gap-2 text-sm font-medium mb-3">
+              <Radio className="h-4 w-4 text-primary" />
+              TTN Settings (from FrostGuard)
+              {selectedUserTTN?.enabled && (
+                <span className="ml-2 text-xs bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded">
+                  Connected
+                </span>
+              )}
+            </Label>
+            
+            <div className="grid gap-3 sm:grid-cols-2">
+              {/* TTN Cluster */}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">TTN Cluster</Label>
+                <Input
+                  value={selectedUserTTN?.cluster || '—'}
+                  disabled
+                  className="bg-muted/50 h-8 text-sm"
+                />
+              </div>
+              
+              {/* Application ID */}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">TTN Application ID</Label>
+                <Input
+                  value={selectedUserTTN?.application_id || '—'}
+                  disabled
+                  className="bg-muted/50 h-8 text-sm font-mono"
+                />
+              </div>
+              
+              {/* Webhook URL */}
+              <div className="space-y-1 sm:col-span-2">
+                <Label className="text-xs text-muted-foreground">TTN Webhook URL</Label>
+                <Input
+                  value={selectedUserTTN?.webhook_url || '—'}
+                  disabled
+                  className="bg-muted/50 h-8 text-sm font-mono text-xs"
+                />
+              </div>
+              
+              {/* API Key (masked) */}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">TTN API Key</Label>
+                <Input
+                  value={selectedUserTTN?.api_key_last4 
+                    ? `Set (****${selectedUserTTN.api_key_last4})` 
+                    : 'Not set'}
+                  disabled
+                  className="bg-muted/50 h-8 text-sm"
+                />
+              </div>
+              
+              {/* Webhook Secret (masked) */}
+              <div className="space-y-1">
+                <Label className="text-xs text-muted-foreground">Webhook Secret</Label>
+                <Input
+                  value={selectedUserTTN?.webhook_secret_last4 
+                    ? `Set (****${selectedUserTTN.webhook_secret_last4})` 
+                    : 'Not set'}
+                  disabled
+                  className="bg-muted/50 h-8 text-sm"
+                />
+              </div>
+            </div>
+            
+            {/* No TTN hint */}
+            {!selectedUserTTN?.enabled && (
+              <p className="text-xs text-muted-foreground mt-3">
+                No TTN integration found. Set up TTN in FrostGuard to enable TTN-related features.
+              </p>
+            )}
+          </div>
+        )}
+        
+        {/* No user selected hint for TTN */}
+        {!config.selectedUserId && (
+          <p className="text-xs text-muted-foreground">
+            Select a user to view TTN settings.
+          </p>
+        )}
 
         <div className="grid gap-4 sm:grid-cols-3">
           <div className="space-y-2">

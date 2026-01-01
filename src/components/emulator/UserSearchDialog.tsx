@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription, DialogTrigger } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
-import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle, Star } from 'lucide-react';
+import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle, Star, Radio } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import { FunctionsHttpError, FunctionsRelayError, FunctionsFetchError } from '@supabase/supabase-js';
@@ -11,6 +11,18 @@ export interface UserSite {
   site_id: string;
   site_name?: string | null;
   is_default?: boolean;
+}
+
+export interface TTNConnection {
+  enabled: boolean;
+  provisioning_status?: string | null;
+  cluster?: string | null;
+  application_id?: string | null;
+  webhook_id?: string | null;
+  webhook_url?: string | null;
+  api_key_last4?: string | null;
+  webhook_secret_last4?: string | null;
+  updated_at?: string | null;
 }
 
 export interface UserProfile {
@@ -22,6 +34,7 @@ export interface UserProfile {
   unit_id?: string;
   default_site_id?: string;
   user_sites?: UserSite[];
+  ttn?: TTNConnection; // NEW: TTN data from sync payload
 }
 
 interface UserSearchDialogProps {
@@ -241,6 +254,13 @@ export default function UserSearchDialog({ onSelectUser, disabled, cachedUserCou
                       <span className="flex items-center gap-1 bg-secondary px-2 py-0.5 rounded">
                         <Box className="h-3 w-3" />
                         {user.unit_id}
+                      </span>
+                    )}
+                    {/* TTN status indicator */}
+                    {user.ttn?.enabled && (
+                      <span className="flex items-center gap-1 bg-green-100 dark:bg-green-900/30 text-green-700 dark:text-green-400 px-2 py-0.5 rounded">
+                        <Radio className="h-3 w-3" />
+                        TTN Connected
                       </span>
                     )}
                   </div>

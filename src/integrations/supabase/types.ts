@@ -210,6 +210,7 @@ export type Database = {
           source_unit_id: string | null
           source_user_id: string
           synced_at: string
+          ttn: Json | null
         }
         Insert: {
           created_at?: string
@@ -223,6 +224,7 @@ export type Database = {
           source_unit_id?: string | null
           source_user_id: string
           synced_at?: string
+          ttn?: Json | null
         }
         Update: {
           created_at?: string
@@ -236,6 +238,7 @@ export type Database = {
           source_unit_id?: string | null
           source_user_id?: string
           synced_at?: string
+          ttn?: Json | null
         }
         Relationships: []
       }
@@ -250,6 +253,7 @@ export type Database = {
           last_test_at: string | null
           last_test_success: boolean | null
           org_id: string
+          site_id: string | null
           updated_at: string
           webhook_secret: string | null
         }
@@ -263,6 +267,7 @@ export type Database = {
           last_test_at?: string | null
           last_test_success?: boolean | null
           org_id: string
+          site_id?: string | null
           updated_at?: string
           webhook_secret?: string | null
         }
@@ -276,6 +281,7 @@ export type Database = {
           last_test_at?: string | null
           last_test_success?: boolean | null
           org_id?: string
+          site_id?: string | null
           updated_at?: string
           webhook_secret?: string | null
         }
