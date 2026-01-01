@@ -87,7 +87,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [ttnWebhookSecretSet, setTtnWebhookSecretSet] = useState(false);
   
   // Connection status tracking
-  const [lastTestAt, setLastTestAt] = useState<Date | null>(null);
+  const [lastTestAt, setLastTestAt] = useState<Date | string | null>(null);
   const [lastTestSuccess, setLastTestSuccess] = useState<boolean | null>(null);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(true);
   
@@ -563,16 +563,24 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   };
 
   // Format relative time for display
-  const formatRelativeTime = (date: Date): string => {
+  const formatRelativeTime = (date: Date | string | null | undefined): string => {
+    if (!date) return 'Never';
+    
+    // Handle string dates from JSON
+    const dateObj = typeof date === 'string' ? new Date(date) : date;
+    
+    // Validate it's a valid date
+    if (isNaN(dateObj.getTime())) return 'Invalid date';
+    
     const now = new Date();
-    const diffMs = now.getTime() - date.getTime();
+    const diffMs = now.getTime() - dateObj.getTime();
     const diffMins = Math.floor(diffMs / 60000);
     const diffHours = Math.floor(diffMins / 60);
     
     if (diffMins < 1) return 'Just now';
     if (diffMins < 60) return `${diffMins}m ago`;
     if (diffHours < 24) return `${diffHours}h ago`;
-    return date.toLocaleDateString();
+    return dateObj.toLocaleDateString();
   };
 
   // Auto-refresh connection status every 5 minutes
