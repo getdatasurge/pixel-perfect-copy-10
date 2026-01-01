@@ -489,6 +489,15 @@ export default function TestContextConfig({
                 selected: siteToSelect,
               });
               
+              // Build TTN config from user data
+              const ttnConfig = ttn ? {
+                enabled: ttn.enabled || false,
+                applicationId: ttn.application_id || '',
+                cluster: ttn.cluster || 'eu1',
+                api_key_last4: ttn.api_key_last4 || null,
+                webhook_secret_last4: ttn.webhook_secret_last4 || null,
+              } : undefined;
+
               update({
                 testOrgId: user.organization_id,
                 testSiteId: siteToSelect,
@@ -496,6 +505,7 @@ export default function TestContextConfig({
                 selectedUserId: user.id,
                 selectedUserDisplayName: user.full_name || user.email || user.id,
                 contextSetAt: selectTime,
+                ttnConfig, // Include TTN settings from selected user
               });
               
               // TTN data now comes from user.ttn via user_sync (already set in setSelectedUserTTN above)
