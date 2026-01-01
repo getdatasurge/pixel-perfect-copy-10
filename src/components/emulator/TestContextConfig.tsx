@@ -1,18 +1,27 @@
-import { useState, useEffect, useRef, useMemo, useCallback } from 'react';
+import { useState, useEffect, useRef, useMemo } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Building2, MapPin, Box, Cloud, Loader2, Check, AlertTriangle, User, X, RefreshCw, Star, Radio } from 'lucide-react';
+import { Building2, MapPin, Box, Loader2, Check, AlertTriangle, User, X, Radio, Star, Cloud, RefreshCw } from 'lucide-react';
 import { WebhookConfig, GatewayConfig, LoRaWANDevice, SyncBundle, SyncResult } from '@/lib/ttn-payload';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserSite, TTNConnection } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
-import { TTNSnapshotPanel } from './TTNSnapshotPanel';
-import { useTTNSnapshot, TTNSnapshot } from '@/hooks/useTTNSnapshot';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
+
+/**
+ * TestContextConfig
+ * ================================================
+ * TTN settings are sourced EXCLUSIVELY from the user_sync flow.
+ * There is NO snapshot-based fetch. All TTN data flows through user_sync.
+ * 
+ * When a user is selected via UserSearchDialog, their TTN configuration
+ * (from synced_users.ttn column, populated by user-sync edge function)
+ * is displayed in the "TTN Settings (from FrostGuard)" section.
+ */
 
 interface TestContextConfigProps {
   config: WebhookConfig;
@@ -21,7 +30,6 @@ interface TestContextConfigProps {
   gateways?: GatewayConfig[];
   devices?: LoRaWANDevice[];
   onSyncResult?: (result: SyncResult) => void;
-  onTTNSnapshotChange?: (snapshot: TTNSnapshot | null) => void;
 }
 
 type SyncStatus = 'success' | 'partial' | 'failed' | null;
@@ -38,7 +46,6 @@ export default function TestContextConfig({
   gateways = [],
   devices = [],
   onSyncResult,
-  onTTNSnapshotChange
 }: TestContextConfigProps) {
   const [isSyncing, setIsSyncing] = useState(false);
   const [syncStatus, setSyncStatus] = useState<SyncStatus>(null);
@@ -57,15 +64,8 @@ export default function TestContextConfig({
   const [currentSyncRunId, setCurrentSyncRunId] = useState<string | null>(null);
   const lastSyncMethodRef = useRef<'endpoint' | 'direct' | null>(null);
   
-  // TTN Snapshot from FrostGuard
-  const { 
-    snapshot: ttnSnapshot, 
-    loading: ttnSnapshotLoading, 
-    error: ttnSnapshotError, 
-    errorCode: ttnSnapshotErrorCode,
-    fetchSnapshot,
-    clearSnapshot
-  } = useTTNSnapshot();
+  // Note: TTN data now comes exclusively from user_sync (selectedUserTTN state)
+  // There is no snapshot hook - all TTN config flows through user-sync pipeline
 
   // Preflight validation
   const validationResult: ValidationResult = useMemo(() => {
@@ -126,34 +126,7 @@ export default function TestContextConfig({
     setSelectedUserSites([]);
     setSelectedUserDefaultSite(null);
     setSelectedUserTTN(null); // Clear TTN from sync payload
-    clearSnapshot(); // Also clear TTN snapshot
   };
-  
-  // Fetch TTN snapshot when user is selected
-  const handleFetchTTNSnapshot = useCallback(async (userId: string, orgId?: string, siteId?: string) => {
-    const snapshot = await fetchSnapshot(userId, orgId, siteId);
-    if (snapshot) {
-      onTTNSnapshotChange?.(snapshot);
-      
-      // Auto-populate TTN config from snapshot
-      onConfigChange({
-        ...config,
-        ttnConfig: {
-          ...config.ttnConfig,
-          enabled: snapshot.ttn_enabled,
-          applicationId: snapshot.application_id,
-          cluster: snapshot.cluster,
-        },
-      });
-    }
-  }, [fetchSnapshot, config, onConfigChange, onTTNSnapshotChange]);
-  
-  // Refresh TTN snapshot
-  const handleRefreshSnapshot = useCallback(() => {
-    if (config.selectedUserId && config.testOrgId) {
-      handleFetchTTNSnapshot(config.selectedUserId, config.testOrgId, config.testSiteId);
-    }
-  }, [config.selectedUserId, config.testOrgId, config.testSiteId, handleFetchTTNSnapshot]);
 
   // Validation: require valid preflight + at least one entity
   const canSync = validationResult.isValid && (gateways.length > 0 || devices.length > 0);
@@ -429,8 +402,7 @@ export default function TestContextConfig({
                 contextSetAt: new Date().toISOString(),
               });
               
-              // Fetch TTN snapshot for this user
-              handleFetchTTNSnapshot(user.id, user.organization_id, siteToSelect);
+              // TTN data now comes from user.ttn via user_sync (already set in setSelectedUserTTN above)
             }}
             disabled={disabled}
             cachedUserCount={cachedUserCount}
@@ -466,17 +438,15 @@ export default function TestContextConfig({
           </p>
         </div>
 
-        {/* TTN Snapshot Panel - shows TTN settings from FrostGuard */}
-        <TTNSnapshotPanel
-          snapshot={ttnSnapshot}
-          loading={ttnSnapshotLoading}
-          error={ttnSnapshotError}
-          errorCode={ttnSnapshotErrorCode}
-          onRefresh={handleRefreshSnapshot}
-          selectedUserId={config.selectedUserId || undefined}
-          orgId={config.testOrgId}
-          siteId={config.testSiteId}
-        />
+        {/* 
+         * TTN Settings (from FrostGuard via user_sync)
+         * ================================================
+         * This is the ONLY source of TTN configuration data.
+         * TTN settings are synced from Project 1 (FrostGuard) via the user-sync
+         * edge function and stored in synced_users.ttn column.
+         * 
+         * There is NO snapshot-based fetch. All TTN data flows through user_sync.
+         */}
 
         {/* TTN Settings from User Sync Payload (Read-Only) */}
         {config.selectedUserId && (

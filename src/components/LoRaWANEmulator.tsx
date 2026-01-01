@@ -81,9 +81,6 @@ export default function LoRaWANEmulator() {
   const [showProvisioningWizard, setShowProvisioningWizard] = useState(false);
   const [provisioningMode, setProvisioningMode] = useState<'devices' | 'gateways'>('devices');
   
-  // TTN Snapshot from FrostGuard (loaded when user is selected)
-  const [ttnSnapshot, setTtnSnapshot] = useState<import('@/hooks/useTTNSnapshot').TTNSnapshot | null>(null);
-  
   // Storage keys for TTN provisioned entities
   const STORAGE_KEY_TTN_PROVISIONED = 'lorawan-emulator-ttn-provisioned';
   const STORAGE_KEY_TTN_PROVISIONED_GATEWAYS = 'lorawan-emulator-ttn-provisioned-gateways';
@@ -842,7 +839,6 @@ export default function LoRaWANEmulator() {
               currentDevEui={tempDevice?.devEui}
               orgId={webhookConfig.testOrgId}
               devices={devices}
-              ttnSnapshot={ttnSnapshot}
             />
           </TabsContent>
 
@@ -855,7 +851,6 @@ export default function LoRaWANEmulator() {
               gateways={gateways}
               devices={devices}
               onSyncResult={addSyncResult}
-              onTTNSnapshotChange={setTtnSnapshot}
             />
             <TestDashboard
               results={testResults}
