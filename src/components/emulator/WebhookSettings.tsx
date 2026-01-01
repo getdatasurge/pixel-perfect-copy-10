@@ -180,14 +180,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       let query = supabase
         .from('synced_users')
-        .select('ttn, organization_id, id, email');
+        .select('ttn, source_organization_id, id, email');
 
       if (userId) {
         console.log('[WebhookSettings] Loading TTN settings for user:', userId);
         query = query.eq('id', userId);
       } else {
         console.log('[WebhookSettings] Loading TTN settings for org:', orgId);
-        query = query.eq('organization_id', orgId);
+        query = query.eq('source_organization_id', orgId);
       }
 
       const { data: syncedUser, error: fetchError } = await query.limit(1).maybeSingle();
