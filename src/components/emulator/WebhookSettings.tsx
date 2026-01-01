@@ -141,12 +141,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     cluster: 'eu1',
   };
 
-  // Load settings from database on mount or org change
+  // Load settings from database on mount or org/user change
   useEffect(() => {
     if (orgId) {
       loadSettings();
     }
-  }, [orgId]);
+  }, [orgId, config.selectedUserId]);
 
   const loadSettings = async () => {
     if (!orgId) return;
@@ -154,15 +154,25 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     setIsLoading(true);
     try {
       // Load TTN settings from synced_users table (synced from FrostGuard)
-      const { data: syncedUsers, error: fetchError } = await supabase
+      // Query by user_id if available, otherwise by organization_id
+      const userId = config.selectedUserId;
+
+      let query = supabase
         .from('synced_users')
-        .select('ttn')
-        .eq('organization_id', orgId)
-        .limit(1)
-        .maybeSingle();
+        .select('ttn, organization_id, id, email');
+
+      if (userId) {
+        console.log('[WebhookSettings] Loading TTN settings for user:', userId);
+        query = query.eq('id', userId);
+      } else {
+        console.log('[WebhookSettings] Loading TTN settings for org:', orgId);
+        query = query.eq('organization_id', orgId);
+      }
+
+      const { data: syncedUser, error: fetchError } = await query.limit(1).maybeSingle();
 
       if (fetchError) {
-        console.error('Failed to load TTN settings from synced_users:', fetchError);
+        console.error('[WebhookSettings] Failed to load TTN settings from synced_users:', fetchError);
         toast({
           title: 'Load Failed',
           description: 'Could not load TTN settings from FrostGuard',
@@ -171,9 +181,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         return;
       }
 
-      if (syncedUsers?.ttn) {
-        const ttn = syncedUsers.ttn as any;
-        console.log('[WebhookSettings] Loaded TTN settings from synced_users:', ttn);
+      if (syncedUser?.ttn) {
+        const ttn = syncedUser.ttn as any;
+        console.log('[WebhookSettings] Loaded TTN settings from synced_users:', { ttn, user: syncedUser.email });
 
         setTtnEnabled(ttn.enabled || false);
         setTtnCluster(ttn.cluster || 'eu1');
@@ -199,10 +209,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           });
         }
       } else {
-        console.log('[WebhookSettings] No TTN settings found in synced_users for org:', orgId);
+        console.log('[WebhookSettings] No TTN settings found in synced_users for', userId ? `user ${userId}` : `org ${orgId}`);
+        toast({
+          title: 'No TTN Settings',
+          description: 'No TTN configuration found for selected user. Make sure user is synced from FrostGuard.',
+          variant: 'destructive',
+        });
       }
     } catch (err: any) {
-      console.error('Error loading settings:', err);
+      console.error('[WebhookSettings] Error loading settings:', err);
+      toast({
+        title: 'Error',
+        description: err.message || 'Failed to load TTN settings',
+        variant: 'destructive',
+      });
     } finally {
       setIsLoading(false);
     }
