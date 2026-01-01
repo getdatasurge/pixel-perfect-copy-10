@@ -315,8 +315,8 @@ export default function UserSearchDialog({ open: externalOpen, onClose, onUserSe
       siteCount: user.user_sites?.length || 0,
       sites: user.user_sites?.map(s => ({ id: s.site_id.slice(0, 8), name: s.site_name, default: s.is_default })),
     });
-    onSelectUser(user);
-    setOpen(false);
+    onUserSelect(user);
+    handleOpenChange(false);
     setSearchTerm('');
     setUsers([]);
     setHasSearched(false);
