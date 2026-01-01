@@ -81,6 +81,7 @@ export interface WebhookConfig {
   // User tracking fields
   selectedUserId?: string | null;
   selectedUserDisplayName?: string | null;
+  selectedUserSites?: Array<{ site_id: string; site_name: string | null; is_default: boolean }>;
   contextSetAt?: string | null; // ISO string for localStorage compatibility
 }
 
