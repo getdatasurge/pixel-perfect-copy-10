@@ -15,6 +15,7 @@ const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:writ
 interface TTNSettingsRequest {
   action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway';
   org_id?: string;
+  selected_user_id?: string; // For testing specific user's TTN settings
   enabled?: boolean;
   cluster?: TTNCluster;
   application_id?: string;
@@ -293,7 +294,7 @@ async function handleTestStored(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id } = body;
+  const { org_id, selected_user_id } = body;
 
   if (!org_id) {
     return buildResponse({
@@ -303,14 +304,44 @@ async function handleTestStored(
     }, 200, requestId);
   }
 
-  console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}`);
+  console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}, user ${selected_user_id || 'none'}`);
 
   // Load settings from database
-  const { data: settings, error } = await supabase
-    .from('ttn_settings')
-    .select('enabled, cluster, application_id, api_key')
-    .eq('org_id', org_id)
-    .maybeSingle();
+  // If selected_user_id is provided, load from synced_users (user's TTN settings)
+  // Otherwise, load from ttn_settings (organization's TTN settings)
+  let settings: any = null;
+  let error: any = null;
+
+  if (selected_user_id) {
+    console.log(`[${requestId}] Loading TTN settings from synced_users for user ${selected_user_id}`);
+    const { data, error: fetchError } = await supabase
+      .from('synced_users')
+      .select('ttn')
+      .eq('id', selected_user_id)
+      .maybeSingle();
+
+    error = fetchError;
+    if (data?.ttn) {
+      // Map synced_users.ttn structure to expected settings structure
+      const ttn = data.ttn as any;
+      settings = {
+        enabled: ttn.enabled || false,
+        cluster: ttn.cluster || 'eu1',
+        application_id: ttn.application_id || null,
+        api_key: null, // API key is not stored in synced_users, only last4
+      };
+    }
+  } else {
+    console.log(`[${requestId}] Loading TTN settings from ttn_settings for org ${org_id}`);
+    const { data, error: fetchError } = await supabase
+      .from('ttn_settings')
+      .select('enabled, cluster, application_id, api_key')
+      .eq('org_id', org_id)
+      .maybeSingle();
+
+    error = fetchError;
+    settings = data;
+  }
 
   if (error) {
     console.error(`[${requestId}] Failed to load settings:`, error.message);
@@ -324,7 +355,9 @@ async function handleTestStored(
   if (!settings) {
     return buildResponse({
       ok: false,
-      error: 'No TTN settings found for this organization',
+      error: selected_user_id
+        ? 'No TTN settings found for this user'
+        : 'No TTN settings found for this organization',
       code: 'NOT_CONFIGURED',
       hint: 'Save TTN settings first before testing',
     }, 200, requestId);
@@ -339,12 +372,28 @@ async function handleTestStored(
     }, 200, requestId);
   }
 
-  if (!settings.api_key) {
+  // If testing user's TTN settings but API key is not in synced_users,
+  // try to get the API key from organization's ttn_settings
+  let apiKey = settings.api_key;
+  if (selected_user_id && !apiKey) {
+    console.log(`[${requestId}] User TTN settings don't have API key, trying org ttn_settings`);
+    const { data: orgSettings } = await supabase
+      .from('ttn_settings')
+      .select('api_key')
+      .eq('org_id', org_id)
+      .maybeSingle();
+
+    apiKey = orgSettings?.api_key || null;
+  }
+
+  if (!apiKey) {
     return buildResponse({
       ok: false,
       error: 'No API key saved',
       code: 'NO_API_KEY',
-      hint: 'Enter an API key and save settings first',
+      hint: selected_user_id
+        ? 'User TTN settings are synced from FrostGuard without the full API key. Save API key in organization TTN settings to test.'
+        : 'Enter an API key and save settings first',
     }, 200, requestId);
   }
 
@@ -352,23 +401,28 @@ async function handleTestStored(
   const result = await handleTest({
     cluster: settings.cluster,
     application_id: settings.application_id,
-    api_key: settings.api_key,
+    api_key: apiKey,
   }, requestId);
 
-  // Save test result to database
+  // Save test result to database (only for org settings, not user settings)
   const resultBody = await result.clone().json();
   const testSuccess = resultBody.ok && resultBody.connected === true;
-  
-  await supabase
-    .from('ttn_settings')
-    .update({
-      last_test_at: new Date().toISOString(),
-      last_test_success: testSuccess,
-    })
-    .eq('org_id', org_id);
 
-  console.log(`[${requestId}] Saved test result: success=${testSuccess}`);
-  
+  if (!selected_user_id) {
+    // Only update ttn_settings when testing org's own TTN settings
+    await supabase
+      .from('ttn_settings')
+      .update({
+        last_test_at: new Date().toISOString(),
+        last_test_success: testSuccess,
+      })
+      .eq('org_id', org_id);
+
+    console.log(`[${requestId}] Saved test result to ttn_settings: success=${testSuccess}`);
+  } else {
+    console.log(`[${requestId}] Tested user's TTN settings (not saving to ttn_settings): success=${testSuccess}`);
+  }
+
   return result;
 }
 

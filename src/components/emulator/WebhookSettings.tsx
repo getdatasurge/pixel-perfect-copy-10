@@ -336,12 +336,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
     setIsTestingTTN(true);
     setTestResult(null);
-    
+
     try {
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
         body: {
           action: 'test_stored',
           org_id: orgId,
+          selected_user_id: config.selectedUserId || undefined, // Pass selected user ID to test their TTN settings
         },
       });
 
