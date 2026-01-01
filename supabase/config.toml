@@ -15,9 +15,6 @@ verify_jwt = false
 [functions.sync-to-frostguard]
 verify_jwt = false
 
-[functions.frostguard-search-users]
-verify_jwt = false
-
 [functions.sync-users-from-frostguard]
 verify_jwt = false
 
