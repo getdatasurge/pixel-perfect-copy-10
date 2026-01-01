@@ -124,28 +124,28 @@ serve(async (req) => {
     // Get user IDs for querying related tables
     const userIds = frostguardUsers.map(u => u.id);
 
-  // Query profiles table for default_site_id and ttn settings
-  let profilesMap: Record<string, { default_site_id: string | null; ttn: any | null }> = {};
-  try {
-    const { data: profiles, error: profilesError } = await frostguardClient
-      .from('profiles')
-      .select('id, default_site_id, ttn')
-      .in('id', userIds);
-    
-    if (profilesError) {
-      console.warn('Could not query profiles table:', profilesError.message);
-    } else if (profiles) {
-      console.log(`Found ${profiles.length} profiles with default_site_id and ttn data`);
-      profiles.forEach(p => {
-        profilesMap[p.id] = { 
-          default_site_id: p.default_site_id,
-          ttn: p.ttn || null
-        };
-      });
+    // Query profiles table for default_site_id and ttn settings
+    let profilesMap: Record<string, { default_site_id: string | null; ttn: any | null }> = {};
+    try {
+      const { data: profiles, error: profilesError } = await frostguardClient
+        .from('profiles')
+        .select('id, default_site_id, ttn')
+        .in('id', userIds);
+
+      if (profilesError) {
+        console.warn('Could not query profiles table:', profilesError.message);
+      } else if (profiles) {
+        console.log(`Found ${profiles.length} profiles with default_site_id and ttn data`);
+        profiles.forEach(p => {
+          profilesMap[p.id] = {
+            default_site_id: p.default_site_id,
+            ttn: p.ttn || null
+          };
+        });
+      }
+    } catch (err) {
+      console.warn('Profiles table query failed:', err);
     }
-  } catch (err) {
-    console.warn('Profiles table query failed:', err);
-  }
 
     // Query site memberships - try both table names
     let siteMembershipsMap: Record<string, SiteMembership[]> = {};
@@ -220,25 +220,25 @@ serve(async (req) => {
 
     const localClient = createClient(supabaseUrl, supabaseServiceKey);
 
-  // Transform and upsert users to synced_users table
-  const usersToSync = frostguardUsers.map(user => {
-    const profile = profilesMap[user.id];
-    const userSites = siteMembershipsMap[user.id] || [];
-    const defaultSite = userSites.find(s => s.is_default);
-    
-    return {
-      source_user_id: user.id,
-      email: user.email || '',
-      full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
-      source_organization_id: user.user_metadata?.organization_id || '00000000-0000-0000-0000-000000000000',
-      source_site_id: user.user_metadata?.site_id || null,
-      source_unit_id: user.user_metadata?.unit_id || null,
-      default_site_id: profile?.default_site_id || defaultSite?.site_id || null,
-      ttn: profile?.ttn || null,
-      synced_at: new Date().toISOString(),
-      last_updated_at: new Date().toISOString(),
-    };
-  });
+    // Transform and upsert users to synced_users table
+    const usersToSync = frostguardUsers.map(user => {
+      const profile = profilesMap[user.id];
+      const userSites = siteMembershipsMap[user.id] || [];
+      const defaultSite = userSites.find(s => s.is_default);
+
+      return {
+        source_user_id: user.id,
+        email: user.email || '',
+        full_name: user.user_metadata?.full_name || user.user_metadata?.name || null,
+        source_organization_id: user.user_metadata?.organization_id || '00000000-0000-0000-0000-000000000000',
+        source_site_id: user.user_metadata?.site_id || null,
+        source_unit_id: user.user_metadata?.unit_id || null,
+        default_site_id: profile?.default_site_id || defaultSite?.site_id || null,
+        ttn: profile?.ttn || null,
+        synced_at: new Date().toISOString(),
+        last_updated_at: new Date().toISOString(),
+      };
+    });
 
     const { error: upsertError } = await localClient
       .from('synced_users')

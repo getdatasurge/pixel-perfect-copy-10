@@ -294,7 +294,7 @@ async function handleTestStored(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id, selected_user_id } = body;
+  const { org_id, selected_user_id, cluster, application_id } = body;
 
   if (!org_id) {
     return buildResponse({
@@ -307,12 +307,22 @@ async function handleTestStored(
   console.log(`[${requestId}] Testing stored TTN settings for org ${org_id}, user ${selected_user_id || 'none'}`);
 
   // Load settings from database
-  // If selected_user_id is provided, load from synced_users (user's TTN settings)
-  // Otherwise, load from ttn_settings (organization's TTN settings)
+  // If cluster and application_id are provided (from user selection), use them directly
+  // Otherwise, load from database
   let settings: any = null;
   let error: any = null;
 
-  if (selected_user_id) {
+  if (selected_user_id && cluster && application_id) {
+    // Use TTN settings provided in request (from frontend, already has user's TTN data)
+    console.log(`[${requestId}] Using TTN settings from request for user ${selected_user_id}: app=${application_id}, cluster=${cluster}`);
+    settings = {
+      enabled: true,
+      cluster: cluster,
+      application_id: application_id,
+      api_key: null, // Will fetch from org settings below
+    };
+  } else if (selected_user_id) {
+    // Fallback: try to load from synced_users (if TTN data was synced)
     console.log(`[${requestId}] Loading TTN settings from synced_users for user ${selected_user_id}`);
     const { data, error: fetchError } = await supabase
       .from('synced_users')
