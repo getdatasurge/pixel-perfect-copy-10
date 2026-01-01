@@ -141,12 +141,33 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     cluster: 'eu1',
   };
 
-  // Load settings from database on mount or org/user change
+  // Load settings from config or database on mount or org/user change
   useEffect(() => {
-    if (orgId) {
+    // If TTN config is already in the config prop (from Testing page), use it directly
+    if (config.ttnConfig?.applicationId) {
+      console.log('[WebhookSettings] Using TTN config from props:', config.ttnConfig);
+      setTtnEnabled(config.ttnConfig.enabled || false);
+      setTtnCluster(config.ttnConfig.cluster || 'eu1');
+      setTtnApplicationId(config.ttnConfig.applicationId || '');
+      setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
+      setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
+      setTtnWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
+      // Don't load actual secrets from config
+      setTtnApiKey('');
+      setTtnWebhookSecret('');
+
+      // Update connection status if available
+      if (config.ttnConfig.lastTestAt) {
+        setLastTestAt(config.ttnConfig.lastTestAt);
+        setLastTestSuccess(config.ttnConfig.lastTestSuccess ?? null);
+      }
+
+      setIsLoading(false);
+    } else if (orgId) {
+      // Fallback to database query (for backward compatibility)
       loadSettings();
     }
-  }, [orgId, config.selectedUserId]);
+  }, [orgId, config.selectedUserId, config.ttnConfig]);
 
   const loadSettings = async () => {
     if (!orgId) return;

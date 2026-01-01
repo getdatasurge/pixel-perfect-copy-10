@@ -50,6 +50,9 @@ export interface TTNConfig {
   enabled: boolean;
   applicationId: string;
   cluster: string; // e.g., 'eu1', 'nam1', 'au1'
+  // Masked credentials for display (from synced_users.ttn)
+  api_key_last4?: string | null;
+  webhook_secret_last4?: string | null;
   lastStatus?: {
     code: number;
     message: string;
