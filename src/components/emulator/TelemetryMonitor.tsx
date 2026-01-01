@@ -24,8 +24,7 @@ interface TelemetryMonitorProps {
 export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
   const { telemetry, loading, getSensorStatus, refetch } = useTelemetrySubscription({
     orgId,
-    unitId,
-    enabled: !!(orgId || unitId),
+    enabled: !!orgId, // Only enabled if we have an org_id
   });
 
   const [isPulling, setIsPulling] = useState(false);
@@ -33,11 +32,11 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
   // Memoized pull function with proper dependencies
   const pullFromFrostGuard = useCallback(async (silent = false) => {
-    if (!orgId && !unitId) {
+    if (!orgId) {
       if (!silent) {
         toast({
           title: 'Error',
-          description: 'No organization or unit ID selected',
+          description: 'No organization ID selected',
           variant: 'destructive',
         });
       }
@@ -45,29 +44,43 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
     }
 
     setIsPulling(true);
+    console.log('[TelemetryMonitor] Pulling from FrostGuard...', { orgId, unitId });
 
     try {
       const { data, error } = await supabase.functions.invoke('pull-frostguard-telemetry', {
         body: {
           org_id: orgId,
-          unit_id: unitId,
+          // Note: unitId here is the override string like "freezer-01", not a UUID
+          // So we only query by org_id to get all telemetry for the organization
           sync_to_local: true, // Sync to local database for realtime subscription to pick up
         },
       });
 
-      if (error) throw error;
+      console.log('[TelemetryMonitor] Response:', { data, error });
+
+      if (error) {
+        console.error('[TelemetryMonitor] Edge function error:', error);
+        throw error;
+      }
+
+      if (data?.error) {
+        console.error('[TelemetryMonitor] API error:', data.error);
+        throw new Error(data.error);
+      }
+
+      console.log(`[TelemetryMonitor] Successfully pulled ${data?.count || 0} records`);
 
       if (!silent) {
         toast({
           title: 'Success',
-          description: `Pulled ${data.count} telemetry record(s) from FrostGuard`,
+          description: `Pulled ${data?.count || 0} telemetry record(s) from FrostGuard`,
         });
       }
 
       // Refetch to get the latest data
       refetch();
     } catch (error) {
-      console.error('Error pulling from FrostGuard:', error);
+      console.error('[TelemetryMonitor] Error pulling from FrostGuard:', error);
       if (!silent) {
         toast({
           title: 'Error',
@@ -82,7 +95,7 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
   // Auto-pull from FrostGuard on mount and periodically
   useEffect(() => {
-    if (!autoPullEnabled || (!orgId && !unitId)) return;
+    if (!autoPullEnabled || !orgId) return;
 
     const pullData = async () => {
       try {
@@ -99,7 +112,7 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
     const interval = setInterval(pullData, 30000);
 
     return () => clearInterval(interval);
-  }, [orgId, unitId, autoPullEnabled, pullFromFrostGuard]);
+  }, [orgId, autoPullEnabled, pullFromFrostGuard]);
 
   // Determine data source
   const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
@@ -184,13 +197,13 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
       </div>
 
       {/* No Context Warning */}
-      {!orgId && !unitId && (
+      {!orgId && (
         <Card className="border-amber-500/50 bg-amber-500/5">
           <CardContent className="pt-6">
             <div className="flex items-start gap-3">
               <AlertTriangle className="h-5 w-5 text-amber-500 mt-0.5" />
               <div>
-                <p className="font-medium text-sm mb-1">No Test Context Selected</p>
+                <p className="font-medium text-sm mb-1">No Organization Context Selected</p>
                 <p className="text-xs text-muted-foreground">
                   Go to the <strong>Testing</strong> tab and select a user/organization context to pull telemetry data from FrostGuard.
                 </p>
@@ -201,7 +214,7 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
       )}
 
       {/* Pull from FrostGuard Controls */}
-      {(orgId || unitId) && (
+      {orgId && (
         <div className="flex items-center gap-2">
           <Button
             onClick={() => pullFromFrostGuard(false)}
