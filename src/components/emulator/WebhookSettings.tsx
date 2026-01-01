@@ -150,51 +150,56 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
   const loadSettings = async () => {
     if (!orgId) return;
-    
+
     setIsLoading(true);
     try {
-      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
-        body: { action: 'load', org_id: orgId },
-      });
+      // Load TTN settings from synced_users table (synced from FrostGuard)
+      const { data: syncedUsers, error: fetchError } = await supabase
+        .from('synced_users')
+        .select('ttn')
+        .eq('organization_id', orgId)
+        .limit(1)
+        .maybeSingle();
 
-      if (error) {
-        console.error('Failed to load TTN settings:', error);
+      if (fetchError) {
+        console.error('Failed to load TTN settings from synced_users:', fetchError);
         toast({
           title: 'Load Failed',
-          description: error.message || 'Could not load TTN settings',
+          description: 'Could not load TTN settings from FrostGuard',
           variant: 'destructive',
         });
         return;
       }
 
-      if (data?.ok && data?.settings) {
-        const settings: TTNSettingsFromDB = data.settings;
-        setTtnEnabled(settings.enabled);
-        setTtnCluster(settings.cluster);
-        setTtnApplicationId(settings.application_id || '');
-        setTtnApiKeyPreview(settings.api_key_preview);
-        setTtnApiKeySet(settings.api_key_set || false);
-        setTtnWebhookSecretSet(settings.webhook_secret_set || false);
+      if (syncedUsers?.ttn) {
+        const ttn = syncedUsers.ttn as any;
+        console.log('[WebhookSettings] Loaded TTN settings from synced_users:', ttn);
+
+        setTtnEnabled(ttn.enabled || false);
+        setTtnCluster(ttn.cluster || 'eu1');
+        setTtnApplicationId(ttn.application_id || '');
+        setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
+        setTtnApiKeySet(!!(ttn.api_key_last4));
+        setTtnWebhookSecretSet(!!(ttn.webhook_secret_last4));
         // Don't load actual secrets, just show preview
         setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
-        
+
         // Load connection status
-        if (settings.last_test_at) {
-          setLastTestAt(new Date(settings.last_test_at));
+        if (ttn.updated_at) {
+          setLastTestAt(new Date(ttn.updated_at));
         }
-        setLastTestSuccess(settings.last_test_success ?? null);
-        
+
         // Update parent config
-        if (settings.enabled) {
-          updateTTN({ 
-            enabled: settings.enabled, 
-            applicationId: settings.application_id || '', 
-            cluster: settings.cluster,
-            lastTestAt: settings.last_test_at ? new Date(settings.last_test_at) : null,
-            lastTestSuccess: settings.last_test_success,
+        if (ttn.enabled) {
+          updateTTN({
+            enabled: ttn.enabled,
+            applicationId: ttn.application_id || '',
+            cluster: ttn.cluster || 'eu1',
           });
         }
+      } else {
+        console.log('[WebhookSettings] No TTN settings found in synced_users for org:', orgId);
       }
     } catch (err: any) {
       console.error('Error loading settings:', err);
