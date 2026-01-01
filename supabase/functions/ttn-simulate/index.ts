@@ -264,35 +264,52 @@ serve(async (req) => {
     const body: SimulateUplinkRequest = await req.json();
     let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
 
-    // Load TTN API key from org settings
-    // Frontend provides application_id and cluster (user-specific)
-    // We only need to fetch the API key (org-level credential)
+    // Load TTN credentials - prioritize user's full API key
     let apiKey: string | undefined;
     let applicationId: string | undefined;
     let cluster: string | undefined;
     let settingsSource = 'request';
 
-    // Use application_id and cluster from request body (user-specific TTN app)
-    applicationId = body.applicationId;
-    cluster = body.cluster;
+    // Priority 1: Try to load user's full API key from synced_users.ttn
+    if (selected_user_id) {
+      console.log(`[ttn-simulate] Checking user TTN settings for: ${selected_user_id}`);
+      const userSettings = await loadUserSettings(selected_user_id);
 
-    // Fetch API key from org's TTN settings
-    if (org_id) {
-      console.log(`Loading TTN API key for org: ${org_id}`);
-      const orgSettings = await loadOrgSettings(org_id);
-
-      if (orgSettings?.api_key) {
-        apiKey = orgSettings.api_key;
-        settingsSource = 'org_settings';
-        console.log(`Using org API key with user's TTN app: cluster=${cluster}, app=${applicationId}`);
+      if (userSettings?.api_key && userSettings?.application_id) {
+        // User has full API key in synced_users.ttn
+        apiKey = userSettings.api_key;
+        applicationId = userSettings.application_id;
+        cluster = userSettings.cluster;
+        settingsSource = 'user_settings';
+        console.log(`[ttn-simulate] Using user's API key with app: ${applicationId}, cluster: ${cluster}`);
+      } else {
+        console.log(`[ttn-simulate] User has no full API key, will use org credentials with user's app`);
       }
     }
 
-    // Fallback to global secret if no org API key
+    // If user doesn't have API key, use request body for app/cluster and org API key
+    if (!apiKey) {
+      applicationId = body.applicationId;
+      cluster = body.cluster;
+
+      // Priority 2: Load org's API key from ttn_settings
+      if (org_id) {
+        console.log(`[ttn-simulate] Loading org API key for: ${org_id}`);
+        const orgSettings = await loadOrgSettings(org_id);
+
+        if (orgSettings?.api_key) {
+          apiKey = orgSettings.api_key;
+          settingsSource = 'org_settings';
+          console.log(`[ttn-simulate] Using org API key with user's app: ${applicationId}, cluster: ${cluster}`);
+        }
+      }
+    }
+
+    // Priority 3: Fallback to global secret
     if (!apiKey) {
       apiKey = Deno.env.get('TTN_API_KEY');
       settingsSource = 'global_secret';
-      console.log(`Using global API key`);
+      console.log(`[ttn-simulate] Using global API key`);
     }
 
     // Convert legacy eui-xxx format to canonical sensor-xxx format
