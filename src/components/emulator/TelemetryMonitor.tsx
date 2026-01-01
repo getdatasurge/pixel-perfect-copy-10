@@ -116,9 +116,9 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
   // Determine data source
   const useDbTelemetry = !!(telemetry && telemetry.last_uplink_at);
-  
+
   // Calculate sensor status from telemetry
-  const sensorStatus = telemetry 
+  const sensorStatus = telemetry
     ? getSensorStatus(
         telemetry.last_uplink_at,
         telemetry.expected_checkin_minutes,
@@ -141,42 +141,42 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   };
 
   const getDoorStatusIcon = () => {
-    const isOpen = useDbTelemetry 
+    const isOpen = useDbTelemetry
       ? telemetry?.door_state === 'open'
       : localState?.doorOpen;
-    
-    return isOpen 
+
+    return isOpen
       ? <DoorOpen className="h-6 w-6 text-orange-500" />
       : <DoorClosed className="h-6 w-6 text-green-500" />;
   };
 
   const getDoorStatusText = () => {
     if (useDbTelemetry) {
-      return telemetry?.door_state === 'unknown' 
-        ? 'Unknown' 
+      return telemetry?.door_state === 'unknown'
+        ? 'Unknown'
         : telemetry?.door_state?.toUpperCase();
     }
     return localState?.doorOpen ? 'OPEN' : 'CLOSED';
   };
 
   // Values from DB or fallback to local
-  const tempValue = useDbTelemetry 
-    ? telemetry?.last_temp_f 
+  const tempValue = useDbTelemetry
+    ? telemetry?.last_temp_f
     : localState?.currentTemp;
-  
-  const humidityValue = useDbTelemetry 
-    ? telemetry?.last_humidity 
+
+  const humidityValue = useDbTelemetry
+    ? telemetry?.last_humidity
     : localState?.humidity;
-  
-  const batteryValue = useDbTelemetry 
-    ? telemetry?.battery_pct 
+
+  const batteryValue = useDbTelemetry
+    ? telemetry?.battery_pct
     : localState?.batteryLevel;
-  
-  const signalValue = useDbTelemetry 
-    ? telemetry?.rssi_dbm 
+
+  const signalValue = useDbTelemetry
+    ? telemetry?.rssi_dbm
     : localState?.signalStrength;
 
-  const lastUplinkText = telemetry?.last_uplink_at 
+  const lastUplinkText = telemetry?.last_uplink_at
     ? formatDistanceToNow(new Date(telemetry.last_uplink_at), { addSuffix: true })
     : 'Never';
 
@@ -243,8 +243,8 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
           <div className="grid grid-cols-2 gap-4">
             <div className="text-center">
               <div className="text-3xl font-bold">
-                {tempValue !== null && tempValue !== undefined 
-                  ? `${Number(tempValue).toFixed(1)}°F` 
+                {tempValue !== null && tempValue !== undefined
+                  ? `${Number(tempValue).toFixed(1)}°F`
                   : '-- --'}
               </div>
               <div className="text-xs text-muted-foreground">Temperature</div>
@@ -252,8 +252,8 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
             <div className="text-center">
               <div className="text-3xl font-bold flex items-center justify-center gap-1">
                 <Droplets className="h-5 w-5 text-blue-500" />
-                {humidityValue !== null && humidityValue !== undefined 
-                  ? `${Number(humidityValue).toFixed(0)}%` 
+                {humidityValue !== null && humidityValue !== undefined
+                  ? `${Number(humidityValue).toFixed(0)}%`
                   : '-- --'}
               </div>
               <div className="text-xs text-muted-foreground">Humidity</div>
@@ -297,8 +297,8 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
               <span className="text-sm">Battery</span>
             </div>
             <span className="font-medium">
-              {batteryValue !== null && batteryValue !== undefined 
-                ? `${Math.round(Number(batteryValue))}%` 
+              {batteryValue !== null && batteryValue !== undefined
+                ? `${Math.round(Number(batteryValue))}%`
                 : '-- --'}
             </span>
           </div>
@@ -310,8 +310,8 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
               <span className="text-sm">Signal</span>
             </div>
             <span className="font-medium">
-              {signalValue !== null && signalValue !== undefined 
-                ? `${Math.round(Number(signalValue))} dBm` 
+              {signalValue !== null && signalValue !== undefined
+                ? `${Math.round(Number(signalValue))} dBm`
                 : '-- --'}
             </span>
           </div>
