@@ -166,6 +166,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     } else if (orgId) {
       // Fallback to database query (for backward compatibility)
       loadSettings();
+    } else {
+      // No config and no orgId - just set loading to false
+      setIsLoading(false);
     }
   }, [orgId, config.selectedUserId, config.ttnConfig]);
 
