@@ -58,7 +58,7 @@ export interface TTNConfig {
     message: string;
     timestamp: Date;
   };
-  lastTestAt?: Date | null;
+  lastTestAt?: Date | string | null;
   lastTestSuccess?: boolean | null;
 }
 

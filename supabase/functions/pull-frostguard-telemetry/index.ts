@@ -83,8 +83,17 @@ serve(async (req) => {
         );
       }
 
-      // Use view data
-      return handleViewData(viewData, sync_to_local);
+      // Use view data directly
+      return new Response(
+        JSON.stringify({
+          success: true,
+          data: viewData,
+          count: viewData?.length || 0,
+          source: 'unit_telemetry_view',
+          synced_to_local: false,
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
     }
 
     if (!uplinkData || uplinkData.length === 0) {
