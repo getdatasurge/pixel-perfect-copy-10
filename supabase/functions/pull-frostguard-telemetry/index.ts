@@ -42,85 +42,122 @@ serve(async (req) => {
 
     const frostguard = createClient(frostguardUrl, frostguardKey);
 
-    // Build query to pull telemetry from FrostGuard
+    // Try to query sensor_uplinks table first (raw telemetry data)
+    // This table should exist in FrostGuard based on the TTN webhook architecture
     let query = frostguard
-      .from('unit_telemetry')
+      .from('sensor_uplinks')
       .select('*');
 
-    if (unit_id) {
-      query = query.eq('unit_id', unit_id);
-    } else if (org_id) {
+    if (org_id) {
       query = query.eq('org_id', org_id);
+    } else if (unit_id) {
+      query = query.eq('unit_id', unit_id);
     }
 
-    // Get the most recent telemetry
-    query = query.order('updated_at', { ascending: false }).limit(10);
+    // Get the most recent uplinks
+    query = query.order('received_at', { ascending: false }).limit(10);
 
-    const { data: telemetryData, error: fetchError } = await query;
+    const { data: uplinkData, error: fetchError } = await query;
 
     if (fetchError) {
-      console.error('Error fetching from FrostGuard:', fetchError);
-      return new Response(
-        JSON.stringify({ error: `Failed to fetch from FrostGuard: ${fetchError.message}` }),
-        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      console.error('Error fetching from FrostGuard sensor_uplinks:', fetchError);
+
+      // Try the unit_telemetry_view if it exists
+      const viewQuery = frostguard
+        .from('unit_telemetry_view')
+        .select('*')
+        .eq('org_id', org_id)
+        .order('updated_at', { ascending: false })
+        .limit(10);
+
+      const { data: viewData, error: viewError } = await viewQuery;
+
+      if (viewError) {
+        console.error('Error fetching from FrostGuard unit_telemetry_view:', viewError);
+        return new Response(
+          JSON.stringify({
+            error: `FrostGuard doesn't have telemetry tables. Tables tried: sensor_uplinks, unit_telemetry_view`,
+            details: `sensor_uplinks error: ${fetchError.message}, view error: ${viewError.message}`
+          }),
+          { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
+
+      // Use view data
+      return handleViewData(viewData, sync_to_local);
     }
 
-    if (!telemetryData || telemetryData.length === 0) {
+    if (!uplinkData || uplinkData.length === 0) {
       return new Response(
         JSON.stringify({
           success: true,
           data: [],
-          message: 'No telemetry data found in FrostGuard'
+          message: 'No telemetry data found in FrostGuard',
+          count: 0,
+          synced_to_local: false,
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
+    console.log(`Found ${uplinkData.length} sensor uplinks from FrostGuard`);
+
     // Optionally sync to local database
-    if (sync_to_local && telemetryData.length > 0) {
+    if (sync_to_local && uplinkData.length > 0) {
       const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
       const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
       const localSupabase = createClient(supabaseUrl, supabaseServiceKey);
 
-      // Upsert each telemetry record to local database
-      for (const record of telemetryData) {
+      // Convert sensor_uplinks to unit_telemetry format
+      // We'll aggregate the most recent data per unit_id
+      const telemetryByUnit = new Map();
+
+      for (const uplink of uplinkData) {
+        const unitId = uplink.unit_id;
+        if (!unitId) continue;
+
+        const payload = uplink.payload_json || {};
+
+        if (!telemetryByUnit.has(unitId)) {
+          telemetryByUnit.set(unitId, {
+            unit_id: unitId,
+            org_id: uplink.org_id,
+            last_temp_f: payload.temperature || null,
+            last_humidity: payload.humidity || null,
+            door_state: payload.door_status || 'unknown',
+            battery_pct: uplink.battery_pct,
+            rssi_dbm: uplink.rssi_dbm,
+            snr_db: uplink.snr_db,
+            last_uplink_at: uplink.received_at,
+            updated_at: uplink.received_at,
+            expected_checkin_minutes: 5,
+            warn_after_missed: 1,
+            critical_after_missed: 5,
+          });
+        }
+      }
+
+      // Upsert aggregated telemetry
+      for (const [unitId, telemetry] of telemetryByUnit) {
         const { error: upsertError } = await localSupabase
           .from('unit_telemetry')
-          .upsert({
-            id: record.id,
-            unit_id: record.unit_id,
-            org_id: record.org_id,
-            last_temp_f: record.last_temp_f,
-            last_humidity: record.last_humidity,
-            door_state: record.door_state,
-            last_door_event_at: record.last_door_event_at,
-            battery_pct: record.battery_pct,
-            rssi_dbm: record.rssi_dbm,
-            snr_db: record.snr_db,
-            last_uplink_at: record.last_uplink_at,
-            updated_at: record.updated_at,
-            expected_checkin_minutes: record.expected_checkin_minutes,
-            warn_after_missed: record.warn_after_missed,
-            critical_after_missed: record.critical_after_missed,
-          }, {
-            onConflict: 'id'
+          .upsert(telemetry, {
+            onConflict: 'unit_id'
           });
 
         if (upsertError) {
           console.error('Error syncing to local database:', upsertError);
-          // Continue with other records even if one fails
         }
       }
 
-      console.log(`Synced ${telemetryData.length} telemetry records to local database`);
+      console.log(`Synced ${telemetryByUnit.size} telemetry records to local database from ${uplinkData.length} uplinks`);
     }
 
     return new Response(
       JSON.stringify({
         success: true,
-        data: telemetryData,
-        count: telemetryData.length,
+        data: uplinkData,
+        count: uplinkData.length,
         synced_to_local: sync_to_local,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
