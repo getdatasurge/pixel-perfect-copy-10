@@ -41,6 +41,8 @@ import {
   buildTTNPayload 
 } from '@/lib/ttn-payload';
 import { assignDeviceToUnit, fetchOrgState } from '@/lib/frostguardOrgSync';
+import { log } from '@/lib/debugLogger';
+import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
 import CreateUnitModal from './emulator/CreateUnitModal';
 
 interface LogEntry {
@@ -360,6 +362,14 @@ export default function LoRaWANEmulator() {
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
         const deviceId = `sensor-${normalizedDevEui}`;
         
+        // Log request to debug terminal
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
+          deviceId,
+          applicationId: ttnConfig.applicationId,
+          cluster: ttnConfig.cluster,
+          fPort: 1,
+        });
+
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
@@ -372,8 +382,86 @@ export default function LoRaWANEmulator() {
           },
         });
 
-        if (error) throw error;
-        if (data && !data.success) throw new Error(data.error || 'TTN API error');
+        // Handle Supabase invoke error (network, etc)
+        if (error) {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
+            error: error.message,
+            errorType: 'invoke_error',
+          });
+          throw error;
+        }
+        
+        // Handle TTN-level error (API returned non-success)
+        if (data && !data.success) {
+          const ttnError = {
+            message: data.error || 'TTN API error',
+            hint: data.hint,
+            errorType: data.errorType,
+            status: data.status,
+            cluster: data.cluster_used || data.cluster,
+            requiredRights: data.requiredRights,
+            requestId: data.request_id,
+          };
+          
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
+            error: ttnError.message,
+            hint: ttnError.hint,
+            errorType: ttnError.errorType,
+            status: ttnError.status,
+            cluster_used: ttnError.cluster,
+            required_rights: ttnError.requiredRights,
+            request_id: ttnError.requestId,
+          });
+          
+          // Log to snapshot history
+          logTTNSimulateEvent({
+            timestamp: new Date().toISOString(),
+            device_id: deviceId,
+            application_id: ttnConfig.applicationId,
+            cluster: ttnError.cluster,
+            status: 'error',
+            status_code: ttnError.status,
+            request_id: ttnError.requestId,
+            error_type: ttnError.errorType,
+            error: ttnError.message,
+            hint: ttnError.hint,
+            required_rights: ttnError.requiredRights,
+          });
+          
+          // Show actionable hint in logs
+          if (ttnError.hint) {
+            addLog('error', `💡 ${ttnError.hint}`);
+          }
+          
+          // Show rich error toast for permission errors
+          if (ttnError.errorType === 'permission_error') {
+            toast({
+              title: 'TTN Permission Error',
+              description: `${ttnError.message}. ${ttnError.hint || ''}`,
+              variant: 'destructive',
+            });
+          }
+          
+          throw new Error(ttnError.message);
+        }
+        
+        // Log success
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
+          deviceId,
+          applicationId: data?.applicationId || ttnConfig.applicationId,
+          settingsSource: data?.settingsSource,
+        });
+        
+        // Log to snapshot history
+        logTTNSimulateEvent({
+          timestamp: new Date().toISOString(),
+          device_id: deviceId,
+          application_id: data?.applicationId || ttnConfig.applicationId,
+          cluster: data?.cluster || ttnConfig.cluster,
+          status: 'success',
+          request_id: data?.request_id,
+          settings_source: data?.settingsSource,
+        });
         
         testResult.ttnStatus = 'success';
         testResult.webhookStatus = 'success';
@@ -479,6 +567,14 @@ export default function LoRaWANEmulator() {
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
         const deviceId = `sensor-${normalizedDevEui}`;
         
+        // Log request to debug terminal
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
+          deviceId,
+          applicationId: ttnConfig.applicationId,
+          cluster: ttnConfig.cluster,
+          fPort: 2,
+        });
+
         const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
@@ -491,8 +587,86 @@ export default function LoRaWANEmulator() {
           },
         });
 
-        if (error) throw error;
-        if (data && !data.success) throw new Error(data.error || 'TTN API error');
+        // Handle Supabase invoke error (network, etc)
+        if (error) {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
+            error: error.message,
+            errorType: 'invoke_error',
+          });
+          throw error;
+        }
+        
+        // Handle TTN-level error (API returned non-success)
+        if (data && !data.success) {
+          const ttnError = {
+            message: data.error || 'TTN API error',
+            hint: data.hint,
+            errorType: data.errorType,
+            status: data.status,
+            cluster: data.cluster_used || data.cluster,
+            requiredRights: data.requiredRights,
+            requestId: data.request_id,
+          };
+          
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
+            error: ttnError.message,
+            hint: ttnError.hint,
+            errorType: ttnError.errorType,
+            status: ttnError.status,
+            cluster_used: ttnError.cluster,
+            required_rights: ttnError.requiredRights,
+            request_id: ttnError.requestId,
+          });
+          
+          // Log to snapshot history
+          logTTNSimulateEvent({
+            timestamp: new Date().toISOString(),
+            device_id: deviceId,
+            application_id: ttnConfig.applicationId,
+            cluster: ttnError.cluster,
+            status: 'error',
+            status_code: ttnError.status,
+            request_id: ttnError.requestId,
+            error_type: ttnError.errorType,
+            error: ttnError.message,
+            hint: ttnError.hint,
+            required_rights: ttnError.requiredRights,
+          });
+          
+          // Show actionable hint in logs
+          if (ttnError.hint) {
+            addLog('error', `💡 ${ttnError.hint}`);
+          }
+          
+          // Show rich error toast for permission errors
+          if (ttnError.errorType === 'permission_error') {
+            toast({
+              title: 'TTN Permission Error',
+              description: `${ttnError.message}. ${ttnError.hint || ''}`,
+              variant: 'destructive',
+            });
+          }
+          
+          throw new Error(ttnError.message);
+        }
+        
+        // Log success
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
+          deviceId,
+          applicationId: data?.applicationId || ttnConfig.applicationId,
+          settingsSource: data?.settingsSource,
+        });
+        
+        // Log to snapshot history
+        logTTNSimulateEvent({
+          timestamp: new Date().toISOString(),
+          device_id: deviceId,
+          application_id: data?.applicationId || ttnConfig.applicationId,
+          cluster: data?.cluster || ttnConfig.cluster,
+          status: 'success',
+          request_id: data?.request_id,
+          settings_source: data?.settingsSource,
+        });
         
         testResult.ttnStatus = 'success';
         testResult.webhookStatus = 'success';

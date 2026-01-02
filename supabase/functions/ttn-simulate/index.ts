@@ -4,7 +4,8 @@ import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-sync-api-key',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
 
 interface SimulateUplinkRequest {
@@ -255,8 +256,11 @@ async function checkDeviceExists(
 }
 
 serve(async (req) => {
+  // Generate unique request ID for traceability
+  const requestId = crypto.randomUUID();
+  
   // Debug logging for incoming requests
-  console.log(`[ttn-simulate] ${req.method} request from ${req.headers.get('origin') || 'unknown origin'}`);
+  console.log(`[ttn-simulate][${requestId}] ${req.method} request from ${req.headers.get('origin') || 'unknown origin'}`);
 
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
@@ -266,6 +270,8 @@ serve(async (req) => {
   try {
     const body: SimulateUplinkRequest = await req.json();
     let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
+    
+    console.log(`[ttn-simulate][${requestId}] Processing request`, { deviceId, org_id, selected_user_id });
 
     // Load TTN credentials - prioritize user's full API key
     let apiKey: string | undefined;
@@ -275,23 +281,24 @@ serve(async (req) => {
 
     // ONLY use user's full API key from synced_users.ttn (no org fallback)
     if (!selected_user_id) {
-      console.error('[ttn-simulate] No selected_user_id provided');
+      console.error(`[ttn-simulate][${requestId}] No selected_user_id provided`);
       return new Response(
         JSON.stringify({
           success: false,
           error: 'No user selected. Please select a user from the user selector to simulate TTN uplinks.',
           errorType: 'no_user_selected',
           hint: 'Use the user selector at the top of the page to choose a user with TTN credentials.',
+          request_id: requestId,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`[ttn-simulate] Loading user TTN settings for: ${selected_user_id}`);
+    console.log(`[ttn-simulate][${requestId}] Loading user TTN settings for: ${selected_user_id}`);
     const userSettings = await loadUserSettings(selected_user_id);
 
     if (!userSettings) {
-      console.error(`[ttn-simulate] No TTN settings found for user ${selected_user_id}`);
+      console.error(`[ttn-simulate][${requestId}] No TTN settings found for user ${selected_user_id}`);
       return new Response(
         JSON.stringify({
           success: false,
@@ -299,6 +306,7 @@ serve(async (req) => {
           errorType: 'no_user_settings',
           hint: 'Trigger a user sync from FrostGuard to populate TTN credentials for this user.',
           userId: selected_user_id,
+          request_id: requestId,
         }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -334,7 +342,7 @@ serve(async (req) => {
 
     // Final validation
     if (!apiKey || !applicationId) {
-      console.error(`[ttn-simulate] Incomplete TTN settings after fallback: hasApiKey=${!!apiKey}, hasApplicationId=${!!applicationId}`);
+      console.error(`[ttn-simulate][${requestId}] Incomplete TTN settings after fallback: hasApiKey=${!!apiKey}, hasApplicationId=${!!applicationId}`);
       return new Response(
         JSON.stringify({
           success: false,
@@ -346,12 +354,13 @@ serve(async (req) => {
           hasApiKey: !!apiKey,
           hasApplicationId: !!applicationId,
           settingsSource,
+          request_id: requestId,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    console.log(`[ttn-simulate] TTN_REQUEST`, {
+    console.log(`[ttn-simulate][${requestId}] TTN_REQUEST`, {
       endpoint: 'simulate-uplink',
       deviceId,
       apiKeyLast4_used: apiKey.slice(-4),
@@ -373,7 +382,7 @@ serve(async (req) => {
     // Validate configuration
     const validationError = validateConfig(applicationId!, deviceId, cluster!);
     if (validationError) {
-      console.error('Validation error:', validationError);
+      console.error(`[ttn-simulate][${requestId}] Validation error:`, validationError);
       return new Response(
         JSON.stringify({ 
           success: false, 
@@ -381,6 +390,7 @@ serve(async (req) => {
           errorType: 'validation_error',
           deviceId,
           expectedFormat: 'sensor-XXXXXXXXXXXXXXXX',
+          request_id: requestId,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -398,7 +408,7 @@ serve(async (req) => {
     // Preflight check: verify device exists in TTN
     const deviceCheck = await checkDeviceExists(cluster!, applicationId!, deviceId, apiKey);
     if (!deviceCheck.exists) {
-      console.error('Preflight check failed: device not found in TTN');
+      console.error(`[ttn-simulate][${requestId}] Preflight check failed: device not found in TTN`);
       return new Response(
         JSON.stringify({ 
           success: false, 
@@ -408,6 +418,9 @@ serve(async (req) => {
           deviceId,
           applicationId,
           cluster,
+          cluster_used: cluster,
+          host_used: `${cluster}.cloud.thethings.network`,
+          request_id: requestId,
         }),
         { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -455,8 +468,8 @@ serve(async (req) => {
     });
 
     const responseText = await response.text();
-    console.log('TTN API response status:', response.status);
-    console.log('TTN API response:', responseText);
+    console.log(`[ttn-simulate][${requestId}] TTN API response status:`, response.status);
+    console.log(`[ttn-simulate][${requestId}] TTN API response:`, responseText);
 
     if (!response.ok) {
       const parsedError = parseTTNError(response.status, responseText, applicationId!, deviceId);
@@ -475,6 +488,7 @@ serve(async (req) => {
           cluster_used: cluster,
           host_used: `${cluster}.cloud.thethings.network`,
           settingsSource,
+          request_id: requestId,
           cluster_hint: response.status === 404 
             ? `Device not found on ${cluster}.cloud.thethings.network. Verify this is the correct cluster for your TTN Console.`
             : undefined,
@@ -486,6 +500,8 @@ serve(async (req) => {
       );
     }
 
+    console.log(`[ttn-simulate][${requestId}] Success: uplink simulated for ${deviceId}`);
+
     // TTN simulate endpoint returns empty response on success
     return new Response(
       JSON.stringify({ 
@@ -496,13 +512,14 @@ serve(async (req) => {
         cluster,
         applicationId,
         deviceId,
+        request_id: requestId,
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error('Error in ttn-simulate function:', error);
+    console.error(`[ttn-simulate] Error in function:`, error);
     return new Response(
       JSON.stringify({ success: false, error: errorMessage, errorType: 'internal_error' }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
