@@ -253,15 +253,24 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         if (error.message?.includes('401') || error.message?.includes('403')) {
           debug.error('Auth/permission error - not retrying', { error: lastError });
           endTiming();
+          const statusCode = error.message?.includes('401') ? 401 : 403;
+          const errorDetails: FrostGuardErrorDetails = {
+            status_code: statusCode,
+            error_code: `HTTP_${statusCode}`,
+            message: lastError,
+            hint: getErrorHint(statusCode),
+            diagnostics: buildDiagnostics(),
+          };
           logOrgSyncEvent({
             timestamp: new Date().toISOString(),
             status: 'error',
             duration_ms: Math.round(performance.now() - startTime),
             error: lastError,
-            error_code: error.message?.includes('401') ? 'HTTP_401' : 'HTTP_403',
+            error_code: `HTTP_${statusCode}`,
+            status_code: statusCode,
             endpoint: 'fetch-org-state',
           });
-          return { ok: false, error: lastError };
+          return { ok: false, error: lastError, errorDetails };
         }
         
         // Wait before retrying for transient errors
@@ -273,28 +282,42 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         }
         
         endTiming();
+        const errorDetails: FrostGuardErrorDetails = {
+          error_code: 'RETRY_EXHAUSTED',
+          message: lastError,
+          hint: 'Multiple retry attempts failed. Check network connectivity and try again.',
+          diagnostics: buildDiagnostics(),
+        };
         logOrgSyncEvent({
           timestamp: new Date().toISOString(),
           status: 'error',
           duration_ms: Math.round(performance.now() - startTime),
           error: lastError,
+          error_code: 'RETRY_EXHAUSTED',
           endpoint: 'fetch-org-state',
         });
-        return { ok: false, error: lastError };
+        return { ok: false, error: lastError, errorDetails };
       }
 
       if (!data) {
         lastError = 'No data returned from fetch-org-state';
         debug.error(lastError, { org_id: orgId });
         endTiming();
+        const errorDetails: FrostGuardErrorDetails = {
+          error_code: 'NO_DATA',
+          message: lastError,
+          hint: 'Edge function returned empty response. Check function logs.',
+          diagnostics: buildDiagnostics(),
+        };
         logOrgSyncEvent({
           timestamp: new Date().toISOString(),
           status: 'error',
           duration_ms: Math.round(performance.now() - startTime),
           error: lastError,
+          error_code: 'NO_DATA',
           endpoint: 'fetch-org-state',
         });
-        return { ok: false, error: lastError };
+        return { ok: false, error: lastError, errorDetails };
       }
 
       if (!data.ok) {
