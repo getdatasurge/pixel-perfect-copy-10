@@ -304,28 +304,61 @@ serve(async (req) => {
       );
     }
 
-    if (!userSettings.api_key || !userSettings.application_id) {
-      console.error(`[ttn-simulate] User ${selected_user_id} has incomplete TTN settings`);
+    // Get application_id and cluster from user settings
+    applicationId = userSettings.application_id || undefined;
+    cluster = userSettings.cluster;
+
+    // Try to get API key from user settings first
+    if (userSettings.api_key) {
+      apiKey = userSettings.api_key;
+      settingsSource = 'user_settings';
+      console.log(`[ttn-simulate] Using user's API key (last4: ****${apiKey.slice(-4)}) with app: ${applicationId}, cluster: ${cluster}`);
+    } else if (org_id) {
+      // Fallback: load API key from org's ttn_settings (canonical source)
+      console.log(`[ttn-simulate] User settings missing API key, checking org ttn_settings for org ${org_id}`);
+      const orgSettings = await loadOrgSettings(org_id);
+      
+      if (orgSettings?.api_key) {
+        apiKey = orgSettings.api_key;
+        settingsSource = 'org_ttn_settings';
+        // Use org settings for app/cluster if user settings didn't have them
+        if (!applicationId && orgSettings.application_id) {
+          applicationId = orgSettings.application_id;
+        }
+        if (!cluster && orgSettings.cluster) {
+          cluster = orgSettings.cluster;
+        }
+        console.log(`[ttn-simulate] Using org API key from ttn_settings (last4: ****${apiKey.slice(-4)}) with app: ${applicationId}, cluster: ${cluster}`);
+      }
+    }
+
+    // Final validation
+    if (!apiKey || !applicationId) {
+      console.error(`[ttn-simulate] Incomplete TTN settings after fallback: hasApiKey=${!!apiKey}, hasApplicationId=${!!applicationId}`);
       return new Response(
         JSON.stringify({
           success: false,
-          error: 'User has incomplete TTN settings. Missing API key or application ID.',
-          errorType: 'incomplete_user_settings',
-          hint: 'Verify that FrostGuard is sending the full decrypted API key in the sync payload.',
+          error: 'Incomplete TTN settings. Missing API key or application ID.',
+          errorType: 'incomplete_settings',
+          hint: apiKey ? 'Application ID is missing. Configure TTN settings in Webhook Settings.' : 'API key is missing. Save your API key in Webhook Settings → TTN Configuration.',
           userId: selected_user_id,
-          hasApiKey: !!userSettings.api_key,
-          hasApplicationId: !!userSettings.application_id,
+          orgId: org_id,
+          hasApiKey: !!apiKey,
+          hasApplicationId: !!applicationId,
+          settingsSource,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Use user's full API key from synced_users.ttn
-    apiKey = userSettings.api_key;
-    applicationId = userSettings.application_id;
-    cluster = userSettings.cluster;
-    settingsSource = 'user_settings';
-    console.log(`[ttn-simulate] Using user's API key with app: ${applicationId}, cluster: ${cluster}`);
+    console.log(`[ttn-simulate] TTN_REQUEST`, {
+      endpoint: 'simulate-uplink',
+      deviceId,
+      apiKeyLast4_used: apiKey.slice(-4),
+      settingsSource,
+      cluster,
+      applicationId,
+    });
 
     // Convert legacy eui-xxx format to canonical sensor-xxx format
     if (deviceId && deviceId.startsWith('eui-')) {

@@ -65,6 +65,7 @@ export interface TTNConfig {
   };
   lastTestAt?: Date | string | null;
   lastTestSuccess?: boolean | null;
+  updated_at?: string | null; // For cache invalidation
 }
 
 export interface WebhookConfig {

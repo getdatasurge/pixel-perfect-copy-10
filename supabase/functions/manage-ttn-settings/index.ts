@@ -269,25 +269,28 @@ async function handleSave(
     return errorResponse('Failed to save settings', 'DB_ERROR', 500, requestId);
   }
 
-  // Reload settings to get the current state
+  // Reload settings to get the current state including updated_at
   const { data: savedSettings } = await supabase
     .from('ttn_settings')
-    .select('api_key, webhook_secret')
+    .select('api_key, webhook_secret, updated_at')
     .eq('org_id', org_id)
     .maybeSingle();
 
   const apiKeySet = !!(savedSettings?.api_key && savedSettings.api_key.length > 0);
   const webhookSecretSet = !!(savedSettings?.webhook_secret && savedSettings.webhook_secret.length > 0);
+  const apiKeyLast4 = savedSettings?.api_key?.slice(-4) || null;
 
-  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}`);
+  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}, api_key_last4=****${apiKeyLast4 || 'none'}`);
   
   return buildResponse({ 
     ok: true, 
     message: 'Settings saved',
     api_key_set: apiKeySet,
     api_key_preview: maskSecret(savedSettings?.api_key),
+    api_key_last4: apiKeyLast4,
     webhook_secret_set: webhookSecretSet,
     webhook_secret_preview: maskSecret(savedSettings?.webhook_secret),
+    updated_at: savedSettings?.updated_at,
   }, 200, requestId);
 }
 
