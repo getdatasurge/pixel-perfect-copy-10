@@ -4,6 +4,7 @@
 
 import { supabase } from '@/integrations/supabase/client';
 import { debug, logTimed, log } from '@/lib/debugLogger';
+import { logOrgSyncEvent, updateReconciliation } from '@/lib/supportSnapshot';
 
 // Types for the org-state-api response
 export interface OrgStateSite {
@@ -84,6 +85,7 @@ const INITIAL_BACKOFF_MS = 1000;
  */
 export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult> {
   let lastError: string = 'Unknown error';
+  const startTime = performance.now();
   
   debug.sync('Starting org state fetch', { org_id: orgId });
   const endTiming = logTimed('org-sync', 'Fetch org state from FrostGuard', { org_id: orgId });
@@ -104,6 +106,13 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         if (error.message?.includes('401') || error.message?.includes('403')) {
           debug.error('Auth/permission error - not retrying', { error: lastError });
           endTiming();
+          // Log sync event for snapshot
+          logOrgSyncEvent({
+            timestamp: new Date().toISOString(),
+            status: 'error',
+            duration_ms: Math.round(performance.now() - startTime),
+            error: lastError,
+          });
           return { ok: false, error: lastError };
         }
         
@@ -116,6 +125,13 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         }
         
         endTiming();
+        // Log sync event for snapshot
+        logOrgSyncEvent({
+          timestamp: new Date().toISOString(),
+          status: 'error',
+          duration_ms: Math.round(performance.now() - startTime),
+          error: lastError,
+        });
         return { ok: false, error: lastError };
       }
 
@@ -123,6 +139,12 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         lastError = 'No data returned from fetch-org-state';
         debug.error(lastError, { org_id: orgId });
         endTiming();
+        logOrgSyncEvent({
+          timestamp: new Date().toISOString(),
+          status: 'error',
+          duration_ms: Math.round(performance.now() - startTime),
+          error: lastError,
+        });
         return { ok: false, error: lastError };
       }
 
@@ -130,9 +152,16 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         lastError = data.error || 'FrostGuard returned failure status';
         debug.error('FrostGuard API error', { error: lastError, org_id: orgId });
         endTiming();
+        logOrgSyncEvent({
+          timestamp: new Date().toISOString(),
+          status: 'error',
+          duration_ms: Math.round(performance.now() - startTime),
+          error: lastError,
+        });
         return { ok: false, error: lastError };
       }
 
+      const duration = Math.round(performance.now() - startTime);
       debug.sync('Successfully fetched org state', {
         sync_version: data.sync_version,
         sites_count: data.sites?.length || 0,
@@ -143,6 +172,20 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
       });
 
       endTiming();
+      
+      // Log successful sync event for snapshot
+      logOrgSyncEvent({
+        timestamp: new Date().toISOString(),
+        status: 'success',
+        duration_ms: duration,
+        sync_version: data.sync_version,
+        counts: {
+          sites: data.sites?.length || 0,
+          sensors: data.sensors?.length || 0,
+          gateways: data.gateways?.length || 0,
+        },
+      });
+      
       return { ok: true, data };
       
     } catch (err) {
@@ -159,6 +202,12 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
 
   debug.error(`Failed after ${MAX_RETRIES} attempts`, { last_error: lastError });
   endTiming();
+  logOrgSyncEvent({
+    timestamp: new Date().toISOString(),
+    status: 'error',
+    duration_ms: Math.round(performance.now() - startTime),
+    error: `Failed after ${MAX_RETRIES} attempts: ${lastError}`,
+  });
   return { ok: false, error: `Failed after ${MAX_RETRIES} attempts: ${lastError}` };
 }
 
@@ -197,6 +246,13 @@ export function trackEntityChanges(
     console.log(`[frostguardOrgSync] ${entityType} changes: +${added} added, -${removed} removed`);
     if (removedIds.length > 0) {
       console.log(`[frostguardOrgSync] Removed ${entityType} IDs:`, removedIds);
+    }
+    
+    // Update reconciliation summary for snapshot
+    if (entityType === 'gateways' || entityType === 'gateway') {
+      updateReconciliation({ gateways_added: added, gateways_removed: removed });
+    } else if (entityType === 'sensors' || entityType === 'sensor' || entityType === 'devices') {
+      updateReconciliation({ sensors_added: added, sensors_removed: removed });
     }
   }
 
