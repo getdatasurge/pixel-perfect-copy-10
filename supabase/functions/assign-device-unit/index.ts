@@ -1,4 +1,5 @@
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+// assign-device-unit: Proxy to FrostGuard update-sensor-assignment endpoint
+// Uses API key authentication (PROJECT2_SYNC_API_KEY), NOT Service Role key
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -41,74 +42,127 @@ Deno.serve(async (req: Request) => {
       );
     }
 
-    // Get FrostGuard connection details
+    // Get FrostGuard connection details - use API key auth (not Service Role)
     const frostguardUrl = Deno.env.get('FROSTGUARD_SUPABASE_URL');
-    const frostguardKey = Deno.env.get('FROSTGUARD_SERVICE_ROLE_KEY');
+    const syncApiKey = Deno.env.get('PROJECT2_SYNC_API_KEY');
 
-    if (!frostguardUrl || !frostguardKey) {
-      console.error(`[assign-device-unit][${requestId}] Missing FrostGuard credentials`);
+    if (!frostguardUrl) {
+      console.error(`[assign-device-unit][${requestId}] FROSTGUARD_SUPABASE_URL not configured`);
       return new Response(
         JSON.stringify({
           ok: false,
-          error: 'FrostGuard integration not configured',
+          error: 'FrostGuard URL not configured',
+          error_code: 'CONFIG_MISSING',
+          hint: 'FROSTGUARD_SUPABASE_URL is not set in project secrets.',
           request_id: requestId,
         }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
-    // Create FrostGuard client
-    const frostguard = createClient(frostguardUrl, frostguardKey, {
-      auth: { persistSession: false },
-    });
-
-    // Update the sensor in FrostGuard
-    const updatePayload: { unit_id?: string | null; site_id?: string | null } = {};
-    
-    // Handle unit_id assignment (null to unassign)
-    if (unit_id !== undefined) {
-      updatePayload.unit_id = unit_id || null;
-    }
-    
-    // Handle site_id assignment (null to unassign)
-    if (site_id !== undefined) {
-      updatePayload.site_id = site_id || null;
-    }
-
-    console.log(`[assign-device-unit][${requestId}] Updating sensor with:`, updatePayload);
-
-    const { data: updatedSensor, error: updateError } = await frostguard
-      .from('sensors')
-      .update(updatePayload)
-      .eq('id', sensor_id)
-      .eq('org_id', org_id)
-      .select('id, unit_id, site_id, updated_at')
-      .single();
-
-    if (updateError) {
-      console.error(`[assign-device-unit][${requestId}] FrostGuard update error:`, updateError);
+    if (!syncApiKey) {
+      console.error(`[assign-device-unit][${requestId}] PROJECT2_SYNC_API_KEY not configured`);
       return new Response(
         JSON.stringify({
           ok: false,
-          error: updateError.message,
-          error_code: updateError.code,
+          error: 'Sync API key not configured',
+          error_code: 'CONFIG_MISSING',
+          hint: 'PROJECT2_SYNC_API_KEY is not set in project secrets.',
           request_id: requestId,
+        }),
+        { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Call FrostGuard's update-sensor-assignment endpoint via API key auth
+    const updatePayload = {
+      org_id,
+      sensor_id,
+      unit_id: unit_id || null,
+      site_id: site_id || null,
+    };
+
+    console.log(`[assign-device-unit][${requestId}] Calling FrostGuard update-sensor-assignment:`, {
+      sensor_id,
+      unit_id: unit_id || 'null',
+      site_id: site_id || 'null',
+      api_key_last4: syncApiKey.slice(-4),
+    });
+
+    const frostguardResponse = await fetch(`${frostguardUrl}/functions/v1/update-sensor-assignment`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${syncApiKey}`,
+      },
+      body: JSON.stringify(updatePayload),
+    });
+
+    const responseText = await frostguardResponse.text();
+    let responseData: Record<string, unknown>;
+    
+    try {
+      responseData = JSON.parse(responseText);
+    } catch {
+      responseData = { raw_response: responseText.slice(0, 500) };
+    }
+
+    if (!frostguardResponse.ok) {
+      console.error(`[assign-device-unit][${requestId}] FrostGuard error:`, {
+        status: frostguardResponse.status,
+        response: responseData,
+      });
+
+      // Provide helpful hints for common errors
+      let hint = 'FrostGuard rejected the assignment request.';
+      if (frostguardResponse.status === 404) {
+        hint = 'FrostGuard update-sensor-assignment endpoint not found. This endpoint may need to be created in FrostGuard.';
+      } else if (frostguardResponse.status === 401) {
+        hint = 'API key authentication failed. Check PROJECT2_SYNC_API_KEY.';
+      } else if (frostguardResponse.status === 403) {
+        hint = 'API key lacks permission for this organization.';
+      }
+
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: responseData.error || responseData.message || `FrostGuard returned ${frostguardResponse.status}`,
+          error_code: responseData.error_code || responseData.code || `HTTP_${frostguardResponse.status}`,
+          hint,
+          request_id: requestId,
+          frostguard_request_id: responseData.request_id,
+        }),
+        { status: frostguardResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    // Check if FrostGuard returned ok: false in body
+    if (responseData.ok === false) {
+      console.error(`[assign-device-unit][${requestId}] FrostGuard returned ok=false:`, responseData);
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          error: responseData.error || 'FrostGuard returned failure status',
+          error_code: responseData.error_code || 'UPSTREAM_FAILURE',
+          request_id: requestId,
+          frostguard_request_id: responseData.request_id,
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
     const durationMs = Math.round(performance.now() - startTime);
-    console.log(`[assign-device-unit][${requestId}] Success in ${durationMs}ms:`, updatedSensor);
+    console.log(`[assign-device-unit][${requestId}] Success in ${durationMs}ms:`, responseData);
 
     return new Response(
       JSON.stringify({
         ok: true,
-        sensor_id: updatedSensor.id,
-        unit_id: updatedSensor.unit_id,
-        site_id: updatedSensor.site_id,
-        updated_at: updatedSensor.updated_at,
+        sensor_id: responseData.sensor_id || sensor_id,
+        unit_id: responseData.unit_id,
+        site_id: responseData.site_id,
+        updated_at: responseData.updated_at,
         request_id: requestId,
+        frostguard_request_id: responseData.request_id,
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

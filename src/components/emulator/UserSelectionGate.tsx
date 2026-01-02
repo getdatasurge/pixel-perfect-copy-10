@@ -167,9 +167,20 @@ export default function UserSelectionGate({
       console.log('[UserSelectionGate] Received org state:', {
         sync_version: orgState.sync_version,
         sites: orgState.sites?.length || 0,
+        units: orgState.units?.length || 0,
         sensors: orgState.sensors?.length || 0,
         gateways: orgState.gateways?.length || 0,
       });
+
+      // Warn if units array is missing from FrostGuard response
+      if (!orgState.units) {
+        console.warn('[UserSelectionGate] FrostGuard org-state did not include units array');
+        log('org-sync', 'warn', 'Units array missing from org-state - unit assignment features may be limited', {
+          sync_version: orgState.sync_version,
+          has_sites: !!orgState.sites,
+          has_sensors: !!orgState.sensors,
+        });
+      }
 
       // Track entity changes for UI feedback
       const previousGatewayIds = new Set(gateways.map(g => g.id));

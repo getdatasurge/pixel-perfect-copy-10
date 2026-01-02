@@ -15,7 +15,7 @@ export interface OrgSyncEvent {
   status: 'success' | 'error';
   duration_ms?: number;
   sync_version?: number;
-  counts?: { sites: number; sensors: number; gateways: number };
+  counts?: { sites: number; units?: number; sensors: number; gateways: number };
   error?: string;
   request_id?: string;
   status_code?: number;
