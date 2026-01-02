@@ -16,7 +16,7 @@ import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway,
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { debug } from '@/lib/debugLogger';
-import { setCanonicalConfig, getCanonicalConfig } from '@/lib/ttnConfigStore';
+import { setCanonicalConfig, getCanonicalConfig, markLocalDirty } from '@/lib/ttnConfigStore';
 import {
   Select,
   SelectContent,
@@ -458,13 +458,21 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         source: 'LOCAL_CACHE', // Mark as local since FrostGuard sync is skipped
         orgId,
         userId: config.selectedUserId || null,
+        localDirty: true, // Mark as dirty to prevent canonical overwrite
+        localSavedAt: savedUpdatedAt,
       });
+
+      // Also mark dirty via dedicated function (ensures proper logging)
+      if (savedApiKeyLast4) {
+        markLocalDirty(savedApiKeyLast4);
+      }
 
       debug.ttnSync('TTN_CONFIG_SOURCE', {
         source: 'LOCAL_SAVE_RESULT',
         api_key_last4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
         cluster: ttnCluster,
         application_id: ttnApplicationId,
+        localDirty: true,
       });
 
       // Show success toast with the NEW key
