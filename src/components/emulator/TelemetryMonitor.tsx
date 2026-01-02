@@ -27,6 +27,7 @@ interface PullError {
   error_code?: string;
   hint?: string;
   request_id?: string;
+  diagnostics?: Record<string, unknown>;
 }
 
 export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
@@ -93,9 +94,11 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
           error_code: data?.error_code,
           hint: data?.hint,
           request_id: data?.request_id,
+          diagnostics: data?.diagnostics,
         };
         setLastPullError(pullError);
         debug.error('FROSTGUARD_TELEMETRY_ERROR', { ...pullError });
+        console.error('[TelemetryMonitor] Pull error with diagnostics:', pullError);
         throw new Error(data?.error || 'Pull failed');
       }
 
@@ -296,6 +299,17 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
                     >
                       <Copy className="h-3 w-3" />
                     </Button>
+                  </div>
+                )}
+                {/* Show diagnostics for debugging */}
+                {lastPullError.diagnostics && (
+                  <div className="text-xs text-muted-foreground font-mono bg-muted/50 p-2 rounded">
+                    <div className="font-semibold mb-1">Diagnostics:</div>
+                    {Object.entries(lastPullError.diagnostics).map(([key, value]) => (
+                      <div key={key}>
+                        {key}: {typeof value === 'boolean' ? (value ? '✓' : '✗') : String(value)}
+                      </div>
+                    ))}
                   </div>
                 )}
               </CardContent>
