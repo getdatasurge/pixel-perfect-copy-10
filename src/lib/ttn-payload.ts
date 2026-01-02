@@ -84,6 +84,7 @@ export interface WebhookConfig {
   sendToLocal: boolean;
   // TTN integration config
   ttnConfig?: TTNConfig;
+  ttnWebhookSecret?: string | null;
   lastStatus?: {
     code: number;
     message: string;
@@ -165,6 +166,7 @@ export interface TestResult {
   webhookStatus: 'success' | 'failed' | 'pending';
   dbStatus: 'inserted' | 'failed' | 'pending';
   orgApplied: boolean;
+  uplinkPath?: 'webhook-forward' | 'ttn-simulate' | 'local-webhook' | 'external-webhook';
   error?: string;
 }
 

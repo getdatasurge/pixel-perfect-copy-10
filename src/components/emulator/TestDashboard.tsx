@@ -100,6 +100,21 @@ export default function TestDashboard({ results, syncResults = [], onClearResult
     );
   };
 
+  const formatUplinkPath = (path: TestResult['uplinkPath']) => {
+    switch (path) {
+      case 'webhook-forward':
+        return 'Webhook (forward)';
+      case 'ttn-simulate':
+        return 'TTN simulate';
+      case 'local-webhook':
+        return 'Webhook (local)';
+      case 'external-webhook':
+        return 'Webhook (external)';
+      default:
+        return null;
+    }
+  };
+
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between">
@@ -537,6 +552,11 @@ export default function TestDashboard({ results, syncResults = [], onClearResult
                       >
                         TTN: {result.ttnStatus}
                       </Badge>
+                      {result.uplinkPath && (
+                        <Badge variant="outline" className="text-xs">
+                          Path: {formatUplinkPath(result.uplinkPath)}
+                        </Badge>
+                      )}
                       <Badge 
                         variant={result.webhookStatus === 'success' ? 'default' : 'destructive'}
                         className="text-xs"

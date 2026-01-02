@@ -28,6 +28,7 @@ interface StoredUserContext {
     api_key_last4?: string | null;
     webhook_secret_last4?: string | null;
   };
+  ttnWebhookSecret?: string | null;
   selectedUserSites: Array<{ site_id: string; site_name: string | null; is_default: boolean }>;
   syncedAt: string;
   syncRunId: string;
@@ -112,6 +113,7 @@ export default function UserSelectionGate({
             selectedUserDisplayName: context.selectedUserDisplayName,
             selectedUserSites: context.selectedUserSites,
             ttnConfig: context.ttnConfig,
+            ttnWebhookSecret: context.ttnWebhookSecret,
             contextSetAt: context.syncedAt,
             isHydrated: true,
             lastSyncAt: context.syncedAt,
@@ -324,6 +326,7 @@ export default function UserSelectionGate({
         selectedUserSites: sites,
         availableUnits: pulledUnits,
         ttnConfig,
+        ttnWebhookSecret: user.ttn?.webhook_secret ?? null,
         contextSetAt: syncedAt,
         isHydrated: true,
         lastSyncAt: syncedAt,
@@ -340,6 +343,7 @@ export default function UserSelectionGate({
         testSiteId: siteToSelect,
         orgName: orgState.organization?.name,
         ttnConfig,
+        ttnWebhookSecret: user.ttn?.webhook_secret ?? null,
         selectedUserSites: sites,
         syncedAt,
         syncRunId,
@@ -523,6 +527,7 @@ export default function UserSelectionGate({
       selectedUserDisplayName: undefined,
       selectedUserSites: undefined,
       ttnConfig: undefined,
+      ttnWebhookSecret: undefined,
       contextSetAt: undefined,
       isHydrated: false,
       lastSyncAt: undefined,
@@ -560,6 +565,7 @@ export default function UserSelectionGate({
       selectedUserDisplayName: undefined,
       selectedUserSites: undefined,
       ttnConfig: undefined,
+      ttnWebhookSecret: undefined,
       contextSetAt: undefined,
       isHydrated: false,
       lastSyncAt: undefined,
