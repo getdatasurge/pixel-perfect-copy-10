@@ -7,6 +7,7 @@ import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from
 import { fetchOrgState, trackEntityChanges, OrgStateResponse } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
+import { debug, log, logStateReplacement, setDebugContext, clearDebugContext } from '@/lib/debugLogger';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 
@@ -127,7 +128,12 @@ export default function UserSelectionGate({
 
   // Execute PULL-BASED sync when user is selected
   const executeSync = useCallback(async (user: UserProfile) => {
-    console.log('[UserSelectionGate] Executing pull-based sync for user:', user.id);
+    debug.context('User selected - starting pull-based sync', {
+      user_id: user.id,
+      email: user.email,
+      organization_id: user.organization_id,
+    });
+    
     setIsLoading(true);
     setError(null);
     setSyncSummary(null);

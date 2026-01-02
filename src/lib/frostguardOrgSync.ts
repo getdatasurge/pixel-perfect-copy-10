@@ -3,6 +3,7 @@
 // Uses pull-based architecture with API key authentication (no JWT, no Service Role).
 
 import { supabase } from '@/integrations/supabase/client';
+import { debug, logTimed, log } from '@/lib/debugLogger';
 
 // Types for the org-state-api response
 export interface OrgStateSite {
@@ -84,9 +85,12 @@ const INITIAL_BACKOFF_MS = 1000;
 export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult> {
   let lastError: string = 'Unknown error';
   
+  debug.sync('Starting org state fetch', { org_id: orgId });
+  const endTiming = logTimed('org-sync', 'Fetch org state from FrostGuard', { org_id: orgId });
+  
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
-      console.log(`[frostguardOrgSync] Fetching org state for ${orgId} (attempt ${attempt + 1}/${MAX_RETRIES})`);
+      debug.network(`Calling fetch-org-state edge function (attempt ${attempt + 1}/${MAX_RETRIES})`, { org_id: orgId });
       
       const { data, error } = await supabase.functions.invoke('fetch-org-state', {
         body: { org_id: orgId },
@@ -94,59 +98,67 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
 
       if (error) {
         lastError = error.message || 'Edge function error';
-        console.error(`[frostguardOrgSync] Edge function error:`, error);
+        log('network', 'error', 'Edge function error', { error: lastError, attempt: attempt + 1 });
         
         // Don't retry on auth/permission errors
         if (error.message?.includes('401') || error.message?.includes('403')) {
+          debug.error('Auth/permission error - not retrying', { error: lastError });
+          endTiming();
           return { ok: false, error: lastError };
         }
         
         // Wait before retrying for transient errors
         if (attempt < MAX_RETRIES - 1) {
           const backoff = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
-          console.log(`[frostguardOrgSync] Retrying in ${backoff}ms...`);
+          log('network', 'warn', `Retrying in ${backoff}ms...`, { attempt: attempt + 1, backoff_ms: backoff });
           await new Promise(resolve => setTimeout(resolve, backoff));
           continue;
         }
         
+        endTiming();
         return { ok: false, error: lastError };
       }
 
       if (!data) {
         lastError = 'No data returned from fetch-org-state';
-        console.error(`[frostguardOrgSync] ${lastError}`);
+        debug.error(lastError, { org_id: orgId });
+        endTiming();
         return { ok: false, error: lastError };
       }
 
       if (!data.ok) {
         lastError = data.error || 'FrostGuard returned failure status';
-        console.error(`[frostguardOrgSync] FrostGuard error:`, lastError);
+        debug.error('FrostGuard API error', { error: lastError, org_id: orgId });
+        endTiming();
         return { ok: false, error: lastError };
       }
 
-      console.log(`[frostguardOrgSync] Successfully fetched org state:`, {
+      debug.sync('Successfully fetched org state', {
         sync_version: data.sync_version,
-        sites: data.sites?.length || 0,
-        sensors: data.sensors?.length || 0,
-        gateways: data.gateways?.length || 0,
+        sites_count: data.sites?.length || 0,
+        sensors_count: data.sensors?.length || 0,
+        gateways_count: data.gateways?.length || 0,
         ttn_enabled: data.ttn?.enabled || false,
+        org_name: data.organization?.name,
       });
 
+      endTiming();
       return { ok: true, data };
       
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
-      console.error(`[frostguardOrgSync] Unexpected error:`, err);
+      log('network', 'error', 'Unexpected error during fetch', { error: lastError, attempt: attempt + 1 });
       
       // Wait before retrying
       if (attempt < MAX_RETRIES - 1) {
         const backoff = INITIAL_BACKOFF_MS * Math.pow(2, attempt);
-        console.log(`[frostguardOrgSync] Retrying in ${backoff}ms...`);
         await new Promise(resolve => setTimeout(resolve, backoff));
       }
     }
   }
 
+  debug.error(`Failed after ${MAX_RETRIES} attempts`, { last_error: lastError });
+  endTiming();
   return { ok: false, error: `Failed after ${MAX_RETRIES} attempts: ${lastError}` };
 }
 

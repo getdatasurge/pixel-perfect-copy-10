@@ -29,6 +29,7 @@ import TelemetryMonitor from './emulator/TelemetryMonitor';
 import TTNProvisioningWizard from './emulator/TTNProvisioningWizard';
 import UserSelectionGate, { STORAGE_KEY_USER_CONTEXT } from './emulator/UserSelectionGate';
 import UserContextBar from './emulator/UserContextBar';
+import DebugTerminal from './emulator/DebugTerminal';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -1152,6 +1153,9 @@ export default function LoRaWANEmulator() {
         onComplete={handleProvisioningComplete}
         mode={provisioningMode}
       />
+
+      {/* Debug Terminal - bottom docked */}
+      <DebugTerminal />
     </div>
     </UserSelectionGate>
   );
