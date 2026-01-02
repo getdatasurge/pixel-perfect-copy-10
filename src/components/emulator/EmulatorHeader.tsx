@@ -4,6 +4,7 @@ import { Play, Square, Zap, Cloud, Webhook, Radio, Check, X } from 'lucide-react
 import { WebhookConfig } from '@/lib/ttn-payload';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import { DeveloperMenu } from './DebugModeToggle';
 
 interface EmulatorHeaderProps {
   isRunning: boolean;
@@ -113,6 +114,9 @@ export default function EmulatorHeader({
 
           {/* Action buttons */}
           <div className="flex items-center gap-2">
+            {/* Developer menu with debug toggle */}
+            <DeveloperMenu />
+            
             {!isRunning ? (
               <>
                 <Button onClick={onStartEmulation} size="sm" className="gap-2">
