@@ -634,6 +634,8 @@ export default function LoRaWANEmulator() {
       onConfigChange={setWebhookConfig}
       gateways={gateways}
       devices={devices}
+      onGatewaysChange={setGateways}
+      onDevicesChange={setDevices}
     >
       <div className="flex flex-col min-h-screen">
         <EmulatorHeader

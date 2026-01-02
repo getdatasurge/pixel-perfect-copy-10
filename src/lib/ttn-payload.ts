@@ -88,6 +88,9 @@ export interface WebhookConfig {
   lastSyncAt?: string;
   lastSyncRunId?: string;
   lastSyncSummary?: string;
+  // Pull-based sync state from FrostGuard org-state-api
+  lastSyncVersion?: number;
+  orgName?: string;
 }
 
 // Sync bundle for authenticated sync to Project 1

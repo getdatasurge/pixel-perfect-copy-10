@@ -35,3 +35,6 @@ verify_jwt = false
 
 [functions.pull-frostguard-telemetry]
 verify_jwt = false
+
+[functions.fetch-org-state]
+verify_jwt = false

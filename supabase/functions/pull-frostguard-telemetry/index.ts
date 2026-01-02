@@ -1,3 +1,9 @@
+/**
+ * @deprecated This function uses FROSTGUARD_ANON_KEY for direct database access.
+ * The emulator now uses pull-based sync via fetch-org-state for entity data.
+ * Telemetry data should be pulled through the org-state-api or dedicated endpoints.
+ * This function is kept for backward compatibility only.
+ */
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 

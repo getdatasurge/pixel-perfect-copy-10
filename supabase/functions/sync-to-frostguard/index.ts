@@ -1,3 +1,9 @@
+/**
+ * @deprecated This push-based sync function is deprecated.
+ * The emulator now uses pull-based sync via fetch-org-state.
+ * FrostGuard's org-state-api is the single source of truth.
+ * This function is kept for backward compatibility only.
+ */
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const corsHeaders = {

@@ -2,11 +2,11 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Loader2, User, AlertCircle, RefreshCw, Radio, Thermometer, CheckCircle2 } from 'lucide-react';
-import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice, SyncBundle } from '@/lib/ttn-payload';
-import { supabase } from '@/integrations/supabase/client';
+import { Loader2, User, AlertCircle, RefreshCw, Radio, Thermometer, CheckCircle2, Download } from 'lucide-react';
+import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from '@/lib/ttn-payload';
+import { fetchOrgState, trackEntityChanges, OrgStateResponse } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
-import UserSearchDialog, { UserProfile, TTNConnection } from './UserSearchDialog';
+import UserSearchDialog, { UserProfile } from './UserSearchDialog';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 
@@ -15,6 +15,7 @@ interface StoredUserContext {
   selectedUserDisplayName: string;
   testOrgId: string;
   testSiteId?: string;
+  orgName?: string;
   ttnConfig?: {
     enabled: boolean;
     applicationId: string;
@@ -26,6 +27,23 @@ interface StoredUserContext {
   syncedAt: string;
   syncRunId: string;
   lastSyncSummary?: string;
+  syncVersion: number;
+  // Pulled entities from FrostGuard
+  pulledGateways: Array<{
+    id: string;
+    name: string;
+    eui: string;
+    isOnline: boolean;
+  }>;
+  pulledDevices: Array<{
+    id: string;
+    name: string;
+    devEui: string;
+    joinEui: string;
+    appKey: string;
+    type: 'temperature' | 'door';
+    gatewayId: string;
+  }>;
 }
 
 interface UserSelectionGateProps {
@@ -33,6 +51,8 @@ interface UserSelectionGateProps {
   onConfigChange: (config: WebhookConfig) => void;
   gateways: GatewayConfigType[];
   devices: LoRaWANDevice[];
+  onGatewaysChange: (gateways: GatewayConfigType[]) => void;
+  onDevicesChange: (devices: LoRaWANDevice[]) => void;
   children: React.ReactNode;
 }
 
@@ -41,6 +61,8 @@ export default function UserSelectionGate({
   onConfigChange,
   gateways,
   devices,
+  onGatewaysChange,
+  onDevicesChange,
   children,
 }: UserSelectionGateProps) {
   const [isHydrated, setIsHydrated] = useState(false);
@@ -63,11 +85,20 @@ export default function UserSelectionGate({
         if (syncedAt > hourAgo && context.selectedUserId) {
           console.log('[UserSelectionGate] Restoring context from session:', context.selectedUserId);
           
+          // Restore pulled gateways and devices
+          if (context.pulledGateways?.length > 0) {
+            onGatewaysChange(context.pulledGateways);
+          }
+          if (context.pulledDevices?.length > 0) {
+            onDevicesChange(context.pulledDevices);
+          }
+          
           // Restore config from stored context
           onConfigChange({
             ...config,
             testOrgId: context.testOrgId,
             testSiteId: context.testSiteId,
+            orgName: context.orgName,
             selectedUserId: context.selectedUserId,
             selectedUserDisplayName: context.selectedUserDisplayName,
             selectedUserSites: context.selectedUserSites,
@@ -77,6 +108,7 @@ export default function UserSelectionGate({
             lastSyncAt: context.syncedAt,
             lastSyncRunId: context.syncRunId,
             lastSyncSummary: context.lastSyncSummary,
+            lastSyncVersion: context.syncVersion,
           });
           
           setSyncSummary(context.lastSyncSummary || null);
@@ -93,9 +125,9 @@ export default function UserSelectionGate({
     console.log('[UserSelectionGate] No valid stored context, showing selection UI');
   }, []);
 
-  // Execute sync when user is selected
+  // Execute PULL-BASED sync when user is selected
   const executeSync = useCallback(async (user: UserProfile) => {
-    console.log('[UserSelectionGate] Executing sync for user:', user.id);
+    console.log('[UserSelectionGate] Executing pull-based sync for user:', user.id);
     setIsLoading(true);
     setError(null);
     setSyncSummary(null);
@@ -103,73 +135,97 @@ export default function UserSelectionGate({
     const syncRunId = crypto.randomUUID();
     const syncedAt = new Date().toISOString();
 
-    // Determine site to use
-    let siteToSelect: string | undefined = undefined;
-    const sites = user.user_sites || [];
-    if (user.default_site_id) {
-      siteToSelect = user.default_site_id;
-    } else if (sites.length > 0) {
-      siteToSelect = sites[0].site_id;
-    } else if (user.site_id) {
-      siteToSelect = user.site_id;
-    }
-
-    // Build TTN config from user data
-    const ttn = user.ttn;
-    const ttnConfig = ttn ? {
-      enabled: ttn.enabled || false,
-      applicationId: ttn.application_id || '',
-      cluster: ttn.cluster || 'eu1',
-      api_key_last4: ttn.api_key_last4 || null,
-      webhook_secret_last4: ttn.webhook_secret_last4 || null,
-    } : undefined;
-
     try {
-      // Build sync bundle
-      const syncBundle: SyncBundle = {
-        metadata: {
-          sync_run_id: syncRunId,
-          initiated_at: syncedAt,
-          source_project: 'lorawan-emulator',
-        },
-        context: {
-          org_id: user.organization_id,
-          site_id: siteToSelect,
-          selected_user_id: user.id,
-        },
-        entities: {
-          gateways: gateways.map(g => ({
-            id: g.id,
-            name: g.name,
-            eui: g.eui,
-            is_online: g.isOnline,
-          })),
-          devices: devices.map(d => ({
-            id: d.id,
-            name: d.name,
-            dev_eui: d.devEui,
-            join_eui: d.joinEui,
-            app_key: d.appKey,
-            type: d.type,
-            gateway_id: d.gatewayId,
-          })),
-        },
-      };
+      // PULL authoritative state from FrostGuard
+      console.log('[UserSelectionGate] Pulling org state from FrostGuard...');
+      const result = await fetchOrgState(user.organization_id);
 
-      console.log('[UserSelectionGate] Calling sync-to-frostguard...');
-      const { data, error: syncError } = await supabase.functions.invoke('sync-to-frostguard', {
-        body: syncBundle,
+      if (!result.ok || !result.data) {
+        throw new Error(result.error || 'Failed to fetch org state from FrostGuard');
+      }
+
+      const orgState: OrgStateResponse = result.data;
+      console.log('[UserSelectionGate] Received org state:', {
+        sync_version: orgState.sync_version,
+        sites: orgState.sites?.length || 0,
+        sensors: orgState.sensors?.length || 0,
+        gateways: orgState.gateways?.length || 0,
       });
 
-      if (syncError) {
-        throw new Error(syncError.message || 'Sync failed');
+      // Track entity changes for UI feedback
+      const previousGatewayIds = new Set(gateways.map(g => g.id));
+      const previousDeviceIds = new Set(devices.map(d => d.id));
+      const newGatewayIds = new Set(orgState.gateways?.map(g => g.id) || []);
+      const newDeviceIds = new Set(orgState.sensors?.map(s => s.id) || []);
+
+      const gatewayChanges = trackEntityChanges(previousGatewayIds, newGatewayIds, 'gateways');
+      const deviceChanges = trackEntityChanges(previousDeviceIds, newDeviceIds, 'sensors');
+
+      // COMPLETELY REPLACE local state with pulled data (authoritative replace semantics)
+      const pulledGateways: GatewayConfigType[] = (orgState.gateways || []).map(g => ({
+        id: g.id,
+        name: g.name,
+        eui: g.gateway_eui,
+        isOnline: g.is_online,
+      }));
+
+      const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => ({
+        id: s.id,
+        name: s.name,
+        devEui: s.dev_eui,
+        joinEui: s.join_eui,
+        appKey: s.app_key,
+        type: s.type === 'door' ? 'door' : 'temperature',
+        gatewayId: s.gateway_id || '',
+      }));
+
+      // Update local state (complete replacement, not merge)
+      onGatewaysChange(pulledGateways);
+      onDevicesChange(pulledDevices);
+
+      // Clear localStorage cache - it's stale after pull
+      localStorage.removeItem('lorawan-emulator-gateways');
+      localStorage.removeItem('lorawan-emulator-devices');
+
+      // Build sites array from pulled data
+      const sites = (orgState.sites || []).map(s => ({
+        site_id: s.id,
+        site_name: s.name || null,
+        is_default: s.is_default || false,
+      }));
+
+      // Determine site to use
+      let siteToSelect: string | undefined = undefined;
+      const defaultSite = sites.find(s => s.is_default);
+      if (defaultSite) {
+        siteToSelect = defaultSite.site_id;
+      } else if (sites.length > 0) {
+        siteToSelect = sites[0].site_id;
+      } else if (user.default_site_id) {
+        siteToSelect = user.default_site_id;
       }
 
-      if (!data?.ok && !data?.success) {
-        throw new Error(data?.error || 'Sync returned failure status');
-      }
+      // Build TTN config from pulled data
+      const ttnConfig = orgState.ttn ? {
+        enabled: orgState.ttn.enabled || false,
+        applicationId: orgState.ttn.application_id || '',
+        cluster: orgState.ttn.cluster || 'eu1',
+        api_key_last4: orgState.ttn.api_key_last4 || null,
+        webhook_secret_last4: orgState.ttn.webhook_secret_last4 || null,
+      } : undefined;
 
-      const summary = data.summary || `Synced ${gateways.length} gateways, ${devices.length} devices`;
+      // Build summary message
+      const summaryParts: string[] = [];
+      summaryParts.push(`v${orgState.sync_version}`);
+      summaryParts.push(`${pulledGateways.length} gateways`);
+      summaryParts.push(`${pulledDevices.length} sensors`);
+      if (gatewayChanges.removed > 0) {
+        summaryParts.push(`-${gatewayChanges.removed} gw removed`);
+      }
+      if (deviceChanges.removed > 0) {
+        summaryParts.push(`-${deviceChanges.removed} sensors removed`);
+      }
+      const summary = `Pulled: ${summaryParts.join(', ')}`;
       console.log('[UserSelectionGate] Sync complete:', summary);
 
       // Build the fully hydrated config
@@ -177,32 +233,34 @@ export default function UserSelectionGate({
         ...config,
         testOrgId: user.organization_id,
         testSiteId: siteToSelect,
+        orgName: orgState.organization?.name,
         selectedUserId: user.id,
         selectedUserDisplayName: user.full_name || user.email || user.id,
-        selectedUserSites: sites.map(s => ({
-          site_id: s.site_id,
-          site_name: s.site_name || null,
-          is_default: s.site_id === user.default_site_id || s.is_default || false,
-        })),
+        selectedUserSites: sites,
         ttnConfig,
         contextSetAt: syncedAt,
         isHydrated: true,
         lastSyncAt: syncedAt,
         lastSyncRunId: syncRunId,
         lastSyncSummary: summary,
+        lastSyncVersion: orgState.sync_version,
       };
 
-      // Store in session
+      // Store in session (including pulled entities for restoration)
       const storedContext: StoredUserContext = {
         selectedUserId: user.id,
         selectedUserDisplayName: user.full_name || user.email || user.id,
         testOrgId: user.organization_id,
         testSiteId: siteToSelect,
+        orgName: orgState.organization?.name,
         ttnConfig,
-        selectedUserSites: hydratedConfig.selectedUserSites || [],
+        selectedUserSites: sites,
         syncedAt,
         syncRunId,
         lastSyncSummary: summary,
+        syncVersion: orgState.sync_version,
+        pulledGateways,
+        pulledDevices,
       };
       sessionStorage.setItem(STORAGE_KEY_USER_CONTEXT, JSON.stringify(storedContext));
 
@@ -212,14 +270,20 @@ export default function UserSelectionGate({
       setIsHydrated(true);
       setPendingUser(null);
 
+      // Show toast with removal info if applicable
+      let toastDescription = summary;
+      if (gatewayChanges.removed > 0 || deviceChanges.removed > 0) {
+        toastDescription += ' (entities removed due to upstream changes)';
+      }
+
       toast({
         title: 'Context Ready',
-        description: summary,
+        description: toastDescription,
       });
 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
-      console.error('[UserSelectionGate] Sync failed:', message);
+      console.error('[UserSelectionGate] Pull sync failed:', message);
       setError(message);
       toast({
         title: 'Sync Failed',
@@ -229,7 +293,7 @@ export default function UserSelectionGate({
     } finally {
       setIsLoading(false);
     }
-  }, [config, gateways, devices, onConfigChange]);
+  }, [config, gateways, devices, onConfigChange, onGatewaysChange, onDevicesChange]);
 
   // Handle user selection from dialog
   const handleUserSelect = useCallback((user: UserProfile) => {
@@ -243,6 +307,10 @@ export default function UserSelectionGate({
   const handleClearContext = useCallback(() => {
     console.log('[UserSelectionGate] Clearing context');
     sessionStorage.removeItem(STORAGE_KEY_USER_CONTEXT);
+    // Also clear localStorage cache for entities
+    localStorage.removeItem('lorawan-emulator-gateways');
+    localStorage.removeItem('lorawan-emulator-devices');
+    
     setIsHydrated(false);
     setSyncSummary(null);
     setError(null);
@@ -253,6 +321,7 @@ export default function UserSelectionGate({
       ...config,
       testOrgId: undefined,
       testSiteId: undefined,
+      orgName: undefined,
       selectedUserId: undefined,
       selectedUserDisplayName: undefined,
       selectedUserSites: undefined,
@@ -262,6 +331,7 @@ export default function UserSelectionGate({
       lastSyncAt: undefined,
       lastSyncRunId: undefined,
       lastSyncSummary: undefined,
+      lastSyncVersion: undefined,
     });
   }, [config, onConfigChange]);
 
@@ -282,7 +352,7 @@ export default function UserSelectionGate({
           </div>
           <CardTitle className="text-2xl">LoRaWAN Device Emulator</CardTitle>
           <CardDescription>
-            Select a user to load organization context and sync devices
+            Select a user to pull organization state from FrostGuard
           </CardDescription>
         </CardHeader>
 
@@ -324,20 +394,14 @@ export default function UserSelectionGate({
             <div className="flex flex-col items-center py-8 gap-4">
               <Loader2 className="h-10 w-10 animate-spin text-primary" />
               <div className="text-center">
-                <p className="font-medium">Syncing to FrostGuard...</p>
+                <p className="font-medium">Pulling from FrostGuard...</p>
                 <p className="text-sm text-muted-foreground mt-1">
-                  {pendingUser?.full_name || pendingUser?.email || 'Loading user context'}
+                  {pendingUser?.full_name || pendingUser?.email || 'Loading organization state'}
                 </p>
               </div>
-              <div className="flex gap-4 text-xs text-muted-foreground">
-                <span className="flex items-center gap-1">
-                  <Radio className="h-3 w-3" />
-                  {gateways.length} gateways
-                </span>
-                <span className="flex items-center gap-1">
-                  <Thermometer className="h-3 w-3" />
-                  {devices.length} devices
-                </span>
+              <div className="flex gap-2 text-xs text-muted-foreground">
+                <Download className="h-3 w-3" />
+                <span>Fetching sites, sensors, gateways, TTN config</span>
               </div>
             </div>
           )}
@@ -359,11 +423,11 @@ export default function UserSelectionGate({
                   <ul className="mt-2 space-y-1">
                     <li className="flex items-center justify-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-primary" />
-                      Load organization & site settings
+                      Pull organization & site settings from FrostGuard
                     </li>
                     <li className="flex items-center justify-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-primary" />
-                      Sync devices and gateways to FrostGuard
+                      Load authoritative sensors and gateways
                     </li>
                     <li className="flex items-center justify-center gap-2">
                       <CheckCircle2 className="h-4 w-4 text-primary" />
@@ -373,22 +437,11 @@ export default function UserSelectionGate({
                 </div>
               </div>
 
-              {/* Entity count preview */}
+              {/* Pull-based info */}
               <div className="border-t pt-4">
-                <p className="text-xs text-muted-foreground text-center mb-2">
-                  Entities to sync:
-                </p>
-                <div className="flex justify-center gap-6 text-sm">
-                  <span className="flex items-center gap-2">
-                    <Radio className="h-4 w-4 text-muted-foreground" />
-                    <span className="font-medium">{gateways.length}</span>
-                    <span className="text-muted-foreground">gateways</span>
-                  </span>
-                  <span className="flex items-center gap-2">
-                    <Thermometer className="h-4 w-4 text-muted-foreground" />
-                    <span className="font-medium">{devices.length}</span>
-                    <span className="text-muted-foreground">devices</span>
-                  </span>
+                <div className="flex items-center justify-center gap-2 text-xs text-muted-foreground">
+                  <Download className="h-4 w-4" />
+                  <span>Pull-based sync — FrostGuard is the source of truth</span>
                 </div>
               </div>
             </>
@@ -407,5 +460,5 @@ export default function UserSelectionGate({
   );
 }
 
-// Export the clear function for use by UserContextBar
+// Export the storage key and clear function for use by UserContextBar
 export { STORAGE_KEY_USER_CONTEXT };
