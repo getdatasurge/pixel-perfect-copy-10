@@ -1,19 +1,23 @@
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { User, Building2, MapPin, Radio, Clock, X, RefreshCw } from 'lucide-react';
+import { User, Building2, MapPin, Radio, Clock, X, RefreshCw, Download, Hash } from 'lucide-react';
 import { WebhookConfig } from '@/lib/ttn-payload';
 
 interface UserContextBarProps {
   config: WebhookConfig;
   onClearContext: () => void;
+  onRefresh?: () => void;
   disabled?: boolean;
+  isRefreshing?: boolean;
 }
 
 export default function UserContextBar({
   config,
   onClearContext,
+  onRefresh,
   disabled,
+  isRefreshing,
 }: UserContextBarProps) {
   if (!config.selectedUserId) {
     return null;
@@ -39,7 +43,7 @@ export default function UserContextBar({
           {config.testOrgId && (
             <Badge variant="secondary" className="font-normal text-xs">
               <Building2 className="h-3 w-3 mr-1" />
-              Org: {config.testOrgId.slice(0, 8)}...
+              {config.orgName || `Org: ${config.testOrgId.slice(0, 8)}...`}
             </Badge>
           )}
 
@@ -62,32 +66,55 @@ export default function UserContextBar({
             </Badge>
           )}
 
+          {/* Sync version */}
+          {config.lastSyncVersion !== undefined && (
+            <Badge variant="outline" className="font-normal text-xs">
+              <Hash className="h-3 w-3 mr-1" />
+              v{config.lastSyncVersion}
+            </Badge>
+          )}
+
           {/* Last sync time */}
           {lastSyncTime && (
             <span className="text-xs text-muted-foreground flex items-center gap-1">
               <Clock className="h-3 w-3" />
-              Synced {lastSyncTime}
+              Pulled {lastSyncTime}
             </span>
           )}
         </div>
 
         {/* Actions */}
-        <Button
-          variant="ghost"
-          size="sm"
-          onClick={onClearContext}
-          disabled={disabled}
-          className="text-muted-foreground hover:text-foreground"
-        >
-          <X className="h-4 w-4 mr-1" />
-          Change User
-        </Button>
+        <div className="flex items-center gap-2">
+          {onRefresh && (
+            <Button
+              variant="ghost"
+              size="sm"
+              onClick={onRefresh}
+              disabled={disabled || isRefreshing}
+              className="text-muted-foreground hover:text-foreground"
+            >
+              <RefreshCw className={`h-4 w-4 mr-1 ${isRefreshing ? 'animate-spin' : ''}`} />
+              Refresh
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={onClearContext}
+            disabled={disabled || isRefreshing}
+            className="text-muted-foreground hover:text-foreground"
+          >
+            <X className="h-4 w-4 mr-1" />
+            Change User
+          </Button>
+        </div>
       </div>
 
       {/* Sync summary */}
       {config.lastSyncSummary && (
         <div className="px-3 pb-3 pt-0">
-          <p className="text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1">
+          <p className="text-xs text-muted-foreground bg-muted/50 rounded px-2 py-1 flex items-center gap-1">
+            <Download className="h-3 w-3" />
             {config.lastSyncSummary}
           </p>
         </div>
