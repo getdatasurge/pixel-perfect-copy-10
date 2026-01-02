@@ -342,6 +342,16 @@ export interface SupportSnapshot {
     last_error?: TTNSimulateEvent;
   };
   
+  // TTN config sync tracking for push/pull lifecycle
+  ttn_config_sync?: {
+    last_push_at?: string;
+    last_push_result?: 'success' | 'error';
+    last_push_request_id?: string;
+    last_pull_after_push_at?: string;
+    canonical_last4?: string;
+    config_source: 'FROSTGUARD_CANONICAL' | 'LOCAL_ONLY' | 'UNKNOWN';
+  };
+  
   logs: {
     total_captured: number;
     included_count: number;
@@ -440,6 +450,8 @@ export function buildSupportSnapshot(options: BuildSnapshotOptions = {}): Suppor
       last_error: getTTNSimulateHistory().find(e => e.status === 'error'),
     },
     
+    ttn_config_sync: extractTTNConfigSync(allEntries),
+    
     logs: {
       total_captured: allEntries.length,
       included_count: logEntries.length,
@@ -454,7 +466,7 @@ function extractTTNInfo(entries: DebugEntry[], context: DebugContext): {
 } {
   // Look for TTN-related logs that might contain this info
   const ttnLogs = entries
-    .filter(e => e.category === 'ttn')
+    .filter(e => e.category === 'ttn' || e.category === 'ttn-sync')
     .reverse();
   
   for (const log of ttnLogs) {
@@ -466,10 +478,67 @@ function extractTTNInfo(entries: DebugEntry[], context: DebugContext): {
           apiKeyLast4: typeof data.api_key_last4 === 'string' ? data.api_key_last4 : undefined,
         };
       }
+      // Also check for canonical_last4 from TTN sync events
+      if (typeof data.api_key_last4 === 'string') {
+        return {
+          apiKeyPresent: true,
+          apiKeyLast4: data.api_key_last4.replace(/^\*+/, ''),
+        };
+      }
     }
   }
   
   return { apiKeyPresent: false };
+}
+
+// Extract TTN config sync status from recent logs
+function extractTTNConfigSync(entries: DebugEntry[]): SupportSnapshot['ttn_config_sync'] {
+  const syncLogs = entries
+    .filter(e => e.category === 'ttn-sync')
+    .reverse();
+  
+  let lastPushAt: string | undefined;
+  let lastPushResult: 'success' | 'error' | undefined;
+  let lastPushRequestId: string | undefined;
+  let lastPullAfterPushAt: string | undefined;
+  let canonicalLast4: string | undefined;
+  let configSource: 'FROSTGUARD_CANONICAL' | 'LOCAL_ONLY' | 'UNKNOWN' = 'UNKNOWN';
+  
+  for (const log of syncLogs) {
+    const data = log.data as Record<string, unknown> | undefined;
+    
+    if (log.message === 'TTN_PUSH_TO_FROSTGUARD_SUCCESS') {
+      lastPushAt = typeof log.timestamp === 'string' ? log.timestamp : new Date(log.timestamp).toISOString();
+      lastPushResult = 'success';
+      lastPushRequestId = data?.request_id as string | undefined;
+      break;
+    }
+    
+    if (log.message === 'TTN_PUSH_TO_FROSTGUARD_FAILED') {
+      lastPushAt = typeof log.timestamp === 'string' ? log.timestamp : new Date(log.timestamp).toISOString();
+      lastPushResult = 'error';
+      lastPushRequestId = data?.request_id as string | undefined;
+      break;
+    }
+    
+    if (log.message === 'TTN_PULL_AFTER_SAVE_SUCCESS') {
+      lastPullAfterPushAt = typeof log.timestamp === 'string' ? log.timestamp : new Date(log.timestamp).toISOString();
+    }
+    
+    if (log.message === 'TTN_CONFIG_SOURCE') {
+      configSource = (data?.source as 'FROSTGUARD_CANONICAL' | 'LOCAL_ONLY') || 'UNKNOWN';
+      canonicalLast4 = (data?.api_key_last4 as string)?.replace(/^\*+/, '');
+    }
+  }
+  
+  return {
+    last_push_at: lastPushAt,
+    last_push_result: lastPushResult,
+    last_push_request_id: lastPushRequestId,
+    last_pull_after_push_at: lastPullAfterPushAt,
+    canonical_last4: canonicalLast4,
+    config_source: configSource,
+  };
 }
 
 function extractCorsInfo(entries: DebugEntry[]): CorsDiagnostics {

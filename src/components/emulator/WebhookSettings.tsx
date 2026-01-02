@@ -364,7 +364,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     
     // Debug logging - request
     const apiKeyLast4New = ttnApiKey ? ttnApiKey.slice(-4) : null;
-    debug.ttn('TTN_SETTINGS_SAVE_REQUEST', {
+    debug.ttnSync('TTN_SAVE_REQUEST', {
       orgId,
       cluster: ttnCluster,
       appId: ttnApplicationId,
@@ -373,9 +373,16 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     });
 
     try {
-      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+      // Step 1: Push settings to FrostGuard via new edge function
+      debug.ttnSync('TTN_PUSH_TO_FROSTGUARD_START', {
+        orgId,
+        cluster: ttnCluster,
+        application_id: ttnApplicationId,
+        has_api_key: !!ttnApiKey,
+      });
+
+      const { data: pushResult, error: pushError } = await supabase.functions.invoke('push-ttn-settings', {
         body: {
-          action: 'save',
           org_id: orgId,
           enabled: ttnEnabled,
           cluster: ttnCluster,
@@ -387,74 +394,100 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         },
       });
 
-      if (error) {
-        const errorMsg = data?.error || error.message || 'Failed to save settings';
-        debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
+      if (pushError || !pushResult?.ok) {
+        const errorMsg = pushResult?.error || pushError?.message || 'Failed to push settings to FrostGuard';
+        debug.ttnSync('TTN_PUSH_TO_FROSTGUARD_FAILED', {
           error: errorMsg,
-          code: data?.code || 'UNKNOWN_ERROR',
+          step: pushResult?.step,
+          request_id: pushResult?.request_id,
         });
         toast({
           title: 'Save Failed',
-          description: errorMsg,
+          description: pushResult?.hint || errorMsg,
           variant: 'destructive',
         });
         return;
       }
 
-      if (data?.ok) {
-        // Debug logging - success
-        debug.ttn('TTN_SETTINGS_SAVE_SUCCESS', {
-          updated_at: data.updated_at,
-          apiKeyLast4_saved: data.api_key_last4 ? `****${data.api_key_last4}` : null,
-          api_key_set: data.api_key_set,
-        });
+      // Log push success
+      debug.ttnSync('TTN_PUSH_TO_FROSTGUARD_SUCCESS', {
+        request_id: pushResult.request_id,
+        api_key_last4: pushResult.frostguard_response?.api_key_last4 
+          ? `****${pushResult.frostguard_response.api_key_last4}` 
+          : null,
+        updated_at: pushResult.frostguard_response?.updated_at,
+        local_updated: pushResult.local_updated,
+      });
 
-        // Update local state from response
-        if (data.api_key_set !== undefined) {
-          setTtnApiKeySet(data.api_key_set);
-        }
-        if (data.api_key_preview) {
-          setTtnApiKeyPreview(data.api_key_preview);
-        }
-        if (data.webhook_secret_set !== undefined) {
-          setTtnWebhookSecretSet(data.webhook_secret_set);
-        }
-        
-        // Clear input fields after successful save (security)
-        setTtnApiKey('');
-        setTtnWebhookSecret('');
-        
-        // Update parent config with new last4 for cache key tracking
-        updateTTN({ 
-          enabled: ttnEnabled, 
-          applicationId: ttnApplicationId, 
-          cluster: ttnCluster,
-          api_key_last4: data.api_key_last4,
-          updated_at: data.updated_at,
-        });
+      // Step 2: Re-pull org state from FrostGuard to get canonical values
+      debug.ttnSync('TTN_PULL_AFTER_SAVE_START', { org_id: orgId });
+      
+      const { fetchOrgState } = await import('@/lib/frostguardOrgSync');
+      const pullResult = await fetchOrgState(orgId);
 
-        // Show toast with new key last4
-        const toastDescription = data.api_key_last4 
-          ? `API key updated (****${data.api_key_last4})`
-          : 'TTN configuration saved successfully';
-        
-        toast({
-          title: 'Settings Saved',
-          description: toastDescription,
+      if (!pullResult.ok) {
+        debug.ttnSync('TTN_PULL_AFTER_SAVE_FAILED', { 
+          error: pullResult.error,
+          errorDetails: pullResult.errorDetails,
+        });
+        // Still show success for save, but warn about refresh
+        toast({ 
+          title: 'Settings Saved', 
+          description: 'Saved but could not refresh from FrostGuard. Values may be stale.',
         });
       } else {
-        debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
-          error: data?.error || 'Unknown error',
-          code: data?.code,
+        debug.ttnSync('TTN_PULL_AFTER_SAVE_SUCCESS', {
+          sync_version: pullResult.data?.sync_version,
+          ttn_enabled: pullResult.data?.ttn?.enabled,
+          api_key_last4: pullResult.data?.ttn?.api_key_last4 
+            ? `****${pullResult.data.ttn.api_key_last4}` 
+            : null,
         });
-        toast({
-          title: 'Save Failed',
-          description: data?.error || 'Unknown error',
-          variant: 'destructive',
-        });
+
+        // Step 3: Update local state from FrostGuard's canonical response
+        if (pullResult.data?.ttn) {
+          const fgTtn = pullResult.data.ttn;
+          setTtnApiKeyPreview(fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null);
+          setTtnApiKeySet(!!fgTtn.api_key_last4);
+          setTtnWebhookSecretSet(!!fgTtn.webhook_secret_last4);
+          
+          // Update parent config with canonical values
+          updateTTN({ 
+            enabled: fgTtn.enabled, 
+            applicationId: fgTtn.application_id, 
+            cluster: fgTtn.cluster,
+            api_key_last4: fgTtn.api_key_last4,
+          });
+
+          debug.ttnSync('TTN_CONFIG_SOURCE', {
+            source: 'FROSTGUARD_CANONICAL',
+            api_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
+            cluster: fgTtn.cluster,
+            application_id: fgTtn.application_id,
+          });
+        }
       }
+
+      // Step 4: Clear sensitive input fields after successful save
+      setTtnApiKey('');
+      setTtnWebhookSecret('');
+
+      // Step 5: Show success with last4 from FrostGuard response
+      const canonicalLast4 = pullResult.ok && pullResult.data?.ttn?.api_key_last4
+        ? pullResult.data.ttn.api_key_last4
+        : pushResult.frostguard_response?.api_key_last4;
+        
+      const toastDescription = canonicalLast4 
+        ? `Synced to FrostGuard (****${canonicalLast4})`
+        : 'TTN configuration saved and synced';
+      
+      toast({
+        title: 'Settings Saved',
+        description: toastDescription,
+      });
+      
     } catch (err: any) {
-      debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
+      debug.ttnSync('TTN_SAVE_ERROR', {
         error: err.message || 'Network error',
         code: 'NETWORK_ERROR',
       });
