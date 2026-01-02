@@ -4,17 +4,19 @@ import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
 import { Input } from '@/components/ui/input';
 import { ScrollArea } from '@/components/ui/scroll-area';
-import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   ChevronDown, ChevronUp, X, Search, Trash2, Pause, Play, 
   Download, Copy, User, Building2, Hash, Clock, Radio,
-  Network, RefreshCw, AlertTriangle, Bug, Cpu
+  Network, RefreshCw, AlertTriangle, Bug, Cpu, HelpCircle, FileDown
 } from 'lucide-react';
 import { 
   DebugEntry, DebugCategory, DebugLevel,
   getEntries, getDebugContext, subscribe, clearEntries, 
   exportEntries, setPaused, getIsPaused, isDebugEnabled
 } from '@/lib/debugLogger';
+import { explainError, getRelatedLogs, ErrorExplanation, getSeverityColor } from '@/lib/errorExplainer';
+import { buildSupportSnapshot, downloadSnapshot } from '@/lib/supportSnapshot';
 import { toast } from '@/hooks/use-toast';
 
 const CATEGORY_ICONS: Record<DebugCategory, React.ReactNode> = {
@@ -46,6 +48,12 @@ interface DebugTerminalProps {
   className?: string;
 }
 
+interface ExplanationState {
+  entry: DebugEntry;
+  explanation: ErrorExplanation;
+  relatedLogs: DebugEntry[];
+}
+
 export default function DebugTerminal({ className }: DebugTerminalProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const [entries, setEntries] = useState<DebugEntry[]>([]);
@@ -54,6 +62,7 @@ export default function DebugTerminal({ className }: DebugTerminalProps) {
   const [activeTab, setActiveTab] = useState<DebugCategory | 'all'>('all');
   const [isPaused, setIsPausedState] = useState(getIsPaused());
   const [levelFilter, setLevelFilter] = useState<DebugLevel | 'all'>('all');
+  const [explanationState, setExplanationState] = useState<ExplanationState | null>(null);
 
   // Subscribe to log changes
   useEffect(() => {
@@ -144,6 +153,32 @@ export default function DebugTerminal({ className }: DebugTerminalProps) {
     a.click();
     URL.revokeObjectURL(url);
     toast({ title: 'Logs exported' });
+  }, []);
+
+  const handleExportSnapshot = useCallback(() => {
+    const snapshot = buildSupportSnapshot();
+    downloadSnapshot(snapshot);
+    toast({ title: 'Support snapshot exported (redacted)' });
+  }, []);
+
+  const handleExportSnapshotForError = useCallback((errorEntryId: string) => {
+    const snapshot = buildSupportSnapshot({ errorEntryId });
+    downloadSnapshot(snapshot);
+    toast({ title: 'Support snapshot exported for error (redacted)' });
+  }, []);
+
+  const handleExplain = useCallback((entry: DebugEntry) => {
+    const explanation = explainError(entry);
+    if (explanation) {
+      const relatedLogs = getRelatedLogs(entries, explanation, entry.id);
+      setExplanationState({ entry, explanation, relatedLogs });
+    } else {
+      toast({ title: 'No explanation available for this log entry' });
+    }
+  }, [entries]);
+
+  const closeExplanation = useCallback(() => {
+    setExplanationState(null);
   }, []);
 
   // Don't render if debug mode is disabled
@@ -255,19 +290,22 @@ export default function DebugTerminal({ className }: DebugTerminalProps) {
 
           {/* Controls */}
           <div className="flex items-center gap-1">
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handlePauseToggle}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handlePauseToggle} title={isPaused ? 'Resume' : 'Pause'}>
               {isPaused ? <Play className="h-3 w-3" /> : <Pause className="h-3 w-3" />}
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClear}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleClear} title="Clear logs">
               <Trash2 className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCopy}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleCopy} title="Copy logs">
               <Copy className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleExport}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleExport} title="Export logs">
               <Download className="h-3 w-3" />
             </Button>
-            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setIsExpanded(false)}>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={handleExportSnapshot} title="Export support snapshot">
+              <FileDown className="h-3 w-3" />
+            </Button>
+            <Button variant="ghost" size="icon" className="h-7 w-7" onClick={() => setIsExpanded(false)} title="Close">
               <X className="h-3 w-3" />
             </Button>
           </div>
@@ -321,36 +359,137 @@ export default function DebugTerminal({ className }: DebugTerminalProps) {
           </div>
         </div>
 
-        {/* Log entries */}
-        <ScrollArea className="h-64">
-          <div className="p-2 font-mono text-xs space-y-1">
-            {filteredEntries.length === 0 ? (
-              <div className="text-center text-muted-foreground py-8">
-                No log entries {searchQuery && `matching "${searchQuery}"`}
-              </div>
-            ) : (
-              filteredEntries.map(entry => (
-                <LogEntryRow key={entry.id} entry={entry} />
-              ))
-            )}
-          </div>
-        </ScrollArea>
+        {/* Main content area */}
+        <div className="flex">
+          {/* Log entries */}
+          <ScrollArea className={`h-64 ${explanationState ? 'flex-1' : 'w-full'}`}>
+            <div className="p-2 font-mono text-xs space-y-1">
+              {filteredEntries.length === 0 ? (
+                <div className="text-center text-muted-foreground py-8">
+                  No log entries {searchQuery && `matching "${searchQuery}"`}
+                </div>
+              ) : (
+                filteredEntries.map(entry => (
+                  <LogEntryRow 
+                    key={entry.id} 
+                    entry={entry} 
+                    onExplain={handleExplain}
+                  />
+                ))
+              )}
+            </div>
+          </ScrollArea>
+
+          {/* Explanation panel */}
+          {explanationState && (
+            <ExplanationPanel
+              state={explanationState}
+              onClose={closeExplanation}
+              onExportSnapshot={() => handleExportSnapshotForError(explanationState.entry.id)}
+            />
+          )}
+        </div>
       </Card>
     </div>
   );
 }
 
-function LogEntryRow({ entry }: { entry: DebugEntry }) {
+// ============ Explanation Panel ============
+
+interface ExplanationPanelProps {
+  state: ExplanationState;
+  onClose: () => void;
+  onExportSnapshot: () => void;
+}
+
+function ExplanationPanel({ state, onClose, onExportSnapshot }: ExplanationPanelProps) {
+  const { entry, explanation, relatedLogs } = state;
+  
+  return (
+    <div className="w-96 border-l bg-muted/20 p-4 overflow-y-auto h-64">
+      <div className="flex items-center justify-between mb-4">
+        <h3 className="font-semibold flex items-center gap-2 text-sm">
+          <HelpCircle className="h-4 w-4" />
+          Error Explanation
+        </h3>
+        <Button variant="ghost" size="icon" className="h-6 w-6" onClick={onClose}>
+          <X className="h-3 w-3" />
+        </Button>
+      </div>
+      
+      <div className="space-y-4 text-xs">
+        {/* Severity badge */}
+        <Badge variant={getSeverityColor(explanation.severity) as "default" | "destructive" | "secondary" | "outline"}>
+          {explanation.severity.toUpperCase()}
+        </Badge>
+        
+        {/* What happened */}
+        <div>
+          <h4 className="font-medium text-destructive mb-1">What Happened</h4>
+          <p className="text-muted-foreground">{explanation.whatHappened}</p>
+        </div>
+        
+        {/* Most likely cause */}
+        <div>
+          <h4 className="font-medium text-yellow-600 dark:text-yellow-400 mb-1">Most Likely Cause</h4>
+          <p className="text-muted-foreground">{explanation.mostLikelyCause}</p>
+        </div>
+        
+        {/* What to do next */}
+        <div>
+          <h4 className="font-medium text-primary mb-1">What To Do Next</h4>
+          <ol className="list-decimal list-inside space-y-1 text-muted-foreground">
+            {explanation.whatToDoNext.map((step, i) => (
+              <li key={i} className="leading-relaxed">{step}</li>
+            ))}
+          </ol>
+        </div>
+        
+        {/* Related logs */}
+        {relatedLogs.length > 0 && (
+          <div>
+            <h4 className="font-medium mb-1">Related Logs ({relatedLogs.length})</h4>
+            <ScrollArea className="h-24 rounded border bg-background/50">
+              <div className="p-2 space-y-1">
+                {relatedLogs.map(log => (
+                  <div key={log.id} className="text-[10px] text-muted-foreground truncate">
+                    <span className="opacity-60">{log.timestamp.toLocaleTimeString()}</span>{' '}
+                    <span className={LEVEL_COLORS[log.level]}>{log.message}</span>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </div>
+        )}
+        
+        {/* Export button */}
+        <Button onClick={onExportSnapshot} className="w-full" size="sm">
+          <FileDown className="h-3 w-3 mr-2" />
+          Export Snapshot for This Error
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+// ============ Log Entry Row ============
+
+interface LogEntryRowProps {
+  entry: DebugEntry;
+  onExplain: (entry: DebugEntry) => void;
+}
+
+function LogEntryRow({ entry, onExplain }: LogEntryRowProps) {
   const [isExpanded, setIsExpanded] = useState(false);
   const hasData = entry.data && Object.keys(entry.data).length > 0;
+  const canExplain = entry.level === 'warn' || entry.level === 'error';
 
   return (
     <div 
-      className={`rounded px-2 py-1 hover:bg-muted/50 cursor-pointer ${
+      className={`rounded px-2 py-1 hover:bg-muted/50 ${
         entry.level === 'error' ? 'bg-red-500/10' : 
         entry.level === 'warn' ? 'bg-yellow-500/10' : ''
       }`}
-      onClick={() => hasData && setIsExpanded(!isExpanded)}
     >
       <div className="flex items-start gap-2">
         {/* Timestamp */}
@@ -369,20 +508,39 @@ function LogEntryRow({ entry }: { entry: DebugEntry }) {
         </span>
         
         {/* Message */}
-        <span className={LEVEL_COLORS[entry.level]}>
+        <span 
+          className={`${LEVEL_COLORS[entry.level]} cursor-pointer flex-1`}
+          onClick={() => hasData && setIsExpanded(!isExpanded)}
+        >
           {entry.message}
         </span>
         
         {/* Duration if present */}
         {entry.duration !== undefined && (
-          <span className="text-muted-foreground ml-auto shrink-0">
+          <span className="text-muted-foreground shrink-0">
             {entry.duration}ms
           </span>
         )}
         
+        {/* Explain button for errors/warnings */}
+        {canExplain && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-5 px-2 text-[10px] shrink-0"
+            onClick={(e) => { e.stopPropagation(); onExplain(entry); }}
+          >
+            <HelpCircle className="h-3 w-3 mr-1" />
+            Explain
+          </Button>
+        )}
+        
         {/* Expand indicator */}
         {hasData && (
-          <span className="text-muted-foreground ml-auto shrink-0">
+          <span 
+            className="text-muted-foreground shrink-0 cursor-pointer"
+            onClick={() => setIsExpanded(!isExpanded)}
+          >
             {isExpanded ? '▼' : '▶'}
           </span>
         )}
