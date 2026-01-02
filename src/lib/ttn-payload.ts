@@ -83,6 +83,11 @@ export interface WebhookConfig {
   selectedUserDisplayName?: string | null;
   selectedUserSites?: Array<{ site_id: string; site_name: string | null; is_default: boolean }>;
   contextSetAt?: string | null; // ISO string for localStorage compatibility
+  // Hydration state (managed by UserSelectionGate)
+  isHydrated?: boolean;
+  lastSyncAt?: string;
+  lastSyncRunId?: string;
+  lastSyncSummary?: string;
 }
 
 // Sync bundle for authenticated sync to Project 1

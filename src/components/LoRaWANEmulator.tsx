@@ -27,7 +27,8 @@ import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
 import TelemetryMonitor from './emulator/TelemetryMonitor';
 import TTNProvisioningWizard from './emulator/TTNProvisioningWizard';
-import UserContextSelector from './emulator/UserContextSelector';
+import UserSelectionGate, { STORAGE_KEY_USER_CONTEXT } from './emulator/UserSelectionGate';
+import UserContextBar from './emulator/UserContextBar';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -604,56 +605,85 @@ export default function LoRaWANEmulator() {
     }
   };
 
+  // Clear user context handler
+  const handleClearContext = useCallback(() => {
+    console.log('[LoRaWANEmulator] Clearing user context');
+    sessionStorage.removeItem(STORAGE_KEY_USER_CONTEXT);
+    // Reset webhookConfig to clear user context fields
+    setWebhookConfig(prev => ({
+      ...prev,
+      testOrgId: undefined,
+      testSiteId: undefined,
+      selectedUserId: undefined,
+      selectedUserDisplayName: undefined,
+      selectedUserSites: undefined,
+      ttnConfig: undefined,
+      contextSetAt: undefined,
+      isHydrated: false,
+      lastSyncAt: undefined,
+      lastSyncRunId: undefined,
+      lastSyncSummary: undefined,
+    }));
+    // Force page reload to show the gate
+    window.location.reload();
+  }, []);
+
   return (
-    <div className="flex flex-col min-h-screen">
-      <EmulatorHeader
-        isRunning={isRunning}
-        readingCount={readingCount}
-        webhookConfig={webhookConfig}
-        onStartEmulation={startEmulation}
-        onStopEmulation={stopEmulation}
-        onSingleReading={sendTempReading}
-      />
+    <UserSelectionGate
+      config={webhookConfig}
+      onConfigChange={setWebhookConfig}
+      gateways={gateways}
+      devices={devices}
+    >
+      <div className="flex flex-col min-h-screen">
+        <EmulatorHeader
+          isRunning={isRunning}
+          readingCount={readingCount}
+          webhookConfig={webhookConfig}
+          onStartEmulation={startEmulation}
+          onStopEmulation={stopEmulation}
+          onSingleReading={sendTempReading}
+        />
 
-      <main className="flex-1 p-6">
-        <Tabs defaultValue="sensors" className="w-full">
-          <TabsList className="grid w-full grid-cols-7 mb-6">
-            <TabsTrigger value="sensors" className="gap-2">
-              <Thermometer className="h-4 w-4" />
-              <span className="hidden sm:inline">Sensors</span>
-            </TabsTrigger>
-            <TabsTrigger value="gateways" className="gap-2">
-              <Radio className="h-4 w-4" />
-              <span className="hidden sm:inline">Gateways</span>
-            </TabsTrigger>
-            <TabsTrigger value="devices" className="gap-2">
-              <Settings className="h-4 w-4" />
-              <span className="hidden sm:inline">Devices</span>
-            </TabsTrigger>
-            <TabsTrigger value="webhook" className="gap-2">
-              <Webhook className="h-4 w-4" />
-              <span className="hidden sm:inline">Webhook</span>
-            </TabsTrigger>
-            <TabsTrigger value="testing" className="gap-2">
-              <FlaskConical className="h-4 w-4" />
-              <span className="hidden sm:inline">Testing</span>
-            </TabsTrigger>
-            <TabsTrigger value="monitor" className="gap-2">
-              <Activity className="h-4 w-4" />
-              <span className="hidden sm:inline">Monitor</span>
-            </TabsTrigger>
-            <TabsTrigger value="logs" className="gap-2">
-              <FileText className="h-4 w-4" />
-              <span className="hidden sm:inline">Logs</span>
-            </TabsTrigger>
-          </TabsList>
-
-          {/* Global User Context Selector */}
-          <UserContextSelector
+        <main className="flex-1 p-6">
+          {/* User Context Bar - read-only display with change option */}
+          <UserContextBar
             config={webhookConfig}
-            onConfigChange={setWebhookConfig}
+            onClearContext={handleClearContext}
             disabled={isRunning}
           />
+
+          <Tabs defaultValue="sensors" className="w-full">
+            <TabsList className="grid w-full grid-cols-7 mb-6">
+              <TabsTrigger value="sensors" className="gap-2">
+                <Thermometer className="h-4 w-4" />
+                <span className="hidden sm:inline">Sensors</span>
+              </TabsTrigger>
+              <TabsTrigger value="gateways" className="gap-2">
+                <Radio className="h-4 w-4" />
+                <span className="hidden sm:inline">Gateways</span>
+              </TabsTrigger>
+              <TabsTrigger value="devices" className="gap-2">
+                <Settings className="h-4 w-4" />
+                <span className="hidden sm:inline">Devices</span>
+              </TabsTrigger>
+              <TabsTrigger value="webhook" className="gap-2">
+                <Webhook className="h-4 w-4" />
+                <span className="hidden sm:inline">Webhook</span>
+              </TabsTrigger>
+              <TabsTrigger value="testing" className="gap-2">
+                <FlaskConical className="h-4 w-4" />
+                <span className="hidden sm:inline">Testing</span>
+              </TabsTrigger>
+              <TabsTrigger value="monitor" className="gap-2">
+                <Activity className="h-4 w-4" />
+                <span className="hidden sm:inline">Monitor</span>
+              </TabsTrigger>
+              <TabsTrigger value="logs" className="gap-2">
+                <FileText className="h-4 w-4" />
+                <span className="hidden sm:inline">Logs</span>
+              </TabsTrigger>
+            </TabsList>
 
           {/* Sensors Tab */}
           <TabsContent value="sensors" className="space-y-6">
@@ -883,7 +913,6 @@ export default function LoRaWANEmulator() {
                   disabled={isRunning}
                   gateways={gateways}
                   devices={devices}
-                  onSyncResult={addSyncResult}
                 />
                 <TestDashboard
                   results={testResults}
@@ -1122,5 +1151,6 @@ export default function LoRaWANEmulator() {
         mode={provisioningMode}
       />
     </div>
+    </UserSelectionGate>
   );
 }
