@@ -1,5 +1,9 @@
 // Pull Telemetry from FrostGuard
 // Queries sensor_readings table from FrostGuard (Project 1) and optionally syncs to local
+//
+// IMPORTANT: This function always returns HTTP 200 with ok:true/false in the body.
+// This is because supabase.functions.invoke() doesn't properly expose error response
+// bodies for non-2xx status codes, causing clients to see generic error messages.
 
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
@@ -26,17 +30,28 @@ interface PullTelemetryResult {
   error_code?: string;
   hint?: string;
   table_attempted?: string;
+  diagnostics?: Record<string, unknown>;
 }
 
 serve(async (req) => {
   const requestId = crypto.randomUUID().slice(0, 8);
-  
+
   // Handle CORS preflight requests
   if (req.method === 'OPTIONS') {
     return new Response(null, { headers: corsHeaders });
   }
 
+  // Diagnostic: Log environment variable availability (not values)
+  const envDiagnostics = {
+    has_frostguard_url: !!Deno.env.get('FROSTGUARD_SUPABASE_URL'),
+    has_frostguard_key: !!Deno.env.get('FROSTGUARD_ANON_KEY'),
+    has_supabase_url: !!Deno.env.get('SUPABASE_URL'),
+    has_service_role_key: !!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
+    frostguard_url_preview: Deno.env.get('FROSTGUARD_SUPABASE_URL')?.slice(0, 30) || '(not set)',
+  };
+
   console.log(`[pull-frostguard-telemetry][${requestId}] Request received`);
+  console.log(`[pull-frostguard-telemetry][${requestId}] ENV_CHECK:`, JSON.stringify(envDiagnostics));
 
   try {
     const body = await req.json() as PullTelemetryRequest;
@@ -45,13 +60,15 @@ serve(async (req) => {
     // Validate required inputs
     if (!org_id && !unit_id) {
       console.log(`[pull-frostguard-telemetry][${requestId}] Missing org_id and unit_id`);
+      // Always return 200 so client can see error details
       return buildResponse({
         ok: false,
         request_id: requestId,
         error: 'Either org_id or unit_id is required',
         error_code: 'MISSING_REQUIRED_PARAM',
         hint: 'Provide org_id to pull telemetry for an organization, or unit_id for a specific unit',
-      }, 400);
+        diagnostics: envDiagnostics,
+      });
     }
 
     console.log(`[pull-frostguard-telemetry][${requestId}] PULL_REQUEST`, {
@@ -66,13 +83,15 @@ serve(async (req) => {
 
     if (!frostguardKey) {
       console.error(`[pull-frostguard-telemetry][${requestId}] Missing FROSTGUARD_ANON_KEY`);
+      // Always return 200 so client can see error details
       return buildResponse({
         ok: false,
         request_id: requestId,
         error: 'FrostGuard credentials not configured',
         error_code: 'MISSING_FROSTGUARD_CONFIG',
-        hint: 'FROSTGUARD_ANON_KEY environment variable is missing. Configure it in Supabase secrets.',
-      }, 500);
+        hint: 'FROSTGUARD_ANON_KEY environment variable is missing. Configure it in Supabase Dashboard > Project Settings > Edge Functions > Secrets.',
+        diagnostics: envDiagnostics,
+      });
     }
 
     const frostguard = createClient(frostguardUrl, frostguardKey);
@@ -98,7 +117,13 @@ serve(async (req) => {
 
     if (fetchError) {
       console.error(`[pull-frostguard-telemetry][${requestId}] FrostGuard query error:`, fetchError);
-      
+      console.error(`[pull-frostguard-telemetry][${requestId}] Error details:`, JSON.stringify({
+        code: fetchError.code,
+        message: fetchError.message,
+        hint: fetchError.hint,
+        details: fetchError.details,
+      }));
+
       // Check if it's a table not found error
       if (fetchError.code === 'PGRST205' || fetchError.message?.includes('not find')) {
         return buildResponse({
@@ -108,7 +133,8 @@ serve(async (req) => {
           error_code: 'TABLE_NOT_FOUND',
           hint: `FrostGuard schema may have changed. Check if sensor_readings table exists. Hint from DB: ${fetchError.hint || 'none'}`,
           table_attempted: 'sensor_readings',
-        }, 404);
+          diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
+        });
       }
 
       // Check if it's an RLS/permission error
@@ -118,19 +144,22 @@ serve(async (req) => {
           request_id: requestId,
           error: `Permission denied: ${fetchError.message}`,
           error_code: 'PERMISSION_DENIED',
-          hint: 'FrostGuard RLS policies may be blocking access. Check that FROSTGUARD_ANON_KEY has SELECT permission.',
+          hint: 'FrostGuard RLS policies may be blocking access. Check that FROSTGUARD_ANON_KEY has SELECT permission on sensor_readings.',
           table_attempted: 'sensor_readings',
-        }, 403);
+          diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
+        });
       }
 
+      // Generic query error - include all available details
       return buildResponse({
         ok: false,
         request_id: requestId,
         error: fetchError.message,
         error_code: fetchError.code || 'QUERY_ERROR',
-        hint: fetchError.hint || 'Query to FrostGuard sensor_readings failed',
+        hint: fetchError.hint || `Query to FrostGuard sensor_readings failed. PostgreSQL error code: ${fetchError.code || 'unknown'}`,
         table_attempted: 'sensor_readings',
-      }, 500);
+        diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code, pg_hint: fetchError.hint },
+      });
     }
 
     if (!readingsData || readingsData.length === 0) {
@@ -143,7 +172,7 @@ serve(async (req) => {
         source: 'sensor_readings',
         synced_to_local: false,
         hint: 'No telemetry data found in FrostGuard for the given criteria',
-      }, 200);
+      });
     }
 
     console.log(`[pull-frostguard-telemetry][${requestId}] Found ${readingsData.length} readings`);
@@ -217,24 +246,38 @@ serve(async (req) => {
       count: readingsData.length,
       source: 'sensor_readings',
       synced_to_local: sync_to_local,
-    }, 200);
+    });
 
   } catch (error) {
-    console.error(`[pull-frostguard-telemetry][${requestId}] Error:`, error);
+    console.error(`[pull-frostguard-telemetry][${requestId}] Unhandled error:`, error);
     const message = error instanceof Error ? error.message : 'Unknown error';
+    const stack = error instanceof Error ? error.stack : undefined;
+
+    // Log the full stack trace for debugging
+    if (stack) {
+      console.error(`[pull-frostguard-telemetry][${requestId}] Stack trace:`, stack);
+    }
+
+    // Always return 200 so client can see error details
     return buildResponse({
       ok: false,
       request_id: requestId,
       error: message,
       error_code: 'UNKNOWN_ERROR',
-      hint: 'An unexpected error occurred while pulling telemetry',
-    }, 500);
+      hint: 'An unexpected error occurred while pulling telemetry. Check Supabase Edge Function logs for details.',
+      diagnostics: {
+        has_frostguard_key: !!Deno.env.get('FROSTGUARD_ANON_KEY'),
+        error_type: error instanceof Error ? error.constructor.name : typeof error,
+      },
+    });
   }
 });
 
-function buildResponse(data: PullTelemetryResult, status: number): Response {
+// Always return HTTP 200 so supabase.functions.invoke() can access the response body.
+// Error state is indicated by ok:false in the response.
+function buildResponse(data: PullTelemetryResult): Response {
   return new Response(JSON.stringify(data), {
-    status,
+    status: 200, // Always 200 - errors are in the body with ok:false
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
