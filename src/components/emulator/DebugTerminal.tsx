@@ -24,6 +24,7 @@ const CATEGORY_ICONS: Record<DebugCategory, React.ReactNode> = {
   'network': <Network className="h-3 w-3" />,
   'org-sync': <RefreshCw className="h-3 w-3" />,
   'ttn': <Radio className="h-3 w-3" />,
+  'ttn-preflight': <Radio className="h-3 w-3" />,
   'provisioning': <Cpu className="h-3 w-3" />,
   'error': <AlertTriangle className="h-3 w-3" />,
 };
@@ -40,6 +41,7 @@ const CATEGORY_LABELS: Record<DebugCategory, string> = {
   'network': 'Network',
   'org-sync': 'Org Sync',
   'ttn': 'TTN',
+  'ttn-preflight': 'Preflight',
   'provisioning': 'Provisioning',
   'error': 'Errors',
 };

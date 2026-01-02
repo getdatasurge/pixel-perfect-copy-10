@@ -472,7 +472,12 @@ serve(async (req) => {
           applicationId,
           deviceId,
           cluster,
+          cluster_used: cluster,
+          host_used: `${cluster}.cloud.thethings.network`,
           settingsSource,
+          cluster_hint: response.status === 404 
+            ? `Device not found on ${cluster}.cloud.thethings.network. Verify this is the correct cluster for your TTN Console.`
+            : undefined,
         }),
         { 
           status: response.status >= 400 && response.status < 500 ? response.status : 502,
