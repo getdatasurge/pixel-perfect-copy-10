@@ -198,6 +198,8 @@ export default function UserSelectionGate({
           appKey: s.app_key || '',
           type: s.type === 'door' ? 'door' : 'temperature',
           gatewayId: s.gateway_id || '',
+          siteId: s.site_id,
+          unitId: s.unit_id,
           credentialSource: hasFrostguardCredentials ? 'frostguard_pull' as const : undefined,
           credentialsLockedFromFrostguard: hasFrostguardCredentials,
         };

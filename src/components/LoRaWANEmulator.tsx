@@ -40,6 +40,8 @@ import {
   createDevice,
   buildTTNPayload 
 } from '@/lib/ttn-payload';
+import { assignDeviceToUnit, fetchOrgState } from '@/lib/frostguardOrgSync';
+import CreateUnitModal from './emulator/CreateUnitModal';
 
 interface LogEntry {
   id: string;
@@ -83,6 +85,7 @@ export default function LoRaWANEmulator() {
   const [syncResults, setSyncResults] = useState<SyncResult[]>([]);
   const [showProvisioningWizard, setShowProvisioningWizard] = useState(false);
   const [provisioningMode, setProvisioningMode] = useState<'devices' | 'gateways'>('devices');
+  const [showCreateUnitModal, setShowCreateUnitModal] = useState(false);
   
   // Storage keys for TTN provisioned entities
   const STORAGE_KEY_TTN_PROVISIONED = 'lorawan-emulator-ttn-provisioned';
@@ -645,6 +648,88 @@ export default function LoRaWANEmulator() {
     window.location.reload();
   }, []);
 
+  // Handle device unit assignment
+  const handleAssignDeviceUnit = useCallback(async (
+    deviceId: string, 
+    unitId: string | undefined, 
+    siteId: string | undefined
+  ) => {
+    if (!webhookConfig.testOrgId) {
+      throw new Error('No organization context');
+    }
+    
+    const result = await assignDeviceToUnit(
+      webhookConfig.testOrgId,
+      deviceId,
+      unitId,
+      siteId
+    );
+    
+    if (!result.ok) {
+      throw new Error(result.error || 'Assignment failed');
+    }
+    
+    // Re-pull org state to confirm the change from FrostGuard
+    const orgResult = await fetchOrgState(webhookConfig.testOrgId);
+    if (orgResult.ok && orgResult.data) {
+      // Update devices with new assignments from FrostGuard
+      const updatedDevices = devices.map(device => {
+        const sensor = orgResult.data!.sensors?.find(s => s.id === device.id);
+        if (sensor) {
+          return {
+            ...device,
+            siteId: sensor.site_id,
+            unitId: sensor.unit_id,
+          };
+        }
+        return device;
+      });
+      setDevices(updatedDevices);
+      
+      // Update units list
+      if (orgResult.data.units) {
+        setWebhookConfig(prev => ({
+          ...prev,
+          availableUnits: orgResult.data!.units?.map(u => ({
+            id: u.id,
+            name: u.name,
+            site_id: u.site_id,
+            description: u.description,
+            location: u.location,
+            created_at: u.created_at,
+          })),
+        }));
+      }
+    }
+  }, [webhookConfig.testOrgId, devices, setDevices, setWebhookConfig]);
+
+  // Handle unit creation and refresh
+  const handleCreateUnit = useCallback(async (
+    siteId: string,
+    name: string,
+    description?: string,
+    location?: string
+  ) => {
+    // This is handled by CreateUnitModal which calls createUnitInFrostGuard
+    // After success, we need to refresh the org state to get the new unit
+    if (webhookConfig.testOrgId) {
+      const orgResult = await fetchOrgState(webhookConfig.testOrgId);
+      if (orgResult.ok && orgResult.data?.units) {
+        setWebhookConfig(prev => ({
+          ...prev,
+          availableUnits: orgResult.data!.units?.map(u => ({
+            id: u.id,
+            name: u.name,
+            site_id: u.site_id,
+            description: u.description,
+            location: u.location,
+            created_at: u.created_at,
+          })),
+        }));
+      }
+    }
+  }, [webhookConfig.testOrgId, setWebhookConfig]);
+
   return (
     <UserSelectionGate
       config={webhookConfig}
@@ -886,6 +971,10 @@ export default function LoRaWANEmulator() {
                 setProvisioningMode('devices');
                 setShowProvisioningWizard(true);
               }}
+              availableUnits={webhookConfig.availableUnits}
+              availableSites={webhookConfig.selectedUserSites}
+              onAssignUnit={handleAssignDeviceUnit}
+              onCreateUnit={() => setShowCreateUnitModal(true)}
             />
           </TabsContent>
 
@@ -1169,6 +1258,36 @@ export default function LoRaWANEmulator() {
         onComplete={handleProvisioningComplete}
         mode={provisioningMode}
       />
+
+      {webhookConfig.testOrgId && webhookConfig.testSiteId && (
+        <CreateUnitModal
+          open={showCreateUnitModal}
+          onOpenChange={setShowCreateUnitModal}
+          orgId={webhookConfig.testOrgId}
+          siteId={webhookConfig.testSiteId}
+          siteName={webhookConfig.selectedUserSites?.find(s => s.site_id === webhookConfig.testSiteId)?.site_name || undefined}
+          existingUnits={webhookConfig.availableUnits || []}
+          onSuccess={async (unit) => {
+            // Refresh units list after creation
+            await handleCreateUnit(webhookConfig.testSiteId!, unit.name);
+            setShowCreateUnitModal(false);
+          }}
+          onCreateUnit={async (data) => {
+            const { createUnitInFrostGuard } = await import('@/lib/frostguardOrgSync');
+            const result = await createUnitInFrostGuard(
+              webhookConfig.testOrgId!,
+              webhookConfig.testSiteId!,
+              data.name,
+              data.description,
+              data.location
+            );
+            if (!result.ok || !result.unit) {
+              throw new Error(result.error || 'Failed to create unit');
+            }
+            return result.unit;
+          }}
+        />
+      )}
 
       {/* Debug Terminal - bottom docked */}
       <DebugTerminal />

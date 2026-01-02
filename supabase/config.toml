@@ -44,3 +44,6 @@ verify_jwt = false
 
 [functions.create-unit]
 verify_jwt = false
+
+[functions.assign-device-unit]
+verify_jwt = false

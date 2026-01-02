@@ -746,3 +746,113 @@ export async function createUnitInFrostGuard(
     };
   }
 }
+
+// ============ Device Unit Assignment ============
+
+export interface AssignDeviceUnitResult {
+  ok: boolean;
+  error?: string;
+  errorDetails?: FrostGuardErrorDetails;
+}
+
+/**
+ * Assigns a device to a unit in FrostGuard via the assign-device-unit edge function.
+ * 
+ * @param orgId - The organization ID
+ * @param sensorId - The sensor/device ID to update
+ * @param unitId - The unit ID to assign (or undefined to unassign)
+ * @param siteId - The site ID (or undefined to unassign)
+ * @returns AssignDeviceUnitResult with success or error
+ */
+export async function assignDeviceToUnit(
+  orgId: string,
+  sensorId: string,
+  unitId: string | undefined,
+  siteId: string | undefined
+): Promise<AssignDeviceUnitResult> {
+  const startTime = performance.now();
+  
+  debug.sync('Assigning device to unit', {
+    org_id: orgId,
+    sensor_id: sensorId,
+    unit_id: unitId,
+    site_id: siteId,
+  });
+  
+  log('network', 'info', 'DEVICE_UNIT_ASSIGN_START', {
+    sensor_id: sensorId,
+    unit_id: unitId,
+    site_id: siteId,
+  });
+
+  try {
+    const { data, error } = await supabase.functions.invoke('assign-device-unit', {
+      body: {
+        org_id: orgId,
+        sensor_id: sensorId,
+        unit_id: unitId,
+        site_id: siteId,
+      },
+    });
+
+    if (error) {
+      log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
+        error: error.message,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      
+      return {
+        ok: false,
+        error: error.message,
+        errorDetails: {
+          message: error.message,
+          hint: 'Edge function invocation failed',
+        },
+      };
+    }
+
+    if (!data?.ok) {
+      const errorDetails: FrostGuardErrorDetails = {
+        message: data?.error || 'Unknown error',
+        hint: 'Assignment request failed',
+        request_id: data?.request_id,
+      };
+      
+      log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
+        error: data?.error,
+        request_id: data?.request_id,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      
+      return { ok: false, error: data?.error, errorDetails };
+    }
+
+    log('network', 'info', 'DEVICE_UNIT_ASSIGN_SUCCESS', {
+      sensor_id: sensorId,
+      unit_id: unitId,
+      site_id: siteId,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    debug.sync('Device assigned to unit successfully', { sensor_id: sensorId, unit_id: unitId });
+
+    return { ok: true };
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    
+    log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
+      error: message,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+    
+    return {
+      ok: false,
+      error: message,
+      errorDetails: {
+        message,
+        hint: 'Unexpected error during device assignment',
+      },
+    };
+  }
+}

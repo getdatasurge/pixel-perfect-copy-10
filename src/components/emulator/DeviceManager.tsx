@@ -5,12 +5,14 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock } from 'lucide-react';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
+import UnitSelect from './UnitSelect';
+import { OrgStateUnit } from '@/lib/frostguardOrgSync';
 
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
@@ -22,6 +24,11 @@ interface DeviceManagerProps {
   ttnConfigured?: boolean;
   ttnProvisionedDevices?: Set<string>;
   onProvisionToTTN?: () => void;
+  // Unit/Site assignment props
+  availableUnits?: OrgStateUnit[];
+  availableSites?: Array<{ site_id: string; site_name: string | null }>;
+  onAssignUnit?: (deviceId: string, unitId: string | undefined, siteId: string | undefined) => Promise<void>;
+  onCreateUnit?: () => void;
 }
 
 export default function DeviceManager({ 
@@ -33,14 +40,97 @@ export default function DeviceManager({
   webhookConfig,
   ttnConfigured,
   ttnProvisionedDevices,
-  onProvisionToTTN
+  onProvisionToTTN,
+  availableUnits,
+  availableSites,
+  onAssignUnit,
+  onCreateUnit,
 }: DeviceManagerProps) {
   const [copiedField, setCopiedField] = useState<string | null>(null);
   const [ttnRegistering, setTtnRegistering] = useState<string | null>(null);
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
+  const [assigningId, setAssigningId] = useState<string | null>(null);
 
   const canSync = !!webhookConfig?.testOrgId;
+
+  // Helper to get site name from site_id
+  const getSiteName = (siteId: string | undefined): string | null => {
+    if (!siteId || !availableSites) return null;
+    const site = availableSites.find(s => s.site_id === siteId);
+    return site?.site_name || null;
+  };
+
+  // Helper to get unit name from unit_id
+  const getUnitName = (unitId: string | undefined): string | null => {
+    if (!unitId || !availableUnits) return null;
+    const unit = availableUnits.find(u => u.id === unitId);
+    return unit?.name || null;
+  };
+
+  // Get location badge for device
+  const getLocationBadge = (device: LoRaWANDevice) => {
+    if (!device.unitId && !device.siteId) {
+      return (
+        <Badge variant="outline" className="text-xs text-yellow-600 border-yellow-600">
+          Unassigned
+        </Badge>
+      );
+    }
+    if (device.unitId) {
+      return (
+        <Badge variant="outline" className="text-xs text-green-600 border-green-600 gap-1">
+          <Box className="h-2 w-2" />
+          Assigned
+        </Badge>
+      );
+    }
+    return (
+      <Badge variant="outline" className="text-xs text-blue-600 border-blue-600">
+        Site Only
+      </Badge>
+    );
+  };
+
+  // Handle unit assignment change
+  const handleUnitChange = async (
+    deviceId: string, 
+    unitId: string | undefined, 
+    unit?: OrgStateUnit
+  ) => {
+    // Determine site_id from selected unit or keep existing
+    const device = devices.find(d => d.id === deviceId);
+    const siteId = unit?.site_id || device?.siteId;
+    
+    // Update local state immediately for responsiveness
+    updateDevice(deviceId, { 
+      unitId, 
+      siteId,
+    });
+    
+    // Sync to FrostGuard if callback provided
+    if (onAssignUnit) {
+      setAssigningId(deviceId);
+      try {
+        await onAssignUnit(deviceId, unitId, siteId);
+        toast({ title: 'Unit Assigned', description: 'Device location updated successfully' });
+      } catch (err) {
+        // Revert local state on error
+        updateDevice(deviceId, { 
+          unitId: device?.unitId,
+          siteId: device?.siteId,
+        });
+        toast({ 
+          title: 'Assignment Failed', 
+          description: err instanceof Error ? err.message : 'Unknown error',
+          variant: 'destructive' 
+        });
+      } finally {
+        setAssigningId(null);
+      }
+    }
+  };
+
 
   const addDevice = (type: 'temperature' | 'door') => {
     const defaultGateway = gateways[0]?.id || '';
@@ -484,7 +574,41 @@ export default function DeviceManager({
                 </div>
               </div>
 
-              {/* Row 2: DevEUI (full width) */}
+              {/* Row 1.5: Location - Store/Site + Unit */}
+              <div className="space-y-3 border-t pt-4">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs font-medium">Location</Label>
+                  {getLocationBadge(device)}
+                </div>
+                
+                <div className="grid grid-cols-2 gap-4">
+                  {/* Store/Site Display */}
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Store / Site</Label>
+                    <div className="flex items-center gap-2 h-9 px-3 border rounded-md bg-muted/50">
+                      <MapPin className="h-3 w-3 text-muted-foreground" />
+                      <span className="text-sm truncate">
+                        {getSiteName(device.siteId) || device.siteId?.slice(0, 8) || 'Unassigned'}
+                      </span>
+                    </div>
+                  </div>
+                  
+                  {/* Unit Dropdown */}
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">Unit</Label>
+                    <UnitSelect
+                      units={availableUnits || []}
+                      siteId={device.siteId}
+                      selectedUnitId={device.unitId}
+                      onSelect={(unitId, unit) => handleUnitChange(device.id, unitId, unit)}
+                      onCreate={onCreateUnit || (() => {})}
+                      disabled={disabled || assigningId === device.id}
+                    />
+                  </div>
+                </div>
+              </div>
+
+
               <div className="space-y-2">
                 <Label className="text-xs text-muted-foreground">DevEUI</Label>
                 <div className="flex gap-2">
