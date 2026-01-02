@@ -14,6 +14,9 @@ export interface TTNCanonicalConfig {
   source: 'FROSTGUARD_CANONICAL' | 'LOCAL_CACHE' | 'UNSET';
   orgId: string | null;
   userId: string | null;
+  // Local dirty tracking - prevents canonical overwrites of fresh local saves
+  localDirty: boolean;
+  localSavedAt: string | null;
 }
 
 // Session storage key (not localStorage to prevent cross-session staleness)
@@ -30,6 +33,8 @@ const EMPTY_CONFIG: TTNCanonicalConfig = {
   source: 'UNSET',
   orgId: null,
   userId: null,
+  localDirty: false,
+  localSavedAt: null,
 };
 
 // Config version for cache busting (increments on each update)
@@ -170,6 +175,111 @@ export function subscribeToConfigChanges(callback: () => void): () => void {
 }
 
 /**
+ * Mark config as locally dirty (just saved, don't overwrite with canonical)
+ */
+export function markLocalDirty(apiKeyLast4: string): void {
+  canonicalConfig = {
+    ...canonicalConfig,
+    localDirty: true,
+    localSavedAt: new Date().toISOString(),
+    apiKeyLast4,
+  };
+  configVersion++;
+  saveToStorage(canonicalConfig);
+  
+  log('ttn-sync', 'info', 'TTN_CONFIG_MARKED_DIRTY', {
+    apiKeyLast4: `****${apiKeyLast4}`,
+    localSavedAt: canonicalConfig.localSavedAt,
+    configVersion,
+  });
+  
+  notifyListeners();
+}
+
+/**
+ * Check if local config is dirty (recently saved locally)
+ */
+export function isLocalDirty(): boolean {
+  return canonicalConfig.localDirty;
+}
+
+/**
+ * Check if a canonical update should be accepted (not overwriting fresh local save)
+ * Returns true if canonical update is allowed
+ */
+export function canAcceptCanonicalUpdate(canonicalUpdatedAt: string | null, canonicalApiKeyLast4: string | null): boolean {
+  // If not dirty, always accept canonical
+  if (!canonicalConfig.localDirty) {
+    return true;
+  }
+  
+  // If dirty but no local save timestamp, be safe and reject
+  if (!canonicalConfig.localSavedAt) {
+    return false;
+  }
+  
+  // If canonical has no timestamp, reject (local is newer)
+  if (!canonicalUpdatedAt) {
+    return false;
+  }
+  
+  // Compare timestamps - only accept if canonical is genuinely newer
+  const localTime = new Date(canonicalConfig.localSavedAt).getTime();
+  const canonicalTime = new Date(canonicalUpdatedAt).getTime();
+  
+  // Add 2 second buffer to account for clock skew
+  const isCanonicalNewer = canonicalTime > localTime + 2000;
+  
+  // Also check if the key matches (sync complete)
+  const keyMatches = canonicalApiKeyLast4 === canonicalConfig.apiKeyLast4;
+  
+  log('ttn-sync', 'debug', 'TTN_CANONICAL_UPDATE_CHECK', {
+    localDirty: canonicalConfig.localDirty,
+    localSavedAt: canonicalConfig.localSavedAt,
+    canonicalUpdatedAt,
+    isCanonicalNewer,
+    keyMatches,
+    localKeyLast4: canonicalConfig.apiKeyLast4 ? `****${canonicalConfig.apiKeyLast4}` : null,
+    canonicalKeyLast4: canonicalApiKeyLast4 ? `****${canonicalApiKeyLast4}` : null,
+  });
+  
+  // Only accept if canonical is newer AND keys match (confirming sync)
+  return isCanonicalNewer && keyMatches;
+}
+
+/**
+ * Clear the local dirty flag (after confirmed sync or manual clear)
+ */
+export function clearLocalDirty(): void {
+  if (canonicalConfig.localDirty) {
+    canonicalConfig = {
+      ...canonicalConfig,
+      localDirty: false,
+    };
+    configVersion++;
+    saveToStorage(canonicalConfig);
+    
+    log('ttn-sync', 'info', 'TTN_CONFIG_DIRTY_CLEARED', { configVersion });
+    notifyListeners();
+  }
+}
+
+/**
+ * Log a config snapshot for debugging
+ */
+export function logConfigSnapshot(context: string): void {
+  log('ttn-sync', 'info', `TTN_CONFIG_SNAPSHOT_${context}`, {
+    orgId: canonicalConfig.orgId,
+    source: canonicalConfig.source,
+    apiKeyLast4: canonicalConfig.apiKeyLast4 ? `****${canonicalConfig.apiKeyLast4}` : null,
+    updatedAt: canonicalConfig.updatedAt,
+    localDirty: canonicalConfig.localDirty,
+    localSavedAt: canonicalConfig.localSavedAt,
+    configVersion,
+  });
+}
+
+/**
  * Get config summary for debugging/logging
  */
 export function getConfigSummary(): {
@@ -181,6 +291,8 @@ export function getConfigSummary(): {
   orgId: string | null;
   isStale: boolean;
   configVersion: number;
+  localDirty: boolean;
+  localSavedAt: string | null;
 } {
   return {
     source: canonicalConfig.source,
@@ -191,5 +303,7 @@ export function getConfigSummary(): {
     orgId: canonicalConfig.orgId,
     isStale: isConfigStale(),
     configVersion,
+    localDirty: canonicalConfig.localDirty,
+    localSavedAt: canonicalConfig.localSavedAt,
   };
 }

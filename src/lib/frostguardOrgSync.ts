@@ -39,6 +39,7 @@ export interface OrgStateTTN {
   application_id: string;
   api_key_last4?: string;
   webhook_secret_last4?: string;
+  updated_at?: string;
 }
 
 // Unit represents a storage unit, freezer, or monitored location within a site

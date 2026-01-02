@@ -43,7 +43,7 @@ import {
 import { assignDeviceToUnit, fetchOrgState } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
-import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig } from '@/lib/ttnConfigStore';
+import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
 import CreateUnitModal from './emulator/CreateUnitModal';
 
 interface LogEntry {
@@ -362,11 +362,28 @@ export default function LoRaWANEmulator() {
         // Check centralized config store for canonical values
         const canonicalConfig = getCanonicalConfig();
         
+        // Log snapshot before simulation
+        logConfigSnapshot('BEFORE_SIMULATE');
+        
         // Freshness guard: Check if TTN config is stale or not from canonical source
+        // CRITICAL: Don't refresh if locally dirty (user just saved a new key)
+        const isLocallyDirty = isLocalDirty();
         const shouldRefresh = 
-          canonicalConfig.source !== 'FROSTGUARD_CANONICAL' ||
-          isConfigStale(5 * 60 * 1000) || // 5 minutes
-          !canonicalConfig.apiKeyLast4;
+          !isLocallyDirty && // Never refresh if locally dirty
+          (
+            canonicalConfig.source === 'UNSET' || // No config at all
+            (canonicalConfig.source !== 'FROSTGUARD_CANONICAL' && isConfigStale(5 * 60 * 1000)) || // Stale non-canonical
+            !canonicalConfig.apiKeyLast4 // No key
+          );
+        
+        if (isLocallyDirty) {
+          log('ttn-sync', 'info', 'TTN_REFRESH_SKIPPED_LOCAL_DIRTY', { 
+            source: canonicalConfig.source,
+            apiKeyLast4: canonicalConfig.apiKeyLast4 ? `****${canonicalConfig.apiKeyLast4}` : null,
+            localSavedAt: canonicalConfig.localSavedAt,
+            reason: 'User recently saved a new key locally',
+          });
+        }
         
         if (shouldRefresh && webhookConfig.testOrgId) {
           log('ttn-sync', 'info', 'TTN_CONFIG_STALE_OR_NOT_CANONICAL', { 
@@ -380,36 +397,55 @@ export default function LoRaWANEmulator() {
           const pullResult = await fetchOrgState(webhookConfig.testOrgId);
           if (pullResult.ok && pullResult.data?.ttn) {
             const fgTtn = pullResult.data.ttn;
-            log('ttn-sync', 'info', 'TTN_CONFIG_REFRESHED_FOR_SIMULATE', {
-              api_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
-              source: 'FROSTGUARD_CANONICAL',
-            });
             
-            // Update the centralized store
-            setCanonicalConfig({
-              enabled: fgTtn.enabled,
-              cluster: fgTtn.cluster,
-              applicationId: fgTtn.application_id,
-              apiKeyLast4: fgTtn.api_key_last4 || null,
-              webhookSecretLast4: fgTtn.webhook_secret_last4 || null,
-              updatedAt: new Date().toISOString(),
-              source: 'FROSTGUARD_CANONICAL',
-              orgId: webhookConfig.testOrgId,
-              userId: webhookConfig.selectedUserId || null,
-            });
+            // Check if we can accept this canonical update
+            const canUpdate = canAcceptCanonicalUpdate(fgTtn.updated_at, fgTtn.api_key_last4);
             
-            // Update the webhook config with fresh TTN settings
-            setWebhookConfig(prev => ({
-              ...prev,
-              ttnConfig: {
-                ...prev.ttnConfig,
+            if (canUpdate) {
+              log('ttn-sync', 'info', 'TTN_CONFIG_REFRESHED_FOR_SIMULATE', {
+                api_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
+                source: 'FROSTGUARD_CANONICAL',
+              });
+              
+              // Update the centralized store
+              setCanonicalConfig({
                 enabled: fgTtn.enabled,
+                cluster: fgTtn.cluster,
                 applicationId: fgTtn.application_id,
-                cluster: fgTtn.cluster as 'eu1' | 'nam1',
-                api_key_last4: fgTtn.api_key_last4,
-                updated_at: new Date().toISOString(),
-              },
-            }));
+                apiKeyLast4: fgTtn.api_key_last4 || null,
+                webhookSecretLast4: fgTtn.webhook_secret_last4 || null,
+                updatedAt: new Date().toISOString(),
+                source: 'FROSTGUARD_CANONICAL',
+                orgId: webhookConfig.testOrgId,
+                userId: webhookConfig.selectedUserId || null,
+                localDirty: false,
+                localSavedAt: null,
+              });
+              
+              // Clear dirty flag since canonical now matches
+              clearLocalDirty();
+              
+              // Update the webhook config with fresh TTN settings
+              setWebhookConfig(prev => ({
+                ...prev,
+                ttnConfig: {
+                  ...prev.ttnConfig,
+                  enabled: fgTtn.enabled,
+                  applicationId: fgTtn.application_id,
+                  cluster: fgTtn.cluster as 'eu1' | 'nam1',
+                  api_key_last4: fgTtn.api_key_last4,
+                  updated_at: new Date().toISOString(),
+                },
+              }));
+            } else {
+              log('ttn-sync', 'warn', 'TTN_CANONICAL_UPDATE_REJECTED', {
+                reason: 'Local config is newer or different',
+                local_key_last4: canonicalConfig.apiKeyLast4 ? `****${canonicalConfig.apiKeyLast4}` : null,
+                canonical_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
+                local_saved_at: canonicalConfig.localSavedAt,
+                canonical_updated_at: fgTtn.updated_at,
+              });
+            }
           } else if (!canonicalConfig.apiKeyLast4 && !ttnConfig.api_key_last4) {
             // Can't proceed without a key
             addLog('error', '❌ TTN API key not configured. Save TTN settings first.');
