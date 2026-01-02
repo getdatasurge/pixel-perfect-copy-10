@@ -457,11 +457,46 @@ export default function LoRaWANEmulator() {
 
         // Handle Supabase invoke error (network, etc)
         if (error) {
-          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
-            error: error.message,
+          // Try to extract detailed error info from the error context
+          const errorContext = (error as any).context;
+          let errorDetails = {
+            message: error.message || 'Unknown error',
             errorType: 'invoke_error',
+            hint: 'Check network connection and Edge Function logs.',
+          };
+          
+          // If context has response body, parse it
+          if (errorContext?.body) {
+            try {
+              const bodyData = typeof errorContext.body === 'string' 
+                ? JSON.parse(errorContext.body) 
+                : errorContext.body;
+              errorDetails = {
+                message: bodyData.error || bodyData.message || error.message,
+                errorType: bodyData.errorType || 'invoke_error',
+                hint: bodyData.hint,
+                ...bodyData,
+              };
+            } catch {
+              // Body wasn't JSON, use raw message
+            }
+          }
+          
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_INVOKE_ERROR', {
+            error: errorDetails.message,
+            errorType: errorDetails.errorType,
+            hint: errorDetails.hint,
+            originalError: error.message,
           });
-          throw error;
+          
+          // Show actionable error message
+          toast({
+            title: 'TTN Simulation Failed',
+            description: `${errorDetails.message}${errorDetails.hint ? ` - ${errorDetails.hint}` : ''}`,
+            variant: 'destructive',
+          });
+          
+          throw new Error(errorDetails.message);
         }
         
         // Handle TTN-level error (API returned non-success)

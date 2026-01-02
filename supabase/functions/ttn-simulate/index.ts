@@ -409,12 +409,14 @@ serve(async (req) => {
     const deviceCheck = await checkDeviceExists(cluster!, applicationId!, deviceId, apiKey);
     if (!deviceCheck.exists) {
       console.error(`[ttn-simulate][${requestId}] Preflight check failed: device not found in TTN`);
+      // Return 200 with success:false so frontend can parse the error details
       return new Response(
         JSON.stringify({ 
           success: false, 
           error: deviceCheck.error,
           errorType: 'device_not_found',
           hint: deviceCheck.hint,
+          ttn_status: 404,
           deviceId,
           applicationId,
           cluster,
@@ -422,7 +424,7 @@ serve(async (req) => {
           host_used: `${cluster}.cloud.thethings.network`,
           request_id: requestId,
         }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
 
@@ -474,6 +476,14 @@ serve(async (req) => {
     if (!response.ok) {
       const parsedError = parseTTNError(response.status, responseText, applicationId!, deviceId);
       
+      console.log(`[ttn-simulate][${requestId}] TTN error parsed:`, {
+        errorType: parsedError.errorType,
+        status: response.status,
+        message: parsedError.message,
+      });
+      
+      // IMPORTANT: Return 200 with success:false so frontend can parse the response
+      // supabase.functions.invoke throws on non-2xx and loses the response body
       return new Response(
         JSON.stringify({ 
           success: false, 
@@ -481,7 +491,8 @@ serve(async (req) => {
           errorType: parsedError.errorType,
           requiredRights: parsedError.requiredRights,
           hint: parsedError.hint,
-          status: response.status,
+          ttn_status: response.status,
+          status: response.status, // Keep for backward compatibility
           applicationId,
           deviceId,
           cluster,
@@ -494,7 +505,7 @@ serve(async (req) => {
             : undefined,
         }),
         { 
-          status: response.status >= 400 && response.status < 500 ? response.status : 502,
+          status: 200, // Return 200 so invoke doesn't throw
           headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
         }
       );
