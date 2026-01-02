@@ -25,6 +25,34 @@ interface TTNSettings {
   enabled: boolean;
 }
 
+type TtnPayload = {
+  api_key?: string;
+  application_id?: string;
+  cluster?: string;
+  enabled?: boolean;
+};
+
+function isTtnPayload(value: unknown): value is TtnPayload {
+  if (!value || typeof value !== 'object') {
+    return false;
+  }
+
+  const payload = value as Record<string, unknown>;
+  const stringKeys = ['api_key', 'application_id', 'cluster'] as const;
+
+  for (const key of stringKeys) {
+    if (key in payload && payload[key] != null && typeof payload[key] !== 'string') {
+      return false;
+    }
+  }
+
+  if ('enabled' in payload && payload.enabled != null && typeof payload.enabled !== 'boolean') {
+    return false;
+  }
+
+  return true;
+}
+
 // Normalize DevEUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
 function normalizeDevEui(devEui: string): string | null {
   const cleaned = devEui.replace(/[:\s-]/g, '').toLowerCase();
@@ -158,7 +186,12 @@ async function loadUserSettings(userId: string): Promise<TTNSettings | null> {
       return null;
     }
 
-    const ttn = data.ttn as any;
+    const ttn = data.ttn;
+    if (!isTtnPayload(ttn)) {
+      console.warn(`Invalid TTN settings payload for user ${userId}`);
+      return null;
+    }
+
     if (!ttn.enabled) {
       console.log(`TTN not enabled for user ${userId}`);
       return null;
@@ -166,10 +199,10 @@ async function loadUserSettings(userId: string): Promise<TTNSettings | null> {
 
     // Map synced_users.ttn structure to TTNSettings interface
     return {
-      api_key: ttn.api_key || null,
-      application_id: ttn.application_id || null,
+      api_key: ttn.api_key ?? null,
+      application_id: ttn.application_id ?? null,
       cluster: ttn.cluster || 'eu1',
-      enabled: ttn.enabled || false,
+      enabled: ttn.enabled ?? false,
     };
   } catch (err) {
     console.error('Exception loading user settings:', err);
@@ -273,7 +306,8 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    let { org_id, selected_user_id, deviceId, decodedPayload, fPort } = body;
+    const { org_id, selected_user_id, decodedPayload, fPort } = body;
+    let { deviceId } = body;
     
     console.log(`[ttn-simulate][${requestId}] Processing request`, { deviceId, org_id, selected_user_id });
 
