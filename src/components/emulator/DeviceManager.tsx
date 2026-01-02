@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy, Database } from 'lucide-react';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy, Database, ChevronDown } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -17,6 +17,8 @@ import SiteSelect from './SiteSelect';
 import { OrgStateUnit } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { downloadSnapshot, buildSupportSnapshot } from '@/lib/supportSnapshot';
+import { DEVICE_TEMPLATES, normalizeEui, normalizeAppKey } from '@/lib/deviceTemplates';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
   gateways: GatewayConfig[];
@@ -460,6 +462,11 @@ export default function DeviceManager({
     const startTime = Date.now();
     
     try {
+      // Normalize credentials before sending (single source of truth)
+      const normalizedDevEui = normalizeEui(device.devEui) || device.devEui;
+      const normalizedJoinEui = normalizeEui(device.joinEui) || device.joinEui;
+      const normalizedAppKey = normalizeAppKey(device.appKey) || device.appKey;
+      
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
         body: {
           metadata: {
@@ -471,17 +478,19 @@ export default function DeviceManager({
           context: {
             org_id: webhookConfig.testOrgId,
             site_id: webhookConfig.testSiteId,
-            unit_id: webhookConfig.testUnitId, // Use unit_id not unit_id_override
+            unit_id: webhookConfig.testUnitId,
+            ttn_application_id: webhookConfig.ttnConfig?.applicationId,
+            ttn_region: webhookConfig.ttnConfig?.cluster,
           },
           entities: {
             gateways: [],
             devices: [{
               id: device.id,
               name: device.name,
-              dev_eui: device.devEui,
-              join_eui: device.joinEui,
-              app_key: device.appKey,
-              type: device.type,
+              dev_eui: normalizedDevEui,
+              join_eui: normalizedJoinEui,
+              app_key: normalizedAppKey,
+              type: device.type, // 'door' or 'temperature' - backend maps to sensor_kind
               gateway_id: device.gatewayId,
             }],
           },
@@ -524,7 +533,8 @@ export default function DeviceManager({
   };
 
   // Write Test Sensor - DB-only smoke test without TTN
-  const writeTestSensor = async () => {
+  // Now supports both temperature and door sensor types with correct metadata
+  const writeTestSensor = async (type: 'temperature' | 'door' = 'temperature') => {
     if (!webhookConfig?.testOrgId) {
       toast({ 
         title: 'Configure Test Context', 
@@ -535,7 +545,9 @@ export default function DeviceManager({
     }
 
     const requestId = crypto.randomUUID().slice(0, 8);
+    const template = DEVICE_TEMPLATES[type];
     const testDevEui = generateEUI().toUpperCase();
+    
     const testSensor = {
       id: crypto.randomUUID(),
       org_id: webhookConfig.testOrgId,
@@ -544,15 +556,23 @@ export default function DeviceManager({
       dev_eui: testDevEui,
       join_eui: generateEUI().toUpperCase(),
       app_key: generateAppKey().toUpperCase(),
-      sensor_kind: 'temp' as const,
+      sensor_kind: template.sensor_kind,
+      manufacturer: template.manufacturer,
+      model: template.model,
+      firmware_version: template.firmware_version,
+      description: template.description,
       status: 'pending' as const,
-      name: `Test Sensor ${Date.now().toString(36).toUpperCase()}`,
+      name: `Test ${type === 'door' ? 'Door' : 'Temp'} Sensor ${Date.now().toString(36).toUpperCase()}`,
       ttn_device_id: `sensor-${testDevEui.toLowerCase()}`,
+      ttn_application_id: webhookConfig.ttnConfig?.applicationId || null,
+      ttn_region: webhookConfig.ttnConfig?.cluster || 'nam1',
     };
     
     log('network', 'info', 'WRITE_TEST_SENSOR_REQUEST', {
       request_id: requestId,
       sensor_id: testSensor.id,
+      sensor_type: type,
+      sensor_kind: template.sensor_kind,
       dev_eui: testSensor.dev_eui,
       org_id: testSensor.org_id,
     });
@@ -579,11 +599,12 @@ export default function DeviceManager({
         log('network', 'info', 'WRITE_TEST_SENSOR_SUCCESS', {
           request_id: requestId,
           sensor_id: data.id,
+          sensor_kind: template.sensor_kind,
           dev_eui: data.dev_eui,
         });
         toast({ 
-          title: 'Test Sensor Created', 
-          description: `ID: ${data.id.slice(0, 8)}... DevEUI: ${data.dev_eui}` 
+          title: `Test ${type === 'door' ? 'Door' : 'Temp'} Sensor Created`, 
+          description: `${template.model} (${template.sensor_kind}) • DevEUI: ${data.dev_eui}` 
         });
       }
     } catch (err) {
@@ -697,21 +718,35 @@ export default function DeviceManager({
             </Tooltip>
           </TooltipProvider>
 
-          {/* DB-only Smoke Test Button */}
+          {/* DB-only Smoke Test Button with type dropdown */}
           <TooltipProvider>
             <Tooltip>
               <TooltipTrigger asChild>
                 <span>
-                  <Button
-                    onClick={writeTestSensor}
-                    disabled={!canSync || disabled}
-                    size="sm"
-                    variant="outline"
-                    className="gap-1"
-                  >
-                    <Database className="h-4 w-4" />
-                    Write Test Sensor
-                  </Button>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        disabled={!canSync || disabled}
+                        size="sm"
+                        variant="outline"
+                        className="gap-1"
+                      >
+                        <Database className="h-4 w-4" />
+                        Write Test Sensor
+                        <ChevronDown className="h-3 w-3" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent>
+                      <DropdownMenuItem onClick={() => writeTestSensor('temperature')}>
+                        <Thermometer className="h-4 w-4 mr-2" />
+                        Temperature Sensor
+                      </DropdownMenuItem>
+                      <DropdownMenuItem onClick={() => writeTestSensor('door')}>
+                        <DoorOpen className="h-4 w-4 mr-2" />
+                        Door Sensor
+                      </DropdownMenuItem>
+                    </DropdownMenuContent>
+                  </DropdownMenu>
                 </span>
               </TooltipTrigger>
               {!canSync && (
