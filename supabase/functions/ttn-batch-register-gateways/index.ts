@@ -28,6 +28,7 @@ interface GatewayProvisionResult {
   error_code?: string;
   retryable?: boolean;
   attempts?: number;
+  diagnostics?: Record<string, unknown>;
 }
 
 // Normalize Gateway EUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
@@ -86,7 +87,13 @@ function isRetryableError(error?: string, statusCode?: number): boolean {
 // Get error code from status or error message
 function getErrorCode(statusCode?: number, error?: string): string {
   if (statusCode === 401) return 'AUTH_INVALID';
-  if (statusCode === 403) return 'AUTH_FORBIDDEN';
+  // Specifically check for permission-related 403 errors
+  if (statusCode === 403) {
+    if (error?.toLowerCase().includes('permission') || error?.toLowerCase().includes('gateway')) {
+      return 'PERMISSION_MISSING';
+    }
+    return 'AUTH_FORBIDDEN';
+  }
   if (statusCode === 404) return 'NOT_FOUND';
   if (statusCode === 409) return 'ALREADY_EXISTS';
   if (statusCode === 429) return 'RATE_LIMITED';
@@ -185,8 +192,10 @@ async function registerGatewayWithRetry(
 
       // Parse error
       let errorMessage = `TTN API error: ${response.status}`;
+      let ttnErrorDetails: Record<string, unknown> = {};
       try {
         const errorData = JSON.parse(responseText);
+        ttnErrorDetails = errorData;
         if (errorData.message) {
           errorMessage = errorData.message;
         }
@@ -200,21 +209,35 @@ async function registerGatewayWithRetry(
       }
 
       lastError = errorMessage;
+      const errorCode = getErrorCode(response.status, errorMessage);
       
       // Check if error is retryable
       const retryable = isRetryableError(errorMessage, response.status);
       
       if (!retryable) {
-        // Non-retryable error, return immediately
-        console.error(`[${requestId}] Non-retryable error for ${gatewayId}: ${errorMessage}`);
+        // Non-retryable error, return immediately with enhanced diagnostics
+        console.error(`[${requestId}] Non-retryable error for ${gatewayId}: ${errorMessage} (code: ${errorCode})`);
+        
+        // Build diagnostic info for permission errors
+        const diagnostics: Record<string, unknown> = {
+          ttn_status: response.status,
+        };
+        
+        if (errorCode === 'PERMISSION_MISSING' || errorCode === 'AUTH_FORBIDDEN') {
+          diagnostics.missing_permission = 'gateways:write';
+          diagnostics.fix_instructions = 'Add gateways:read and gateways:write permissions to your API key in TTN Console';
+          diagnostics.ttn_error = ttnErrorDetails;
+        }
+        
         return {
           eui,
           ttn_gateway_id: gatewayId,
           status: 'failed',
           error: errorMessage,
-          error_code: getErrorCode(response.status, errorMessage),
+          error_code: errorCode,
           retryable: false,
           attempts: attempt,
+          diagnostics,
         };
       }
 
