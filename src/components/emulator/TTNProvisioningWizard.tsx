@@ -82,6 +82,7 @@ export default function TTNProvisioningWizard({
   // Discovery state
   const [deviceStatuses, setDeviceStatuses] = useState<Record<string, 'registered' | 'not_registered' | 'checking' | 'error'>>({});
   const [selectedDevices, setSelectedDevices] = useState<string[]>([]);
+  const [reprovisionMode, setReprovisionMode] = useState(false);
 
   // Execution state
   const [isExecuting, setIsExecuting] = useState(false);
@@ -118,6 +119,7 @@ export default function TTNProvisioningWizard({
       setExecutionProgress(0);
       setProvisionResults([]);
       setProvisionSummary({ created: 0, already_exists: 0, failed: 0, total: 0 });
+      setReprovisionMode(false);
     }
   }, [open]);
 
@@ -280,6 +282,8 @@ export default function TTNProvisioningWizard({
               selectedDevices={selectedDevices}
               setSelectedDevices={setSelectedDevices}
               mode={mode}
+              reprovisionMode={reprovisionMode}
+              setReprovisionMode={setReprovisionMode}
             />
           )}
 
@@ -291,6 +295,8 @@ export default function TTNProvisioningWizard({
               onConfirm={() => markStepPassed(3)}
               stepStatus={stepStatus[3]}
               mode={mode}
+              reprovisionMode={reprovisionMode}
+              deviceStatuses={deviceStatuses}
             />
           )}
 
