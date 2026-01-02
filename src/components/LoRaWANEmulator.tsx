@@ -358,6 +358,51 @@ export default function LoRaWANEmulator() {
       
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
+        // Freshness guard: Check if TTN config is stale or missing API key
+        const configUpdatedAt = ttnConfig.updated_at ? new Date(ttnConfig.updated_at).getTime() : 0;
+        const configAge = Date.now() - configUpdatedAt;
+        const MAX_CONFIG_AGE_MS = 5 * 60 * 1000; // 5 minutes
+        
+        if ((configAge > MAX_CONFIG_AGE_MS || !ttnConfig.api_key_last4) && webhookConfig.testOrgId) {
+          log('ttn-sync', 'info', 'TTN_CONFIG_STALE', { 
+            age_ms: configAge, 
+            has_key_last4: !!ttnConfig.api_key_last4,
+            threshold_ms: MAX_CONFIG_AGE_MS,
+          });
+          
+          // Auto-refresh from FrostGuard
+          const pullResult = await fetchOrgState(webhookConfig.testOrgId);
+          if (pullResult.ok && pullResult.data?.ttn) {
+            log('ttn-sync', 'info', 'TTN_CONFIG_REFRESHED', {
+              api_key_last4: pullResult.data.ttn.api_key_last4 
+                ? `****${pullResult.data.ttn.api_key_last4}` 
+                : null,
+              source: 'FROSTGUARD_CANONICAL',
+            });
+            // Update the webhook config with fresh TTN settings
+            setWebhookConfig(prev => ({
+              ...prev,
+              ttnConfig: {
+                ...prev.ttnConfig,
+                enabled: pullResult.data!.ttn!.enabled,
+                applicationId: pullResult.data!.ttn!.application_id,
+                cluster: pullResult.data!.ttn!.cluster as 'eu1' | 'nam1',
+                api_key_last4: pullResult.data!.ttn!.api_key_last4,
+                updated_at: new Date().toISOString(),
+              },
+            }));
+          } else if (!ttnConfig.api_key_last4) {
+            // Can't proceed without a key
+            addLog('error', '❌ TTN API key not configured. Save TTN settings first.');
+            toast({
+              title: 'TTN Not Configured',
+              description: 'Please save TTN settings before simulating.',
+              variant: 'destructive',
+            });
+            return;
+          }
+        }
+        
         // Use canonical device_id format: sensor-{normalized_deveui}
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
         const deviceId = `sensor-${normalizedDevEui}`;
