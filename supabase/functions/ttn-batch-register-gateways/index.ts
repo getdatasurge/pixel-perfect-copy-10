@@ -31,6 +31,13 @@ interface GatewayProvisionResult {
   diagnostics?: Record<string, unknown>;
 }
 
+interface TTNSettings {
+  api_key: string | null;
+  cluster: string;
+  gateway_owner_type: 'user' | 'organization';
+  gateway_owner_id: string | null;
+}
+
 // Normalize Gateway EUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
 function normalizeGatewayEui(eui: string): string | null {
   const cleaned = eui.replace(/[:\s-]/g, '').toLowerCase();
@@ -89,7 +96,7 @@ function getErrorCode(statusCode?: number, error?: string): string {
   if (statusCode === 401) return 'AUTH_INVALID';
   // Specifically check for permission-related 403 errors
   if (statusCode === 403) {
-    if (error?.toLowerCase().includes('permission') || error?.toLowerCase().includes('gateway')) {
+    if (error?.toLowerCase().includes('permission') || error?.toLowerCase().includes('gateway') || error?.toLowerCase().includes('no rights')) {
       return 'PERMISSION_MISSING';
     }
     return 'AUTH_FORBIDDEN';
@@ -111,6 +118,8 @@ async function registerGatewayWithRetry(
   apiKey: string,
   cluster: string,
   frequencyPlan: string,
+  ownerType: 'user' | 'organization',
+  ownerId: string,
   requestId: string
 ): Promise<GatewayProvisionResult> {
   const { eui, name } = gateway;
@@ -133,11 +142,15 @@ async function registerGatewayWithRetry(
   let lastError = '';
   let lastStatusCode = 0;
   
+  // Build the owner-scoped TTN URL
+  const ownerPath = ownerType === 'organization'
+    ? `organizations/${ownerId}`
+    : `users/${ownerId}`;
+  const ttnUrl = `https://${cluster}.cloud.thethings.network/api/v3/${ownerPath}/gateways`;
+  
   for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
     try {
-      console.log(`[${requestId}] Attempt ${attempt}/${MAX_RETRIES} for gateway ${gatewayId}`);
-      
-      const ttnUrl = `https://${cluster}.cloud.thethings.network/api/v3/users/admin/gateways`;
+      console.log(`[${requestId}] Attempt ${attempt}/${MAX_RETRIES} for gateway ${gatewayId} via ${ownerPath}`);
       
       const gatewayPayload = {
         gateway: {
@@ -155,6 +168,14 @@ async function registerGatewayWithRetry(
           require_authenticated_connection: false,
         },
       };
+
+      console.log(`[${requestId}] GATEWAY_PROVISION_REQUEST`, {
+        gateway_id: gatewayId,
+        owner_type: ownerType,
+        owner_id: ownerId,
+        endpoint: ttnUrl,
+        api_key_last4: apiKey.slice(-4),
+      });
 
       const response = await fetch(ttnUrl, {
         method: 'POST',
@@ -200,9 +221,15 @@ async function registerGatewayWithRetry(
           errorMessage = errorData.message;
         }
         if (response.status === 403) {
-          errorMessage = 'API key lacks permission to register gateways';
+          if (errorMessage.includes('no rights') || errorMessage.includes('permission')) {
+            errorMessage = `API key lacks permission to register gateways under ${ownerType} "${ownerId}". Use a Personal or Organization API key with gateways:write permission.`;
+          } else {
+            errorMessage = 'API key lacks permission to register gateways';
+          }
         } else if (response.status === 401) {
           errorMessage = 'Invalid or expired TTN API key';
+        } else if (response.status === 404) {
+          errorMessage = `${ownerType === 'organization' ? 'Organization' : 'User'} "${ownerId}" not found in TTN. Check your Gateway Owner ID in Webhook Settings.`;
         }
       } catch {
         // Use raw response
@@ -221,11 +248,14 @@ async function registerGatewayWithRetry(
         // Build diagnostic info for permission errors
         const diagnostics: Record<string, unknown> = {
           ttn_status: response.status,
+          owner_type: ownerType,
+          owner_id: ownerId,
+          endpoint_used: ttnUrl,
         };
         
         if (errorCode === 'PERMISSION_MISSING' || errorCode === 'AUTH_FORBIDDEN') {
           diagnostics.missing_permission = 'gateways:write';
-          diagnostics.fix_instructions = 'Add gateways:read and gateways:write permissions to your API key in TTN Console';
+          diagnostics.fix_instructions = `Create a ${ownerType === 'organization' ? 'Organization' : 'Personal'} API key in TTN Console with gateways:read and gateways:write permissions. Application API keys cannot register gateways.`;
           diagnostics.ttn_error = ttnErrorDetails;
         }
         
@@ -320,11 +350,11 @@ Deno.serve(async (req) => {
     }
 
     // Load TTN settings from database
-    let ttnSettings: any = null;
+    let ttnSettings: TTNSettings | null = null;
     if (org_id) {
       const { data, error } = await supabase
         .from('ttn_settings')
-        .select('*')
+        .select('api_key, cluster, gateway_owner_type, gateway_owner_id')
         .eq('org_id', org_id)
         .maybeSingle();
 
@@ -338,6 +368,8 @@ Deno.serve(async (req) => {
     // Get API key from settings or environment
     const apiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
     const cluster = ttnSettings?.cluster || 'eu1';
+    const gatewayOwnerType = ttnSettings?.gateway_owner_type || 'user';
+    const gatewayOwnerId = ttnSettings?.gateway_owner_id;
 
     if (!apiKey) {
       return new Response(
@@ -352,7 +384,22 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[${requestId}] Using cluster=${cluster}, apiKey=${maskKey(apiKey)}`);
+    // Check gateway owner is configured
+    if (!gatewayOwnerId) {
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          requestId,
+          error: 'Gateway owner not configured. Set your TTN username or organization ID in Webhook Settings.',
+          hint: 'Go to Webhook Settings and configure the Gateway Owner section with your TTN username (for Personal API keys) or organization ID (for Organization API keys).',
+          results: [],
+          summary: { created: 0, already_exists: 0, failed: 0, total: 0 },
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
+    console.log(`[${requestId}] Using cluster=${cluster}, owner=${gatewayOwnerType}/${gatewayOwnerId}, apiKey=${maskKey(apiKey)}`);
 
     const results: GatewayProvisionResult[] = [];
     const summary = { created: 0, already_exists: 0, failed: 0, total: gateways.length };
@@ -363,7 +410,15 @@ Deno.serve(async (req) => {
 
     // Process each gateway with retry logic
     for (const gateway of gateways) {
-      const result = await registerGatewayWithRetry(gateway, apiKey, cluster, frequencyPlan, requestId);
+      const result = await registerGatewayWithRetry(
+        gateway, 
+        apiKey, 
+        cluster, 
+        frequencyPlan, 
+        gatewayOwnerType,
+        gatewayOwnerId,
+        requestId
+      );
       results.push(result);
       
       if (result.status === 'created') summary.created++;
@@ -384,6 +439,12 @@ Deno.serve(async (req) => {
         requestId,
         results,
         summary,
+        config_used: {
+          cluster,
+          gateway_owner_type: gatewayOwnerType,
+          gateway_owner_id: gatewayOwnerId,
+          api_key_last4: apiKey.slice(-4),
+        },
       }),
       { status: 200, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );

@@ -23,6 +23,8 @@ interface TTNSettingsRequest {
   webhook_secret?: string;
   device_id?: string;
   gateway_id?: string;
+  gateway_owner_type?: 'user' | 'organization';
+  gateway_owner_id?: string;
 }
 
 // Generate correlation ID for debugging
@@ -153,6 +155,8 @@ async function handleLoad(
         api_key_set: false,
         webhook_secret_preview: null,
         webhook_secret_set: false,
+        gateway_owner_type: 'user',
+        gateway_owner_id: null,
       }
     }, 200, requestId);
   }
@@ -161,7 +165,7 @@ async function handleLoad(
 
   const { data, error } = await supabase
     .from('ttn_settings')
-    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success')
+    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success, gateway_owner_type, gateway_owner_id')
     .eq('org_id', org_id)
     .maybeSingle();
 
@@ -183,6 +187,8 @@ async function handleLoad(
         webhook_secret_set: false,
         last_test_at: null,
         last_test_success: null,
+        gateway_owner_type: 'user',
+        gateway_owner_id: null,
       }
     }, 200, requestId);
   }
@@ -203,6 +209,8 @@ async function handleLoad(
       updated_at: data.updated_at,
       last_test_at: data.last_test_at,
       last_test_success: data.last_test_success,
+      gateway_owner_type: data.gateway_owner_type || 'user',
+      gateway_owner_id: data.gateway_owner_id || null,
     }
   }, 200, requestId);
 }
@@ -213,13 +221,13 @@ async function handleSave(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id, enabled, cluster, application_id, api_key, webhook_secret } = body;
+  const { org_id, enabled, cluster, application_id, api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
 
   if (!org_id) {
     return errorResponse('org_id is required to save settings', 'VALIDATION_ERROR', 400, requestId);
   }
 
-  console.log(`[${requestId}] Saving settings for org ${org_id}, enabled=${enabled}, cluster=${cluster}, app=${application_id}`);
+  console.log(`[${requestId}] Saving settings for org ${org_id}, enabled=${enabled}, cluster=${cluster}, app=${application_id}, gateway_owner=${gateway_owner_type}/${gateway_owner_id}`);
 
   // Check if we have an existing API key stored
   const { data: existingSettings } = await supabase
@@ -259,6 +267,14 @@ async function handleSave(
   if (webhook_secret) {
     upsertData.webhook_secret = webhook_secret;
   }
+  
+  // Update gateway owner settings if provided
+  if (gateway_owner_type !== undefined) {
+    upsertData.gateway_owner_type = gateway_owner_type;
+  }
+  if (gateway_owner_id !== undefined) {
+    upsertData.gateway_owner_id = gateway_owner_id;
+  }
 
   const { error } = await supabase
     .from('ttn_settings')
@@ -272,7 +288,7 @@ async function handleSave(
   // Reload settings to get the current state including updated_at
   const { data: savedSettings } = await supabase
     .from('ttn_settings')
-    .select('api_key, webhook_secret, updated_at')
+    .select('api_key, webhook_secret, updated_at, gateway_owner_type, gateway_owner_id')
     .eq('org_id', org_id)
     .maybeSingle();
 
@@ -280,7 +296,7 @@ async function handleSave(
   const webhookSecretSet = !!(savedSettings?.webhook_secret && savedSettings.webhook_secret.length > 0);
   const apiKeyLast4 = savedSettings?.api_key?.slice(-4) || null;
 
-  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}, api_key_last4=****${apiKeyLast4 || 'none'}`);
+  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}, api_key_last4=****${apiKeyLast4 || 'none'}, gateway_owner=${savedSettings?.gateway_owner_type}/${savedSettings?.gateway_owner_id}`);
   
   return buildResponse({ 
     ok: true, 
@@ -291,6 +307,8 @@ async function handleSave(
     webhook_secret_set: webhookSecretSet,
     webhook_secret_preview: maskSecret(savedSettings?.webhook_secret),
     updated_at: savedSettings?.updated_at,
+    gateway_owner_type: savedSettings?.gateway_owner_type || 'user',
+    gateway_owner_id: savedSettings?.gateway_owner_id || null,
   }, 200, requestId);
 }
 
@@ -730,6 +748,7 @@ async function handleCheckGateway(
 }
 
 // Check gateway-specific permissions (gateways:read, gateways:write)
+// Uses the ACTUAL owner-scoped endpoint that provisioning will use
 async function handleCheckGatewayPermissions(
   supabase: any,
   body: TTNSettingsRequest,
@@ -739,19 +758,23 @@ async function handleCheckGatewayPermissions(
 
   console.log(`[${requestId}] Checking gateway permissions for org ${org_id || 'none'}`);
 
-  // Load API key from org settings
+  // Load settings including gateway owner config
   let apiKey: string | null = null;
   let ttnCluster = cluster || 'eu1';
+  let gatewayOwnerType: 'user' | 'organization' = 'user';
+  let gatewayOwnerId: string | null = null;
 
   if (org_id) {
     const { data } = await supabase
       .from('ttn_settings')
-      .select('api_key, cluster')
+      .select('api_key, cluster, gateway_owner_type, gateway_owner_id')
       .eq('org_id', org_id)
       .maybeSingle();
 
     apiKey = data?.api_key || null;
     ttnCluster = cluster || data?.cluster || 'eu1';
+    gatewayOwnerType = data?.gateway_owner_type || 'user';
+    gatewayOwnerId = data?.gateway_owner_id || null;
   }
 
   if (!apiKey) {
@@ -763,24 +786,60 @@ async function handleCheckGatewayPermissions(
     }, 200, requestId);
   }
 
-  const baseUrl = getBaseUrl(ttnCluster);
+  // Check if gateway owner is configured
+  if (!gatewayOwnerId) {
+    return buildResponse({
+      ok: false,
+      error: 'Gateway owner not configured',
+      code: 'CONFIG_MISSING',
+      hint: 'Set your TTN username or organization ID in Webhook Settings → Gateway Owner section',
+      permissions: { gateway_read: false, gateway_write: false },
+      diagnostics: {
+        cluster: ttnCluster,
+        gateway_owner_type: gatewayOwnerType,
+        gateway_owner_id: null,
+        fix_required: 'Configure gateway_owner_id',
+      },
+    }, 200, requestId);
+  }
 
-  // Test 1: Gateway list access (gateways:read)
+  const baseUrl = getBaseUrl(ttnCluster);
+  
+  // Build the owner-scoped endpoint path (same path that provisioning will use)
+  const ownerPath = gatewayOwnerType === 'organization'
+    ? `organizations/${gatewayOwnerId}`
+    : `users/${gatewayOwnerId}`;
+
+  console.log(`[${requestId}] Testing gateway permissions for ${gatewayOwnerType}/${gatewayOwnerId}`);
+
+  // Test 1: Gateway list access (gateways:read) using owner-scoped endpoint
   let canReadGateways = false;
   let readError = '';
+  let readStatus = 0;
   try {
-    console.log(`[${requestId}] Testing gateway read permission: ${baseUrl}/api/v3/gateways?limit=1`);
-    const listResponse = await fetch(`${baseUrl}/api/v3/gateways?limit=1`, {
+    const readUrl = `${baseUrl}/api/v3/${ownerPath}/gateways?limit=1`;
+    console.log(`[${requestId}] Testing gateway read: ${readUrl}`);
+    const listResponse = await fetch(readUrl, {
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Accept': 'application/json',
       },
     });
+    readStatus = listResponse.status;
     canReadGateways = listResponse.status === 200;
+    
     if (listResponse.status === 403) {
-      readError = 'API key lacks gateways:read permission';
+      const body = await listResponse.json().catch(() => ({}));
+      // Check if it's an application-scoped key
+      if (body.message?.includes('no rights') || body.message?.includes('permission')) {
+        readError = 'API key lacks gateways:read permission. You may be using an Application API key instead of a Personal/Organization API key.';
+      } else {
+        readError = 'API key lacks gateways:read permission';
+      }
     } else if (listResponse.status === 401) {
       readError = 'API key invalid or expired';
+    } else if (listResponse.status === 404) {
+      readError = `User/Organization "${gatewayOwnerId}" not found. Check your Gateway Owner ID.`;
     }
     console.log(`[${requestId}] Gateway read check: status=${listResponse.status}, passed=${canReadGateways}`);
   } catch (e: unknown) {
@@ -789,36 +848,56 @@ async function handleCheckGatewayPermissions(
     console.error(`[${requestId}] Gateway read check failed:`, msg);
   }
 
-  // Test 2: Gateway write access - try to list user's own gateways (requires write scope)
-  // The /api/v3/users/{user_id}/gateways endpoint requires gateways:write to create
-  // We use a simpler check: attempt to POST to gateways with an invalid body to see if we get 403 vs 400
+  // Test 2: Gateway write access using the SAME owner-scoped endpoint provisioning will use
   let canWriteGateways = false;
   let writeError = '';
+  let writeStatus = 0;
   try {
-    // Try a "dry run" - POST with empty body. If we get 400 (bad request), we have write permission.
-    // If we get 403, we don't have permission.
-    console.log(`[${requestId}] Testing gateway write permission with dry-run POST`);
-    const writeTestResponse = await fetch(`${baseUrl}/api/v3/users/admin/gateways`, {
+    const writeUrl = `${baseUrl}/api/v3/${ownerPath}/gateways`;
+    console.log(`[${requestId}] Testing gateway write: ${writeUrl}`);
+    
+    // POST with a test gateway ID - we expect:
+    // - 400 = bad request (missing required fields) but HAS permission
+    // - 403 = forbidden (NO permission)
+    // - 409 = conflict (gateway exists) = HAS permission
+    const testGatewayId = `permission-check-${Date.now()}`;
+    const writeTestResponse = await fetch(writeUrl, {
       method: 'POST',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
         'Accept': 'application/json',
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({}), // Empty body - should get 400 if we have permission, 403 if not
+      body: JSON.stringify({
+        gateway: {
+          ids: { gateway_id: testGatewayId },
+          // Missing required fields like frequency_plan_id, gateway_server_address
+          // This should trigger a 400 if we have permission, 403 if not
+        }
+      }),
     });
+    
+    writeStatus = writeTestResponse.status;
 
     // 400 = bad request means we have permission but invalid payload
+    // 409 = conflict means gateway exists (so we have permission)
     // 403 = forbidden means no write permission
     // 401 = invalid auth
-    if (writeTestResponse.status === 400) {
+    if (writeTestResponse.status === 400 || writeTestResponse.status === 409) {
       canWriteGateways = true;
     } else if (writeTestResponse.status === 403) {
-      writeError = 'API key lacks gateways:write permission';
+      const body = await writeTestResponse.json().catch(() => ({}));
+      if (body.message?.includes('no rights') || body.message?.includes('permission')) {
+        writeError = 'API key lacks gateways:write permission. You may be using an Application API key instead of a Personal/Organization API key.';
+      } else {
+        writeError = 'API key lacks gateways:write permission';
+      }
     } else if (writeTestResponse.status === 401) {
       writeError = 'API key invalid or expired';
+    } else if (writeTestResponse.status === 404) {
+      writeError = `User/Organization "${gatewayOwnerId}" not found. Check your Gateway Owner ID.`;
     } else if (writeTestResponse.status === 200 || writeTestResponse.status === 201) {
-      // Shouldn't happen with empty body, but treat as success
+      // Shouldn't happen but treat as success
       canWriteGateways = true;
     }
     console.log(`[${requestId}] Gateway write check: status=${writeTestResponse.status}, passed=${canWriteGateways}`);
@@ -832,6 +911,18 @@ async function handleCheckGatewayPermissions(
 
   console.log(`[${requestId}] Gateway permissions: read=${canReadGateways}, write=${canWriteGateways}, overall=${allPermissionsOk}`);
 
+  // Build hint based on failure type
+  let hint = undefined;
+  if (!allPermissionsOk) {
+    if (readError.includes('Application API key') || writeError.includes('Application API key')) {
+      hint = 'Application API keys cannot manage gateways. Create a Personal API Key in TTN Console → User Settings → API Keys with gateways:read and gateways:write permissions.';
+    } else if (readError.includes('not found') || writeError.includes('not found')) {
+      hint = `The Gateway Owner ID "${gatewayOwnerId}" was not found. Verify your TTN username or organization ID in Webhook Settings.`;
+    } else {
+      hint = 'Create a Personal or Organization API key in TTN Console with gateways:read and gateways:write permissions.';
+    }
+  }
+
   return buildResponse({
     ok: allPermissionsOk,
     connected: true,
@@ -840,15 +931,18 @@ async function handleCheckGatewayPermissions(
       gateway_write: canWriteGateways,
     },
     error: allPermissionsOk ? undefined : 'Missing gateway permissions',
-    hint: allPermissionsOk
-      ? undefined
-      : 'Generate a new API key in TTN Console with gateways:read and gateways:write permissions',
+    hint,
     diagnostics: {
       cluster: ttnCluster,
-      gateway_read_status: canReadGateways ? 'passed' : 'failed',
+      gateway_owner_type: gatewayOwnerType,
+      gateway_owner_id: gatewayOwnerId,
+      gateway_read_status: readStatus,
+      gateway_read_passed: canReadGateways,
       gateway_read_error: readError || undefined,
-      gateway_write_status: canWriteGateways ? 'passed' : 'failed',
+      gateway_write_status: writeStatus,
+      gateway_write_passed: canWriteGateways,
       gateway_write_error: writeError || undefined,
+      api_key_last4: apiKey.slice(-4),
     },
   }, 200, requestId);
 }
