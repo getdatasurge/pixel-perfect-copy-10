@@ -1,7 +1,7 @@
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
@@ -18,6 +18,8 @@ import {
   RefreshCw,
   HelpCircle,
   AlertTriangle,
+  ExternalLink,
+  Settings,
 } from 'lucide-react';
 import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
 import { useState } from 'react';
@@ -27,6 +29,8 @@ interface StepResultsProps {
   summary: ProvisioningSummary;
   onRetryFailed: (filter?: 'all' | 'retryable') => void;
   mode?: ProvisioningMode;
+  cluster?: string;
+  onOpenSettings?: () => void;
 }
 
 // Get actionable hint for common errors
@@ -36,8 +40,8 @@ function getErrorHint(error?: string, errorCode?: string): string | null {
   if (errorCode === 'AUTH_INVALID' || error?.includes('401') || (error?.includes('Invalid') && error?.includes('key'))) {
     return 'Check your TTN API key in Webhook settings';
   }
-  if (errorCode === 'AUTH_FORBIDDEN' || error?.includes('403') || error?.toLowerCase().includes('permission')) {
-    return 'Ensure your API key has gateway/device registration permissions';
+  if (errorCode === 'AUTH_FORBIDDEN' || errorCode === 'PERMISSION_MISSING' || error?.includes('403') || error?.toLowerCase().includes('permission')) {
+    return 'Your API key needs gateway:read and gateway:write permissions';
   }
   if (errorCode === 'INVALID_EUI' || (error?.includes('Invalid') && error?.includes('EUI'))) {
     return 'EUI must be 16 hexadecimal characters';
@@ -59,6 +63,8 @@ export default function StepResults({
   summary,
   onRetryFailed,
   mode = 'devices',
+  cluster = 'eu1',
+  onOpenSettings,
 }: StepResultsProps) {
   const [expandedErrors, setExpandedErrors] = useState<string[]>([]);
   const isGatewayMode = mode === 'gateways';
@@ -87,12 +93,20 @@ export default function StepResults({
   const successResults = results.filter(r => r.status === 'created');
   const existingResults = results.filter(r => r.status === 'already_exists');
 
+  // Check for permission-related failures
+  const permissionFailures = failedResults.filter(r => 
+    r.error_code === 'PERMISSION_MISSING' || 
+    r.error_code === 'AUTH_FORBIDDEN' ||
+    r.error?.toLowerCase().includes('permission')
+  );
+
   const overallSuccess = summary.failed === 0;
   const partialSuccess = summary.failed > 0 && (summary.created > 0 || summary.already_exists > 0);
+  const ttnConsoleUrl = `https://${cluster}.cloud.thethings.network/console`;
 
   const renderFailureCard = (
     failures: ProvisionResult[], 
-    title: string, 
+    title: React.ReactNode, 
     icon: React.ReactNode, 
     borderClass: string,
     showRetryButton: boolean,
@@ -175,6 +189,59 @@ export default function StepResults({
   return (
     <TooltipProvider>
       <div className="space-y-4">
+        {/* Permission error remediation panel */}
+        {permissionFailures.length > 0 && isGatewayMode && (
+          <Alert variant="destructive">
+            <AlertTriangle className="h-4 w-4" />
+            <AlertTitle>Permission Error Detected</AlertTitle>
+            <AlertDescription>
+              <div className="space-y-3 mt-2">
+                <p>
+                  {permissionFailures.length} gateway(s) failed due to insufficient API key permissions.
+                </p>
+                
+                <div className="text-sm bg-muted/50 p-3 rounded-md space-y-2">
+                  <p className="font-medium">Required permissions:</p>
+                  <ul className="list-disc ml-4 space-y-1 text-muted-foreground">
+                    <li><code className="text-xs bg-muted px-1 rounded">gateways:read</code> - List and view gateways</li>
+                    <li><code className="text-xs bg-muted px-1 rounded">gateways:write</code> - Register new gateways</li>
+                  </ul>
+                  <p className="text-muted-foreground mt-2">
+                    Update your API key in{' '}
+                    <a 
+                      href={ttnConsoleUrl} 
+                      target="_blank" 
+                      rel="noopener noreferrer"
+                      className="underline inline-flex items-center gap-1"
+                    >
+                      TTN Console <ExternalLink className="h-3 w-3" />
+                    </a>
+                    {', '}then save it in Webhook Settings and retry.
+                  </p>
+                </div>
+
+                <div className="flex gap-2 pt-2">
+                  {onOpenSettings && (
+                    <Button variant="outline" size="sm" onClick={onOpenSettings}>
+                      <Settings className="h-3 w-3 mr-1" />
+                      Open Settings
+                    </Button>
+                  )}
+                  <Button 
+                    variant="outline" 
+                    size="sm" 
+                    onClick={() => onRetryFailed('retryable')}
+                    className="gap-2"
+                  >
+                    <RefreshCw className="h-3 w-3" />
+                    Fix & Retry
+                  </Button>
+                </div>
+              </div>
+            </AlertDescription>
+          </Alert>
+        )}
+
         {/* Overall status banner */}
         {overallSuccess ? (
           <Alert className="border-green-600/30 bg-green-50 dark:bg-green-950/20">
@@ -246,7 +313,7 @@ export default function StepResults({
                 </p>
               </TooltipContent>
             </Tooltip>
-          </span> as unknown as string,
+          </span>,
           <XCircle className="h-4 w-4 text-destructive" />,
           'border-destructive/30',
           false,
