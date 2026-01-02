@@ -1,6 +1,7 @@
-// Push TTN Settings to FrostGuard
-// Forwards TTN config changes from Emulator to FrostGuard (canonical source)
-// Uses PROJECT2_SYNC_API_KEY for API-key-only auth
+// Push TTN Settings - Local-Only Save
+// FrostGuard's manage-ttn-settings requires JWT auth which is incompatible with cross-project sync
+// So we only save to local ttn_settings and synced_users.ttn tables
+// Auth: verify_jwt=false, uses API key validation
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -22,17 +23,16 @@ interface PushTTNSettingsRequest {
 interface PushResult {
   ok: boolean;
   request_id: string;
-  frostguard_response?: {
-    ok: boolean;
-    api_key_last4?: string;
-    updated_at?: string;
-    message?: string;
-  };
   local_updated?: boolean;
   user_ttn_updated?: boolean;
+  api_key_last4?: string | null;
+  updated_at?: string;
   error?: string;
+  error_code?: string;
   hint?: string;
   step?: string;
+  frostguard_skipped?: boolean;
+  frostguard_skip_reason?: string;
 }
 
 Deno.serve(async (req) => {
@@ -55,11 +55,13 @@ Deno.serve(async (req) => {
         ok: false,
         request_id: requestId,
         error: 'org_id is required',
+        error_code: 'MISSING_ORG_ID',
         step: 'validation',
       }, 400);
     }
 
     // Log the push request (redacted)
+    const apiKeyLast4 = api_key ? api_key.slice(-4) : null;
     console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_REQUEST`, {
       org_id,
       user_id: user_id || null,
@@ -67,184 +69,160 @@ Deno.serve(async (req) => {
       cluster,
       application_id,
       has_api_key: !!api_key,
-      api_key_last4: api_key ? `****${api_key.slice(-4)}` : null,
+      api_key_last4: apiKeyLast4 ? `****${apiKeyLast4}` : null,
       has_webhook_secret: !!webhook_secret,
     });
 
-    // Get FrostGuard URL and API key from environment
-    const frostguardUrl = Deno.env.get('FROSTGUARD_SUPABASE_URL');
-    const syncApiKey = Deno.env.get('PROJECT2_SYNC_API_KEY');
-
-    if (!frostguardUrl) {
-      console.error(`[push-ttn-settings][${requestId}] Missing FROSTGUARD_SUPABASE_URL`);
-      return buildResponse({
-        ok: false,
-        request_id: requestId,
-        error: 'FrostGuard URL not configured',
-        hint: 'FROSTGUARD_SUPABASE_URL environment variable is missing',
-        step: 'config',
-      }, 500);
-    }
-
-    if (!syncApiKey) {
-      console.error(`[push-ttn-settings][${requestId}] Missing PROJECT2_SYNC_API_KEY`);
-      return buildResponse({
-        ok: false,
-        request_id: requestId,
-        error: 'Sync API key not configured',
-        hint: 'PROJECT2_SYNC_API_KEY environment variable is missing',
-        step: 'config',
-      }, 500);
-    }
-
-    // Step 1: Push settings to FrostGuard
-    const frostguardEndpoint = `${frostguardUrl}/functions/v1/manage-ttn-settings`;
-    console.log(`[push-ttn-settings][${requestId}] Pushing to FrostGuard: ${frostguardEndpoint}`);
-
-    const pushPayload = {
-      action: 'save',
-      org_id,
-      enabled,
-      cluster,
-      application_id,
-      api_key: api_key || undefined, // Only include if provided
-      webhook_secret: webhook_secret || undefined,
-      gateway_owner_type,
-      gateway_owner_id: gateway_owner_id || undefined,
-    };
-
-    const fgResponse = await fetch(frostguardEndpoint, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Bearer ${syncApiKey}`,
-      },
-      body: JSON.stringify(pushPayload),
+    // NOTE: FrostGuard push is SKIPPED because FrostGuard's manage-ttn-settings
+    // requires JWT auth, but this is a cross-project sync using API key auth
+    console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_SKIPPED_NO_FG_SUPPORT`, {
+      reason: 'FrostGuard manage-ttn-settings requires JWT auth, incompatible with cross-project sync',
     });
 
-    const fgData = await fgResponse.json().catch(() => null);
-
-    console.log(`[push-ttn-settings][${requestId}] FrostGuard response: ${fgResponse.status}`, {
-      ok: fgData?.ok,
-      api_key_last4: fgData?.api_key_last4 ? `****${fgData.api_key_last4}` : null,
-      updated_at: fgData?.updated_at,
-      error: fgData?.error,
-    });
-
-    if (!fgResponse.ok || !fgData?.ok) {
-      return buildResponse({
-        ok: false,
-        request_id: requestId,
-        error: fgData?.error || `FrostGuard returned ${fgResponse.status}`,
-        hint: fgData?.hint || 'Failed to save settings to FrostGuard',
-        step: 'push_to_frostguard',
-        frostguard_response: {
-          ok: false,
-          message: fgData?.error,
-        },
-      }, fgResponse.status >= 400 && fgResponse.status < 500 ? fgResponse.status : 502);
-    }
-
-    // Step 2: Also update local ttn_settings AND synced_users.ttn for consistency
+    // Save to local ttn_settings and synced_users.ttn tables only
     let localUpdated = false;
     let userTtnUpdated = false;
+    let savedApiKeyLast4: string | null = null;
+    const updatedAt = new Date().toISOString();
+
     try {
       const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
       const supabaseUrl = Deno.env.get('SUPABASE_URL');
       const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-      if (supabaseUrl && supabaseKey) {
-        const supabase = createClient(supabaseUrl, supabaseKey);
+      if (!supabaseUrl || !supabaseKey) {
+        console.error(`[push-ttn-settings][${requestId}] Missing Supabase credentials`);
+        return buildResponse({
+          ok: false,
+          request_id: requestId,
+          error: 'Supabase credentials not configured',
+          error_code: 'MISSING_SUPABASE_CONFIG',
+          hint: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY is missing',
+          step: 'config',
+        }, 500);
+      }
 
-        // Upsert local ttn_settings (org-level canonical source)
-        const updateData: Record<string, unknown> = {
-          org_id,
+      const supabase = createClient(supabaseUrl, supabaseKey);
+
+      // Upsert local ttn_settings (org-level canonical source)
+      const updateData: Record<string, unknown> = {
+        org_id,
+        enabled: enabled ?? true,
+        cluster: cluster || 'eu1',
+        application_id,
+        updated_at: updatedAt,
+      };
+
+      // Only update secrets if provided
+      if (api_key) {
+        updateData.api_key = api_key;
+        savedApiKeyLast4 = api_key.slice(-4);
+      }
+      if (webhook_secret) {
+        updateData.webhook_secret = webhook_secret;
+      }
+      if (gateway_owner_type) {
+        updateData.gateway_owner_type = gateway_owner_type;
+      }
+      if (gateway_owner_id) {
+        updateData.gateway_owner_id = gateway_owner_id;
+      }
+
+      const { error: upsertError } = await supabase
+        .from('ttn_settings')
+        .upsert(updateData, { onConflict: 'org_id' });
+
+      if (upsertError) {
+        console.error(`[push-ttn-settings][${requestId}] ttn_settings upsert error:`, upsertError.message);
+        return buildResponse({
+          ok: false,
+          request_id: requestId,
+          error: `Failed to save TTN settings: ${upsertError.message}`,
+          error_code: 'DB_UPSERT_ERROR',
+          hint: 'Database upsert to ttn_settings failed',
+          step: 'local_save',
+        }, 500);
+      }
+
+      localUpdated = true;
+      console.log(`[push-ttn-settings][${requestId}] ttn_settings updated`, {
+        api_key_last4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
+      });
+
+      // Also update synced_users.ttn for the selected user (used by ttn-simulate)
+      if (user_id) {
+        // First get existing ttn data to merge
+        const { data: existingUser, error: fetchError } = await supabase
+          .from('synced_users')
+          .select('ttn')
+          .eq('id', user_id)
+          .maybeSingle();
+
+        if (fetchError) {
+          console.warn(`[push-ttn-settings][${requestId}] synced_users fetch warning:`, fetchError.message);
+        }
+
+        const existingTtn = (existingUser?.ttn as Record<string, unknown>) || {};
+        
+        const ttnJsonData: Record<string, unknown> = {
+          ...existingTtn,
           enabled: enabled ?? true,
           cluster: cluster || 'eu1',
           application_id,
-          updated_at: new Date().toISOString(),
+          updated_at: updatedAt,
         };
 
-        // Only update secrets if provided
+        // Include full API key if provided (ttn-simulate reads from here)
         if (api_key) {
-          updateData.api_key = api_key;
+          ttnJsonData.api_key = api_key;
+          ttnJsonData.api_key_last4 = api_key.slice(-4);
         }
         if (webhook_secret) {
-          updateData.webhook_secret = webhook_secret;
-        }
-        if (gateway_owner_type) {
-          updateData.gateway_owner_type = gateway_owner_type;
-        }
-        if (gateway_owner_id) {
-          updateData.gateway_owner_id = gateway_owner_id;
+          ttnJsonData.webhook_secret = webhook_secret;
+          ttnJsonData.webhook_secret_last4 = webhook_secret.slice(-4);
         }
 
-        const { error: upsertError } = await supabase
-          .from('ttn_settings')
-          .upsert(updateData, { onConflict: 'org_id' });
+        const { error: userUpdateError } = await supabase
+          .from('synced_users')
+          .update({ ttn: ttnJsonData })
+          .eq('id', user_id);
 
-        if (upsertError) {
-          console.warn(`[push-ttn-settings][${requestId}] Local ttn_settings upsert warning:`, upsertError.message);
+        if (userUpdateError) {
+          console.warn(`[push-ttn-settings][${requestId}] synced_users.ttn update warning:`, userUpdateError.message);
         } else {
-          localUpdated = true;
-          console.log(`[push-ttn-settings][${requestId}] Local ttn_settings updated`);
-        }
-
-        // Also update synced_users.ttn for the selected user (used by ttn-simulate)
-        if (user_id) {
-          const ttnJsonData: Record<string, unknown> = {
-            enabled: enabled ?? true,
-            cluster: cluster || 'eu1',
-            application_id,
-            api_key_last4: api_key ? api_key.slice(-4) : fgData?.api_key_last4,
-            webhook_secret_last4: webhook_secret ? webhook_secret.slice(-4) : null,
-            updated_at: new Date().toISOString(),
-          };
-
-          // Include full API key if provided (ttn-simulate reads from here)
-          if (api_key) {
-            ttnJsonData.api_key = api_key;
-          }
-          if (webhook_secret) {
-            ttnJsonData.webhook_secret = webhook_secret;
-          }
-
-          const { error: userUpdateError } = await supabase
-            .from('synced_users')
-            .update({ ttn: ttnJsonData })
-            .eq('id', user_id);
-
-          if (userUpdateError) {
-            console.warn(`[push-ttn-settings][${requestId}] synced_users.ttn update warning:`, userUpdateError.message);
-          } else {
-            userTtnUpdated = true;
-            console.log(`[push-ttn-settings][${requestId}] synced_users.ttn updated for user ${user_id}`);
-          }
+          userTtnUpdated = true;
+          console.log(`[push-ttn-settings][${requestId}] synced_users.ttn updated for user ${user_id}`);
         }
       }
     } catch (localErr) {
-      console.warn(`[push-ttn-settings][${requestId}] Local update skipped:`, localErr);
+      console.error(`[push-ttn-settings][${requestId}] Local save error:`, localErr);
+      return buildResponse({
+        ok: false,
+        request_id: requestId,
+        error: localErr instanceof Error ? localErr.message : 'Unknown error',
+        error_code: 'LOCAL_SAVE_ERROR',
+        step: 'local_save',
+      }, 500);
     }
 
     // Success response
     console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_SUCCESS`, {
-      api_key_last4: fgData.api_key_last4 ? `****${fgData.api_key_last4}` : null,
-      updated_at: fgData.updated_at,
+      api_key_last4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
+      updated_at: updatedAt,
       local_updated: localUpdated,
       user_ttn_updated: userTtnUpdated,
+      frostguard_skipped: true,
     });
 
     return buildResponse({
       ok: true,
       request_id: requestId,
-      frostguard_response: {
-        ok: true,
-        api_key_last4: fgData.api_key_last4,
-        updated_at: fgData.updated_at,
-        message: fgData.message || 'Settings saved',
-      },
       local_updated: localUpdated,
       user_ttn_updated: userTtnUpdated,
+      api_key_last4: savedApiKeyLast4,
+      updated_at: updatedAt,
+      frostguard_skipped: true,
+      frostguard_skip_reason: 'FrostGuard requires JWT auth, incompatible with cross-project sync',
     }, 200);
 
   } catch (err) {
@@ -253,6 +231,7 @@ Deno.serve(async (req) => {
       ok: false,
       request_id: requestId,
       error: err instanceof Error ? err.message : 'Unknown error',
+      error_code: 'UNKNOWN_ERROR',
       step: 'processing',
     }, 500);
   }

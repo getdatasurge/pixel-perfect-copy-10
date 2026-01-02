@@ -1,12 +1,13 @@
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw } from 'lucide-react';
+import { Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, Clock, AlertTriangle, CheckCircle, XCircle, RefreshCw, Copy } from 'lucide-react';
 import { useTelemetrySubscription } from '@/hooks/useTelemetrySubscription';
 import { formatDistanceToNow } from 'date-fns';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import { useState, useEffect, useCallback } from 'react';
+import { debug } from '@/lib/debugLogger';
 
 interface TelemetryMonitorProps {
   orgId?: string;
@@ -21,6 +22,13 @@ interface TelemetryMonitorProps {
   };
 }
 
+interface PullError {
+  message: string;
+  error_code?: string;
+  hint?: string;
+  request_id?: string;
+}
+
 export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
   const { telemetry, loading, getSensorStatus, refetch } = useTelemetrySubscription({
     orgId,
@@ -28,7 +36,14 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
   });
 
   const [isPulling, setIsPulling] = useState(false);
-  const [autoPullEnabled, setAutoPullEnabled] = useState(false); // Disabled until edge function is deployed
+  const [autoPullEnabled, setAutoPullEnabled] = useState(false);
+  const [lastPullError, setLastPullError] = useState<PullError | null>(null);
+
+  // Copy request_id to clipboard
+  const copyRequestId = (requestId: string) => {
+    navigator.clipboard.writeText(requestId);
+    toast({ title: 'Copied', description: 'Request ID copied to clipboard' });
+  };
 
   // Memoized pull function with proper dependencies
   const pullFromFrostGuard = useCallback(async (silent = false) => {
@@ -44,15 +59,17 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
     }
 
     setIsPulling(true);
+    setLastPullError(null);
+    
+    // Debug logging
+    debug.network('FROSTGUARD_TELEMETRY_REQUEST', { orgId, unitId });
     console.log('[TelemetryMonitor] Pulling from FrostGuard...', { orgId, unitId });
 
     try {
       const { data, error } = await supabase.functions.invoke('pull-frostguard-telemetry', {
         body: {
           org_id: orgId,
-          // Note: unitId here is the override string like "freezer-01", not a UUID
-          // So we only query by org_id to get all telemetry for the organization
-          sync_to_local: true, // Sync to local database for realtime subscription to pick up
+          sync_to_local: true,
         },
       });
 
@@ -60,13 +77,33 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
       if (error) {
         console.error('[TelemetryMonitor] Edge function error:', error);
+        const pullError: PullError = {
+          message: error.message || 'Edge function error',
+          error_code: 'EDGE_FUNCTION_ERROR',
+          request_id: data?.request_id,
+        };
+        setLastPullError(pullError);
+        debug.error('FROSTGUARD_TELEMETRY_ERROR', { ...pullError });
         throw error;
       }
 
-      if (data?.error) {
-        console.error('[TelemetryMonitor] API error:', data.error);
-        throw new Error(data.error);
+      if (!data?.ok) {
+        const pullError: PullError = {
+          message: data?.error || 'Unknown error',
+          error_code: data?.error_code,
+          hint: data?.hint,
+          request_id: data?.request_id,
+        };
+        setLastPullError(pullError);
+        debug.error('FROSTGUARD_TELEMETRY_ERROR', { ...pullError });
+        throw new Error(data?.error || 'Pull failed');
       }
+
+      debug.network('FROSTGUARD_TELEMETRY_SUCCESS', {
+        count: data?.count,
+        request_id: data?.request_id,
+        source: data?.source,
+      });
 
       console.log(`[TelemetryMonitor] Successfully pulled ${data?.count || 0} records`);
 
@@ -83,15 +120,15 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
       console.error('[TelemetryMonitor] Error pulling from FrostGuard:', error);
       if (!silent) {
         toast({
-          title: 'Error',
-          description: error instanceof Error ? error.message : 'Failed to pull telemetry data',
+          title: 'Telemetry Pull Failed',
+          description: lastPullError?.hint || (error instanceof Error ? error.message : 'Failed to pull telemetry data'),
           variant: 'destructive',
         });
       }
     } finally {
       setIsPulling(false);
     }
-  }, [orgId, unitId, refetch]);
+  }, [orgId, unitId, refetch, lastPullError?.hint]);
 
   // Auto-pull from FrostGuard on mount and periodically
   useEffect(() => {
@@ -224,20 +261,55 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
               variant="outline"
             >
               <RefreshCw className={`h-4 w-4 mr-2 ${isPulling ? 'animate-spin' : ''}`} />
-              {isPulling ? 'Pulling...' : 'Pull from FrostGuard'}
+              {isPulling ? 'Pulling...' : 'Pull Telemetry'}
             </Button>
             <Badge variant={autoPullEnabled ? "default" : "secondary"} className="text-xs">
               Auto-pull: {autoPullEnabled ? 'ON (every 30s)' : 'OFF'}
             </Badge>
           </div>
+
+          {/* Error display with actionable hints */}
+          {lastPullError && (
+            <Card className="border-destructive/50 bg-destructive/5">
+              <CardContent className="pt-4 pb-3 space-y-2">
+                <div className="flex items-start gap-2">
+                  <XCircle className="h-4 w-4 text-destructive mt-0.5" />
+                  <div className="flex-1 space-y-1">
+                    <p className="text-sm font-medium text-destructive">
+                      {lastPullError.error_code || 'Error'}: {lastPullError.message}
+                    </p>
+                    {lastPullError.hint && (
+                      <p className="text-xs text-muted-foreground">{lastPullError.hint}</p>
+                    )}
+                  </div>
+                </div>
+                {lastPullError.request_id && (
+                  <div className="flex items-center gap-2">
+                    <span className="text-xs text-muted-foreground font-mono">
+                      Request: {lastPullError.request_id}
+                    </span>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 px-2"
+                      onClick={() => copyRequestId(lastPullError.request_id!)}
+                    >
+                      <Copy className="h-3 w-3" />
+                    </Button>
+                  </div>
+                )}
+              </CardContent>
+            </Card>
+          )}
+
           {loading && (
             <div className="text-xs text-muted-foreground">
               Loading telemetry from database...
             </div>
           )}
-          {!loading && !useDbTelemetry && (
+          {!loading && !useDbTelemetry && !lastPullError && (
             <div className="text-xs text-amber-600">
-              No telemetry data found. Make sure: (1) Edge function is deployed, (2) Data exists in FrostGuard for org {orgId.slice(0, 8)}...
+              No telemetry data found. Click "Pull Telemetry" to fetch from FrostGuard.
             </div>
           )}
           {!loading && useDbTelemetry && (
