@@ -470,6 +470,86 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
   };
 }
 
+// ============ OTAA Credential Backfill ============
+
+export interface BackfillResult {
+  id: string;
+  devEui: string;
+  joinEui: string;
+  appKey: string;
+  source: 'existing' | 'generated';
+}
+
+/**
+ * Backfill missing OTAA credentials for devices from FrostGuard.
+ * Calls FrostGuard's ensure-sensor-otaa-keys endpoint for each device.
+ * 
+ * @param orgId - The organization ID
+ * @param devices - Array of devices missing credentials
+ * @returns Array of devices with populated credentials
+ */
+export async function backfillMissingCredentials(
+  orgId: string,
+  devices: Array<{ id: string; devEui: string }>
+): Promise<BackfillResult[]> {
+  const results: BackfillResult[] = [];
+  
+  debug.sync('Starting OTAA credential backfill', {
+    org_id: orgId,
+    devices_count: devices.length,
+    dev_euis: devices.map(d => d.devEui.slice(-4)),
+  });
+  
+  for (const device of devices) {
+    try {
+      const { data, error } = await supabase.functions.invoke('ensure-sensor-otaa-keys', {
+        body: {
+          org_id: orgId,
+          sensor_id: device.id,
+          dev_eui: device.devEui,
+          request_id: crypto.randomUUID(),
+        },
+      });
+      
+      if (error) {
+        debug.error('Backfill failed for device', {
+          dev_eui_last4: device.devEui.slice(-4),
+          error: error.message,
+        });
+        continue;
+      }
+      
+      if (data?.ok && data.join_eui && data.app_key) {
+        results.push({
+          id: device.id,
+          devEui: device.devEui,
+          joinEui: data.join_eui,
+          appKey: data.app_key,
+          source: data.source || 'generated',
+        });
+        
+        debug.sync('Backfilled credentials for device', {
+          dev_eui_last4: device.devEui.slice(-4),
+          source: data.source,
+        });
+      }
+    } catch (err) {
+      debug.error('Backfill exception for device', {
+        dev_eui_last4: device.devEui.slice(-4),
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  
+  debug.sync('OTAA credential backfill complete', {
+    requested: devices.length,
+    resolved: results.length,
+    failed: devices.length - results.length,
+  });
+  
+  return results;
+}
+
 /**
  * Generates a cURL command for reproducing the fetch-org-state request.
  * Useful for debugging and support.

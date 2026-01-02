@@ -49,6 +49,9 @@ export interface LoRaWANDevice {
   name: string;
   type: 'temperature' | 'door';
   gatewayId: string;
+  // Credential source tracking
+  credentialSource?: 'frostguard_pull' | 'frostguard_generated' | 'local_generated' | 'manual_override';
+  credentialsLockedFromFrostguard?: boolean;
 }
 
 export interface TTNConfig {

@@ -38,3 +38,6 @@ verify_jwt = false
 
 [functions.fetch-org-state]
 verify_jwt = false
+
+[functions.ensure-sensor-otaa-keys]
+verify_jwt = false
