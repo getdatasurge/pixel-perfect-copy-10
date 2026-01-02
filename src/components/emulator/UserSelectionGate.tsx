@@ -4,9 +4,9 @@ import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Loader2, User, AlertCircle, RefreshCw, Thermometer, CheckCircle2, Download, FileDown, ChevronDown } from 'lucide-react';
+import { Loader2, User, AlertCircle, RefreshCw, Thermometer, CheckCircle2, Download, FileDown, ChevronDown, Terminal, Copy } from 'lucide-react';
 import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from '@/lib/ttn-payload';
-import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails } from '@/lib/frostguardOrgSync';
+import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails, generateCurlCommand } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
 import { debug, log, clearDebugContext, setDebugContext } from '@/lib/debugLogger';
@@ -364,6 +364,29 @@ export default function UserSelectionGate({
     });
   }, []);
 
+  // Copy cURL command for debugging
+  const handleCopyCurl = useCallback(() => {
+    const orgId = pendingUser?.organization_id || '[ORG_ID]';
+    const curlCommand = generateCurlCommand(orgId);
+    navigator.clipboard.writeText(curlCommand);
+    toast({
+      title: 'cURL command copied',
+      description: 'Paste in terminal to reproduce the request',
+    });
+  }, [pendingUser, error]);
+
+  // Copy request ID for support
+  const handleCopyRequestId = useCallback(() => {
+    const requestId = error?.details?.request_id;
+    if (requestId) {
+      navigator.clipboard.writeText(requestId);
+      toast({
+        title: 'Request ID copied',
+        description: requestId,
+      });
+    }
+  }, [error]);
+
   // Clear context and reset to selection
   const handleClearAndReset = useCallback(() => {
     console.log('[UserSelectionGate] Clearing context and resetting');
@@ -463,39 +486,49 @@ export default function UserSelectionGate({
                     {error.details.status_code}
                   </Badge>
                 )}
+                {error.details?.error_code && (
+                  <Badge variant="secondary" className="font-mono text-xs">
+                    {error.details.error_code}
+                  </Badge>
+                )}
               </AlertTitle>
               <AlertDescription className="mt-2 space-y-3">
                 {/* Error message */}
                 <p className="font-medium">{error.message}</p>
-                
-                {/* Request ID for support */}
-                {error.details?.request_id && (
-                  <p className="text-xs font-mono opacity-75">
-                    Request ID: {error.details.request_id}
-                  </p>
-                )}
                 
                 {/* Hint */}
                 {error.details?.hint && (
                   <p className="text-sm opacity-90">{error.details.hint}</p>
                 )}
 
-                {/* Endpoint diagnostics */}
+                {/* Request diagnostics */}
                 <div className="text-xs opacity-75 space-y-1 pt-2 border-t border-destructive/20">
+                  {error.details?.request_id && (
+                    <p>Request ID: <code className="bg-muted px-1 rounded text-[10px]">{error.details.request_id}</code></p>
+                  )}
                   <p>Endpoint: <code className="bg-muted px-1 rounded text-[10px]">fetch-org-state</code></p>
                   <p>Target: <code className="bg-muted px-1 rounded text-[10px]">FrostGuard org-state-api</code></p>
+                  {error.details?.diagnostics?.duration_ms && (
+                    <p>Duration: <code className="bg-muted px-1 rounded text-[10px]">{error.details.diagnostics.duration_ms}ms</code></p>
+                  )}
+                  {error.details?.diagnostics?.frostguard_host && (
+                    <p>Host: <code className="bg-muted px-1 rounded text-[10px]">{error.details.diagnostics.frostguard_host}</code></p>
+                  )}
                 </div>
                 
                 {/* Expandable technical details */}
-                {error.details?.details && (
+                {(error.details?.details || error.details?.diagnostics) && (
                   <Collapsible>
                     <CollapsibleTrigger className="flex items-center gap-1 text-xs underline hover:no-underline">
                       <ChevronDown className="h-3 w-3" />
                       Show technical details
                     </CollapsibleTrigger>
                     <CollapsibleContent>
-                      <pre className="mt-2 p-2 bg-muted rounded text-[10px] overflow-auto max-h-32 whitespace-pre-wrap">
-                        {JSON.stringify(error.details.details, null, 2)}
+                      <pre className="mt-2 p-2 bg-muted rounded text-[10px] overflow-auto max-h-40 whitespace-pre-wrap">
+                        {JSON.stringify({
+                          diagnostics: error.details?.diagnostics,
+                          details: error.details?.details,
+                        }, null, 2)}
                       </pre>
                     </CollapsibleContent>
                   </Collapsible>
@@ -513,6 +546,24 @@ export default function UserSelectionGate({
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retry
                 </Button>
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleCopyCurl}
+                >
+                  <Terminal className="h-4 w-4 mr-2" />
+                  Copy cURL
+                </Button>
+                {error.details?.request_id && (
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={handleCopyRequestId}
+                  >
+                    <Copy className="h-4 w-4 mr-2" />
+                    Copy Request ID
+                  </Button>
+                )}
                 <Button
                   variant="outline"
                   size="sm"

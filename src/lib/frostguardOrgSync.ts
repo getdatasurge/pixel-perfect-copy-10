@@ -66,6 +66,20 @@ export interface OrgState {
   ttn?: OrgStateTTN;
 }
 
+// Request diagnostics for debugging
+export interface RequestDiagnostics {
+  endpoint: string;
+  target_url_redacted?: string;
+  duration_ms?: number;
+  response_status?: number;
+  response_status_text?: string;
+  response_content_type?: string;
+  response_body_snippet?: string;
+  auth_header_present?: boolean;
+  auth_key_last4?: string;
+  frostguard_host?: string;
+}
+
 // Structured error details for debugging and UI
 export interface FrostGuardErrorDetails {
   status_code?: number;
@@ -74,6 +88,7 @@ export interface FrostGuardErrorDetails {
   message: string;
   details?: unknown;
   hint: string;  // User-friendly next step
+  diagnostics?: RequestDiagnostics;
 }
 
 export interface FetchOrgStateResult {
@@ -87,27 +102,50 @@ export interface FetchOrgStateResult {
  * Generates user-friendly hints based on error status codes and messages.
  */
 function getErrorHint(status?: number, code?: string, message?: string): string {
-  if (status === 401) return 'Check that PROJECT2_SYNC_API_KEY is correctly configured in project secrets.';
-  if (status === 403) return 'The API key may lack required permissions for this organization.';
+  // Status-specific hints
+  if (status === 401) {
+    return 'Unauthorized: The SYNC API key is invalid or missing. Check PROJECT2_SYNC_API_KEY in project secrets.';
+  }
+  if (status === 403) {
+    return 'Forbidden: The API key lacks permissions for this organization. Verify the key has access to org-state-api.';
+  }
   if (status === 400) {
-    if (code === 'MISSING_ORG_ID') return 'No organization ID was provided. Try selecting a different user.';
-    return 'The request was malformed. Verify the organization ID is valid.';
+    if (code === 'MISSING_ORG_ID') return 'Bad request: No organization ID was provided. Try selecting a different user.';
+    if (code === 'INVALID_ORG_ID') return 'Bad request: The organization ID format is invalid. Must be a valid UUID.';
+    return 'Bad request: The request was malformed. Check the organization ID.';
   }
-  if (status === 404) return 'Organization not found in FrostGuard. Check that the organization still exists.';
-  if (status === 500 || status === 502 || status === 503) {
-    return 'FrostGuard encountered an internal error. Try again in a moment or export a snapshot for support.';
+  if (status === 404) {
+    return 'Not found: The org-state-api endpoint or organization does not exist. Check FROSTGUARD_SUPABASE_URL.';
   }
-  if (message?.includes('not configured')) return 'Check project secrets configuration in Lovable settings.';
+  if (status === 500) {
+    return 'FrostGuard internal error: The org-state-api edge function failed. Export a snapshot and check FrostGuard logs with the request ID.';
+  }
+  if (status === 502 || status === 503) {
+    return 'FrostGuard unavailable: The service is temporarily unavailable. Try again in a moment.';
+  }
+  
+  // Error code specific hints
+  if (code === 'CONFIG_MISSING') {
+    return 'Edge function configuration incomplete. FROSTGUARD_SUPABASE_URL or PROJECT2_SYNC_API_KEY is not set in project secrets.';
+  }
+  if (code === 'UPSTREAM_FAILURE') {
+    return 'FrostGuard rejected the request. The organization may not exist in FrostGuard or the API key may lack permissions for this org.';
+  }
+  if (code === 'NETWORK_ERROR' || code === 'CORS_BLOCKED') {
+    return 'Network error: Check your internet connection and that FrostGuard is accessible.';
+  }
+  
+  // Message-based hints
+  if (message?.includes('not configured')) {
+    return 'Check project secrets configuration in Lovable settings. Required: FROSTGUARD_SUPABASE_URL and PROJECT2_SYNC_API_KEY.';
+  }
   if (message?.includes('Failed after') || message?.includes('timeout')) {
     return 'Network connection issues. Check your internet connection and try again.';
   }
-  // Handle generic FrostGuard rejection without details
-  if (message === 'FrostGuard returned failure status' || message?.includes('rejected the request for org')) {
-    return 'FrostGuard rejected the request without details. The organization may not exist in FrostGuard, or there may be a permissions issue. Try selecting a different user or contact support.';
+  if (message?.includes('CORS') || message?.includes('blocked')) {
+    return 'Browser blocked the request (CORS). This may indicate the edge function is not responding correctly.';
   }
-  if (code === 'UPSTREAM_FAILURE') {
-    return 'FrostGuard processed the request but returned an error. The organization may not be properly configured in FrostGuard.';
-  }
+  
   return 'Try again or export a support snapshot for diagnosis.';
 }
 
@@ -126,6 +164,18 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
   let lastError: string = 'Unknown error';
   const startTime = performance.now();
   
+  // Build base diagnostics
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const buildDiagnostics = (extra: Partial<RequestDiagnostics> = {}): RequestDiagnostics => ({
+    endpoint: 'fetch-org-state',
+    target_url_redacted: supabaseUrl 
+      ? `${supabaseUrl}/functions/v1/fetch-org-state` 
+      : '[NOT_CONFIGURED]',
+    auth_header_present: true, // Supabase client adds this automatically
+    duration_ms: Math.round(performance.now() - startTime),
+    ...extra,
+  });
+  
   // Validate org_id format (UUID) before making the request
   const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
   if (!uuidRegex.test(orgId)) {
@@ -134,6 +184,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
       error_code: 'INVALID_ORG_ID',
       message: 'Invalid organization ID format',
       hint: 'The organization ID must be a valid UUID. Try selecting a different user.',
+      diagnostics: buildDiagnostics(),
     };
     log('network', 'error', 'VALIDATION_ERROR', { org_id: orgId, error: 'Invalid UUID format' });
     logOrgSyncEvent({
@@ -141,6 +192,8 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
       status: 'error',
       duration_ms: Math.round(performance.now() - startTime),
       error: errorDetails.message,
+      error_code: 'INVALID_ORG_ID',
+      endpoint: 'fetch-org-state',
     });
     return { ok: false, error: errorDetails.message, errorDetails };
   }
@@ -159,6 +212,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
     org_id: orgId,
     endpoint: 'fetch-org-state',
     target: 'FrostGuard org-state-api',
+    supabase_url: supabaseUrl ? '✓ configured' : '✗ missing',
     timestamp: new Date().toISOString(),
   });
   
@@ -174,16 +228,38 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         lastError = error.message || 'Edge function error';
         log('network', 'error', 'Edge function error', { error: lastError, attempt: attempt + 1 });
         
-        // Don't retry on auth/permission errors
-        if (error.message?.includes('401') || error.message?.includes('403')) {
-          debug.error('Auth/permission error - not retrying', { error: lastError });
+        // Check for CORS-like errors
+        if (lastError.includes('CORS') || lastError.includes('blocked') || lastError.includes('network')) {
+          debug.error('Network/CORS error - not retrying', { error: lastError });
           endTiming();
-          // Log sync event for snapshot
+          const errorDetails: FrostGuardErrorDetails = {
+            error_code: 'CORS_BLOCKED',
+            message: 'Request blocked by browser (possible CORS issue)',
+            hint: getErrorHint(undefined, 'CORS_BLOCKED', lastError),
+            diagnostics: buildDiagnostics(),
+          };
           logOrgSyncEvent({
             timestamp: new Date().toISOString(),
             status: 'error',
             duration_ms: Math.round(performance.now() - startTime),
             error: lastError,
+            error_code: 'CORS_BLOCKED',
+            endpoint: 'fetch-org-state',
+          });
+          return { ok: false, error: lastError, errorDetails };
+        }
+        
+        // Don't retry on auth/permission errors
+        if (error.message?.includes('401') || error.message?.includes('403')) {
+          debug.error('Auth/permission error - not retrying', { error: lastError });
+          endTiming();
+          logOrgSyncEvent({
+            timestamp: new Date().toISOString(),
+            status: 'error',
+            duration_ms: Math.round(performance.now() - startTime),
+            error: lastError,
+            error_code: error.message?.includes('401') ? 'HTTP_401' : 'HTTP_403',
+            endpoint: 'fetch-org-state',
           });
           return { ok: false, error: lastError };
         }
@@ -197,12 +273,12 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         }
         
         endTiming();
-        // Log sync event for snapshot
         logOrgSyncEvent({
           timestamp: new Date().toISOString(),
           status: 'error',
           duration_ms: Math.round(performance.now() - startTime),
           error: lastError,
+          endpoint: 'fetch-org-state',
         });
         return { ok: false, error: lastError };
       }
@@ -216,6 +292,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
           status: 'error',
           duration_ms: Math.round(performance.now() - startTime),
           error: lastError,
+          endpoint: 'fetch-org-state',
         });
         return { ok: false, error: lastError };
       }
@@ -225,15 +302,19 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         const errorCode = data.error_code as string | undefined;
         const requestId = data.request_id as string | undefined;
         const errorMessage = data.error || 'FrostGuard returned failure status';
+        const upstreamDiagnostics = data.diagnostics as RequestDiagnostics | undefined;
         
-        // Build structured error details
+        // Build structured error details with full diagnostics
         const errorDetails: FrostGuardErrorDetails = {
           status_code: statusCode,
           error_code: errorCode,
           request_id: requestId,
           message: errorMessage,
           details: data.details,
-          hint: getErrorHint(statusCode, errorCode, errorMessage),
+          hint: data.hint || getErrorHint(statusCode, errorCode, errorMessage),
+          diagnostics: upstreamDiagnostics || buildDiagnostics({
+            response_status: statusCode,
+          }),
         };
         
         debug.error('FrostGuard API error', { 
@@ -252,6 +333,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
           duration_ms: Math.round(performance.now() - startTime),
           error: errorMessage,
           hint: errorDetails.hint,
+          has_diagnostics: !!upstreamDiagnostics,
         });
         
         endTiming();
@@ -261,6 +343,13 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
           duration_ms: Math.round(performance.now() - startTime),
           error: errorMessage,
           request_id: requestId,
+          status_code: statusCode,
+          error_code: errorCode,
+          endpoint: 'fetch-org-state',
+          target_url_redacted: upstreamDiagnostics?.target_url_redacted,
+          response_body_snippet: typeof data.details === 'object' 
+            ? JSON.stringify(data.details).slice(0, 500) 
+            : undefined,
         });
         return { ok: false, error: errorMessage, errorDetails };
       }
@@ -284,6 +373,8 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         sites_count: data.sites?.length || 0,
         sensors_count: data.sensors?.length || 0,
         gateways_count: data.gateways?.length || 0,
+        request_id: data.request_id,
+        frostguard_host: data.diagnostics?.frostguard_host,
       });
       
       // Log successful sync event for snapshot
@@ -297,6 +388,8 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
           sensors: data.sensors?.length || 0,
           gateways: data.gateways?.length || 0,
         },
+        request_id: data.request_id,
+        endpoint: 'fetch-org-state',
       });
       
       return { ok: true, data };
@@ -304,6 +397,27 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
     } catch (err) {
       lastError = err instanceof Error ? err.message : String(err);
       log('network', 'error', 'Unexpected error during fetch', { error: lastError, attempt: attempt + 1 });
+      
+      // Check for CORS-like errors in caught exceptions
+      if (lastError.includes('CORS') || lastError.includes('Failed to fetch') || lastError.includes('NetworkError')) {
+        debug.error('Network/CORS error caught', { error: lastError });
+        endTiming();
+        const errorDetails: FrostGuardErrorDetails = {
+          error_code: 'NETWORK_ERROR',
+          message: 'Network request failed (possible CORS or connectivity issue)',
+          hint: getErrorHint(undefined, 'NETWORK_ERROR', lastError),
+          diagnostics: buildDiagnostics(),
+        };
+        logOrgSyncEvent({
+          timestamp: new Date().toISOString(),
+          status: 'error',
+          duration_ms: Math.round(performance.now() - startTime),
+          error: lastError,
+          error_code: 'NETWORK_ERROR',
+          endpoint: 'fetch-org-state',
+        });
+        return { ok: false, error: lastError, errorDetails };
+      }
       
       // Wait before retrying
       if (attempt < MAX_RETRIES - 1) {
@@ -320,8 +434,31 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
     status: 'error',
     duration_ms: Math.round(performance.now() - startTime),
     error: `Failed after ${MAX_RETRIES} attempts: ${lastError}`,
+    endpoint: 'fetch-org-state',
   });
-  return { ok: false, error: `Failed after ${MAX_RETRIES} attempts: ${lastError}` };
+  return { 
+    ok: false, 
+    error: `Failed after ${MAX_RETRIES} attempts: ${lastError}`,
+    errorDetails: {
+      message: `Failed after ${MAX_RETRIES} attempts: ${lastError}`,
+      hint: getErrorHint(undefined, undefined, lastError),
+      diagnostics: buildDiagnostics(),
+    },
+  };
+}
+
+/**
+ * Generates a cURL command for reproducing the fetch-org-state request.
+ * Useful for debugging and support.
+ */
+export function generateCurlCommand(orgId: string): string {
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL || '${SUPABASE_URL}';
+  const endpoint = `${supabaseUrl}/functions/v1/fetch-org-state`;
+  
+  return `curl -i -X POST '${endpoint}' \\
+  -H 'Content-Type: application/json' \\
+  -H 'Authorization: Bearer \${SUPABASE_ANON_KEY}' \\
+  -d '{"org_id": "${orgId}"}'`;
 }
 
 /**

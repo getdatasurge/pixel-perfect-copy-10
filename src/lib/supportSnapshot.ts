@@ -19,6 +19,14 @@ export interface OrgSyncEvent {
   error?: string;
   request_id?: string;
   status_code?: number;
+  // Enhanced diagnostics
+  error_code?: string;
+  endpoint?: string;
+  target_url_redacted?: string;
+  response_content_type?: string;
+  response_body_snippet?: string;
+  auth_header_type?: 'authorization' | 'x-sync-api-key';
+  auth_key_last4?: string;
 }
 
 export interface ProvisioningEvent {
@@ -69,6 +77,9 @@ export function logOrgSyncEvent(event: OrgSyncEvent): void {
   orgSyncHistory.push({
     ...event,
     error: event.error ? redactString(event.error) : undefined,
+    response_body_snippet: event.response_body_snippet 
+      ? redactString(event.response_body_snippet) 
+      : undefined,
   });
   if (orgSyncHistory.length > MAX_HISTORY) {
     orgSyncHistory = orgSyncHistory.slice(-MAX_HISTORY);
@@ -198,6 +209,20 @@ function deepRedact(obj: unknown, depth = 0): unknown {
 
 // ============ Snapshot Types ============
 
+export interface EndpointConfig {
+  edge_function: string;
+  target_api: string;
+  supabase_url_configured: boolean;
+  supabase_project_id?: string;
+  auth_method: 'authorization' | 'x-sync-api-key' | 'unknown';
+}
+
+export interface CorsDiagnostics {
+  blocked: boolean;
+  error_message?: string;
+  last_blocked_at?: string;
+}
+
 export interface SupportSnapshot {
   meta: {
     generated_at: string;
@@ -218,6 +243,10 @@ export interface SupportSnapshot {
     last_synced_at?: string;
     current_route?: string;
   };
+  
+  endpoint_config: EndpointConfig;
+  
+  cors_diagnostics?: CorsDiagnostics;
   
   org_sync_diagnostics: {
     last_n_pulls: OrgSyncEvent[];
@@ -269,10 +298,23 @@ export function buildSupportSnapshot(options: BuildSnapshotOptions = {}): Suppor
   // Try to extract TTN info from context or logs
   const ttnInfo = extractTTNInfo(allEntries, context);
   
+  // Check for CORS errors in recent logs
+  const corsInfo = extractCorsInfo(allEntries);
+  
+  // Build endpoint config
+  const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
+  const endpointConfig: EndpointConfig = {
+    edge_function: 'fetch-org-state',
+    target_api: 'FrostGuard org-state-api',
+    supabase_url_configured: !!supabaseUrl,
+    supabase_project_id: supabaseUrl ? extractProjectId(supabaseUrl) : undefined,
+    auth_method: 'authorization', // We use Bearer token via Supabase client
+  };
+  
   return {
     meta: {
       generated_at: new Date().toISOString(),
-      snapshot_version: '1.0.0',
+      snapshot_version: '2.0.0', // Bumped version for enhanced diagnostics
       app_name: 'FrostGuard Emulator',
       env: import.meta.env.MODE || 'unknown',
       triggered_by: errorEntryId ? 'error_context' : 'manual',
@@ -289,6 +331,10 @@ export function buildSupportSnapshot(options: BuildSnapshotOptions = {}): Suppor
       last_synced_at: context.lastSyncAt,
       current_route: typeof window !== 'undefined' ? window.location.pathname : undefined,
     },
+    
+    endpoint_config: endpointConfig,
+    
+    cors_diagnostics: corsInfo.blocked ? corsInfo : undefined,
     
     org_sync_diagnostics: {
       last_n_pulls: getOrgSyncHistory(),
@@ -339,6 +385,43 @@ function extractTTNInfo(entries: DebugEntry[], context: DebugContext): {
   }
   
   return { apiKeyPresent: false };
+}
+
+function extractCorsInfo(entries: DebugEntry[]): CorsDiagnostics {
+  // Look for CORS-related errors in recent logs
+  const corsErrors = entries
+    .filter(e => 
+      e.level === 'error' && 
+      (e.message.includes('CORS') || 
+       e.message.includes('blocked') || 
+       e.message.includes('network') ||
+       (e.data && JSON.stringify(e.data).includes('CORS')))
+    )
+    .reverse();
+  
+  if (corsErrors.length > 0) {
+    const latestError = corsErrors[0];
+    return {
+      blocked: true,
+      error_message: redactString(latestError.message),
+      last_blocked_at: typeof latestError.timestamp === 'string' ? latestError.timestamp : new Date(latestError.timestamp).toISOString(),
+    };
+  }
+  
+  return { blocked: false };
+}
+
+function extractProjectId(supabaseUrl: string): string | undefined {
+  try {
+    const url = new URL(supabaseUrl);
+    const parts = url.hostname.split('.');
+    if (parts.length > 0 && parts[0] !== 'supabase') {
+      return parts[0];
+    }
+  } catch {
+    // Invalid URL
+  }
+  return undefined;
 }
 
 // ============ Download Helper ============
