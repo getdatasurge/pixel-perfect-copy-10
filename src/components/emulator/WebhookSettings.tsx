@@ -14,6 +14,7 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
+import { debug } from '@/lib/debugLogger';
 import {
   Select,
   SelectContent,
@@ -262,7 +263,38 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       return;
     }
 
+    // Validate new API key format if provided
+    if (ttnApiKey) {
+      if (!ttnApiKey.startsWith('NNSXS.') && !ttnApiKey.startsWith('nnsxs.')) {
+        toast({
+          title: 'Invalid API Key Format',
+          description: 'TTN API keys should start with "NNSXS."',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (ttnApiKey.length < 50) {
+        toast({
+          title: 'API Key Too Short',
+          description: 'TTN API keys are typically 100+ characters',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     setIsSaving(true);
+    
+    // Debug logging - request
+    const apiKeyLast4New = ttnApiKey ? ttnApiKey.slice(-4) : null;
+    debug.ttn('TTN_SETTINGS_SAVE_REQUEST', {
+      orgId,
+      cluster: ttnCluster,
+      appId: ttnApplicationId,
+      apiKeyLast4_new: apiKeyLast4New ? `****${apiKeyLast4New}` : null,
+      hasNewKey: !!ttnApiKey,
+    });
+
     try {
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
         body: {
@@ -278,6 +310,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       if (error) {
         const errorMsg = data?.error || error.message || 'Failed to save settings';
+        debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
+          error: errorMsg,
+          code: data?.code || 'UNKNOWN_ERROR',
+        });
         toast({
           title: 'Save Failed',
           description: errorMsg,
@@ -287,11 +323,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       }
 
       if (data?.ok) {
-        toast({
-          title: 'Settings Saved',
-          description: 'TTN configuration saved successfully',
+        // Debug logging - success
+        debug.ttn('TTN_SETTINGS_SAVE_SUCCESS', {
+          updated_at: data.updated_at,
+          apiKeyLast4_saved: data.api_key_last4 ? `****${data.api_key_last4}` : null,
+          api_key_set: data.api_key_set,
         });
-        
+
         // Update local state from response
         if (data.api_key_set !== undefined) {
           setTtnApiKeySet(data.api_key_set);
@@ -303,16 +341,33 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           setTtnWebhookSecretSet(data.webhook_secret_set);
         }
         
-        // Clear input fields after successful save
+        // Clear input fields after successful save (security)
         setTtnApiKey('');
         setTtnWebhookSecret('');
         
+        // Update parent config with new last4 for cache key tracking
         updateTTN({ 
           enabled: ttnEnabled, 
           applicationId: ttnApplicationId, 
-          cluster: ttnCluster 
+          cluster: ttnCluster,
+          api_key_last4: data.api_key_last4,
+          updated_at: data.updated_at,
+        });
+
+        // Show toast with new key last4
+        const toastDescription = data.api_key_last4 
+          ? `API key updated (****${data.api_key_last4})`
+          : 'TTN configuration saved successfully';
+        
+        toast({
+          title: 'Settings Saved',
+          description: toastDescription,
         });
       } else {
+        debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
+          error: data?.error || 'Unknown error',
+          code: data?.code,
+        });
         toast({
           title: 'Save Failed',
           description: data?.error || 'Unknown error',
@@ -320,6 +375,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         });
       }
     } catch (err: any) {
+      debug.ttn('TTN_SETTINGS_SAVE_FAILURE', {
+        error: err.message || 'Network error',
+        code: 'NETWORK_ERROR',
+      });
       toast({
         title: 'Save Error',
         description: err.message || 'Network error saving settings',
