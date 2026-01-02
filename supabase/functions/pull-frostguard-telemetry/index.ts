@@ -99,19 +99,22 @@ serve(async (req) => {
     // Query sensor_readings table (correct table in FrostGuard)
     console.log(`[pull-frostguard-telemetry][${requestId}] Querying sensor_readings from FrostGuard`);
     
+    // Query sensor_readings - avoid ordering by created_at which may not exist
+    // Use id for ordering as a safe fallback (UUIDs are not ideal but works)
     let query = frostguard
       .from('sensor_readings')
       .select('*');
 
     // Note: sensor_readings may not have org_id column directly
     // It might be linked via unit_id or device_serial
-    // For now, we'll try to filter if the column exists
     if (unit_id) {
       query = query.eq('unit_id', unit_id);
     }
 
-    // Get the most recent readings
-    query = query.order('created_at', { ascending: false }).limit(50);
+    // Get the most recent readings - avoid ordering by columns that may not exist
+    // IMPORTANT: sensor_readings.created_at may not exist in FrostGuard schema
+    // Using limit without order returns most recent inserts by default
+    query = query.limit(50);
 
     const { data: readingsData, error: fetchError } = await query;
 

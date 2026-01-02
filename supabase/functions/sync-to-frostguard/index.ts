@@ -358,7 +358,7 @@ Deno.serve(async (req) => {
     devices: { created: 0, updated: 0, failed: 0 },
   };
 
-  // Sync gateways
+  // Sync gateways - use correct FrostGuard column names (org_id not organization_id)
   for (const gateway of entities.gateways) {
     try {
       const { error } = await supabase.from('gateways').upsert(
@@ -367,7 +367,7 @@ Deno.serve(async (req) => {
           name: gateway.name,
           gateway_eui: gateway.eui,
           is_online: gateway.is_online,
-          organization_id: context.org_id,
+          org_id: context.org_id,            // Correct column name
           site_id: context.site_id || null,
           updated_at: new Date().toISOString(),
         },
@@ -386,9 +386,20 @@ Deno.serve(async (req) => {
     }
   }
 
-  // Sync devices
+  // Sync devices - use correct FrostGuard column names:
+  // - org_id (not organization_id)
+  // - sensor_kind (not sensor_type)
+  // - unit_id is REQUIRED in FrostGuard schema
   for (const device of entities.devices) {
     try {
+      // Map device type to FrostGuard sensor_kind enum
+      const sensorKind = device.type === 'temperature' ? 'temp' : 
+                         device.type === 'door' ? 'door' : 'temp';
+      
+      // unit_id is required - use unit_id_override from context if available
+      // Otherwise generate a placeholder UUID (FrostGuard requires this field)
+      const unitId = context.unit_id || crypto.randomUUID();
+      
       const { error } = await supabase.from('lora_sensors').upsert(
         {
           id: device.id,
@@ -396,18 +407,20 @@ Deno.serve(async (req) => {
           dev_eui: device.dev_eui,
           join_eui: device.join_eui,
           app_key: device.app_key,
-          sensor_type: device.type,
-          serial_number: device.dev_eui,
-          gateway_id: device.gateway_id || null,
-          organization_id: context.org_id,
+          sensor_kind: sensorKind,           // Correct column name
+          org_id: context.org_id,            // Correct column name
           site_id: context.site_id || null,
+          unit_id: unitId,                   // Required field
+          status: 'pending',
+          ttn_device_id: `sensor-${device.dev_eui.toLowerCase().replace(/[:\s-]/g, '')}`,
           updated_at: new Date().toISOString(),
         },
-        { onConflict: 'id' }
+        { onConflict: 'org_id,dev_eui' }     // Stable conflict key
       );
 
       if (error) {
         console.error(`Device ${device.id} upsert failed:`, error);
+        console.error(`Device details: dev_eui=${device.dev_eui}, unit_id=${unitId}, error_code=${error.code}`);
         results.devices.failed++;
       } else {
         results.devices.updated++;

@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy } from 'lucide-react';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy, Database } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -446,7 +446,19 @@ export default function DeviceManager({
       return;
     }
 
+    const requestId = crypto.randomUUID().slice(0, 8);
     setSyncingId(device.id);
+    
+    log('network', 'info', 'SYNC_TO_FROSTGUARD_REQUEST', {
+      request_id: requestId,
+      device_id: device.id,
+      device_name: device.name,
+      dev_eui: device.devEui,
+      org_id: webhookConfig.testOrgId,
+    });
+    
+    const startTime = Date.now();
+    
     try {
       const { data, error } = await supabase.functions.invoke('sync-to-frostguard', {
         body: {
@@ -454,11 +466,12 @@ export default function DeviceManager({
             sync_run_id: crypto.randomUUID(),
             initiated_at: new Date().toISOString(),
             source_project: 'pixel-perfect-copy-10',
+            request_id: requestId,
           },
           context: {
             org_id: webhookConfig.testOrgId,
             site_id: webhookConfig.testSiteId,
-            unit_id_override: webhookConfig.testUnitId,
+            unit_id: webhookConfig.testUnitId, // Use unit_id not unit_id_override
           },
           entities: {
             gateways: [],
@@ -476,15 +489,114 @@ export default function DeviceManager({
       });
 
       if (error) throw error;
-      if (!data?.success) throw new Error(data?.results?.sensors?.errors?.[0] || 'Sync failed');
+      if (!data?.ok && !data?.success) {
+        const errorMsg = data?.error || data?.results?.sensors?.errors?.[0] || 'Sync failed';
+        throw new Error(errorMsg);
+      }
 
+      log('network', 'info', 'SYNC_TO_FROSTGUARD_SUCCESS', {
+        request_id: requestId,
+        device_id: device.id,
+        duration_ms: Date.now() - startTime,
+        method: data?.method,
+      });
+      
       setSyncedIds(prev => new Set(prev).add(device.id));
       toast({ title: 'Sensor Synced', description: `${device.name} synced` });
     } catch (err: unknown) {
       const errorMessage = err instanceof Error ? err.message : String(err);
-      toast({ title: 'Sync Failed', description: errorMessage, variant: 'destructive' });
+      
+      log('network', 'error', 'SYNC_TO_FROSTGUARD_ERROR', {
+        request_id: requestId,
+        device_id: device.id,
+        error: errorMessage,
+        duration_ms: Date.now() - startTime,
+      });
+      
+      toast({ 
+        title: 'Sync Failed', 
+        description: `${errorMessage} (ID: ${requestId})`, 
+        variant: 'destructive' 
+      });
     } finally {
       setSyncingId(null);
+    }
+  };
+
+  // Write Test Sensor - DB-only smoke test without TTN
+  const writeTestSensor = async () => {
+    if (!webhookConfig?.testOrgId) {
+      toast({ 
+        title: 'Configure Test Context', 
+        description: 'Set Organization ID in the Testing tab first', 
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    const requestId = crypto.randomUUID().slice(0, 8);
+    const testDevEui = generateEUI().toUpperCase();
+    const testSensor = {
+      id: crypto.randomUUID(),
+      org_id: webhookConfig.testOrgId,
+      site_id: webhookConfig.testSiteId || null,
+      unit_id: webhookConfig.testUnitId || crypto.randomUUID(), // Required field
+      dev_eui: testDevEui,
+      join_eui: generateEUI().toUpperCase(),
+      app_key: generateAppKey().toUpperCase(),
+      sensor_kind: 'temp' as const,
+      status: 'pending' as const,
+      name: `Test Sensor ${Date.now().toString(36).toUpperCase()}`,
+      ttn_device_id: `sensor-${testDevEui.toLowerCase()}`,
+    };
+    
+    log('network', 'info', 'WRITE_TEST_SENSOR_REQUEST', {
+      request_id: requestId,
+      sensor_id: testSensor.id,
+      dev_eui: testSensor.dev_eui,
+      org_id: testSensor.org_id,
+    });
+
+    try {
+      const { data, error } = await supabase
+        .from('lora_sensors')
+        .insert(testSensor)
+        .select()
+        .single();
+        
+      if (error) {
+        log('network', 'error', 'WRITE_TEST_SENSOR_ERROR', {
+          request_id: requestId,
+          error: error.message,
+          error_code: error.code,
+        });
+        toast({ 
+          title: 'DB Write Failed', 
+          description: `${error.message} (ID: ${requestId})`, 
+          variant: 'destructive' 
+        });
+      } else {
+        log('network', 'info', 'WRITE_TEST_SENSOR_SUCCESS', {
+          request_id: requestId,
+          sensor_id: data.id,
+          dev_eui: data.dev_eui,
+        });
+        toast({ 
+          title: 'Test Sensor Created', 
+          description: `ID: ${data.id.slice(0, 8)}... DevEUI: ${data.dev_eui}` 
+        });
+      }
+    } catch (err) {
+      const errorMessage = err instanceof Error ? err.message : String(err);
+      log('network', 'error', 'WRITE_TEST_SENSOR_EXCEPTION', {
+        request_id: requestId,
+        error: errorMessage,
+      });
+      toast({ 
+        title: 'DB Write Failed', 
+        description: `${errorMessage} (ID: ${requestId})`, 
+        variant: 'destructive' 
+      });
     }
   };
 
@@ -580,6 +692,31 @@ export default function DeviceManager({
                       ? 'Add devices first' 
                       : 'Configure TTN on Webhook tab and pass Test Connection first'}
                   </p>
+                </TooltipContent>
+              )}
+            </Tooltip>
+          </TooltipProvider>
+
+          {/* DB-only Smoke Test Button */}
+          <TooltipProvider>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <span>
+                  <Button
+                    onClick={writeTestSensor}
+                    disabled={!canSync || disabled}
+                    size="sm"
+                    variant="outline"
+                    className="gap-1"
+                  >
+                    <Database className="h-4 w-4" />
+                    Write Test Sensor
+                  </Button>
+                </span>
+              </TooltipTrigger>
+              {!canSync && (
+                <TooltipContent>
+                  <p>Set Organization ID in Testing tab first</p>
                 </TooltipContent>
               )}
             </Tooltip>

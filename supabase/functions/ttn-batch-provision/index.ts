@@ -289,6 +289,26 @@ Deno.serve(async (req) => {
         }
 
         console.log(`[${requestId}] Device ${deviceId} registered successfully`);
+        
+        // Update sensor status in database to 'active' (provisioned)
+        if (org_id) {
+          const { error: updateError } = await supabase
+            .from('lora_sensors')
+            .update({ 
+              status: 'active',
+              ttn_device_id: deviceId,
+              updated_at: new Date().toISOString(),
+            })
+            .eq('dev_eui', dev_eui.toUpperCase().replace(/[:\s-]/g, ''))
+            .eq('org_id', org_id);
+          
+          if (updateError) {
+            console.warn(`[${requestId}] Could not update sensor status for ${deviceId}: ${updateError.message}`);
+          } else {
+            console.log(`[${requestId}] Updated sensor status to 'active' for ${deviceId}`);
+          }
+        }
+        
         results.push({
           dev_eui,
           ttn_device_id: deviceId,
@@ -298,6 +318,19 @@ Deno.serve(async (req) => {
 
       } catch (err: any) {
         console.error(`[${requestId}] Error provisioning ${deviceId}:`, err.message);
+        
+        // Update sensor status to 'pending' with error info
+        if (org_id) {
+          await supabase
+            .from('lora_sensors')
+            .update({ 
+              status: 'pending', // Keep pending on failure
+              updated_at: new Date().toISOString(),
+            })
+            .eq('dev_eui', dev_eui.toUpperCase().replace(/[:\s-]/g, ''))
+            .eq('org_id', org_id);
+        }
+        
         results.push({
           dev_eui,
           ttn_device_id: deviceId,
