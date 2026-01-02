@@ -4,7 +4,7 @@ import { Label } from '@/components/ui/label';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Badge } from '@/components/ui/badge';
-import { ExternalLink, Loader2, Check, X, Key, ShieldCheck } from 'lucide-react';
+import { ExternalLink, Loader2, Check, X, Key, ShieldCheck, Eye, ListChecks, Settings, Radio } from 'lucide-react';
 import { WizardConfig, StepStatus } from '../TTNSetupWizard';
 import { supabase } from '@/integrations/supabase/client';
 
@@ -17,12 +17,30 @@ interface StepApiKeyProps {
   setIsValidating: (v: boolean) => void;
 }
 
-const REQUIRED_PERMISSIONS = [
-  { key: 'applications:read', label: 'Read application settings' },
-  { key: 'devices:read', label: 'Read device information' },
-  { key: 'devices:write', label: 'Write device settings' },
-  { key: 'Write downlink traffic', label: 'Simulate uplinks' },
+// Map TTN right keys to user-friendly labels and icons
+const PERMISSION_CONFIG: { key: string; label: string; icon: React.ComponentType<{ className?: string }>; critical?: boolean }[] = [
+  { key: 'RIGHT_APPLICATION_INFO', label: 'Read application info', icon: Eye },
+  { key: 'RIGHT_APPLICATION_DEVICES_READ', label: 'Read devices', icon: ListChecks },
+  { key: 'RIGHT_APPLICATION_DEVICES_WRITE', label: 'Write devices', icon: Settings },
+  { key: 'RIGHT_APPLICATION_TRAFFIC_DOWN_WRITE', label: 'Simulate uplinks', icon: Radio, critical: true },
 ];
+
+interface PermissionStatus {
+  key: string;
+  label: string;
+  description?: string;
+  required: boolean;
+  granted: boolean;
+}
+
+interface TestResult {
+  ok: boolean;
+  message?: string;
+  hint?: string;
+  code?: string;
+  permissions?: PermissionStatus[];
+  can_simulate?: boolean;
+}
 
 export default function StepApiKey({
   config,
@@ -32,12 +50,7 @@ export default function StepApiKey({
   isValidating,
   setIsValidating,
 }: StepApiKeyProps) {
-  const [testResult, setTestResult] = useState<{
-    ok: boolean;
-    message?: string;
-    hint?: string;
-    code?: string;
-  } | null>(null);
+  const [testResult, setTestResult] = useState<TestResult | null>(null);
 
   const testConnection = async () => {
     if (!config.apiKey || !config.applicationId) return;
@@ -46,7 +59,8 @@ export default function StepApiKey({
     setTestResult(null);
 
     try {
-      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+      // Step 1: Basic connectivity test
+      const { data: connData, error: connError } = await supabase.functions.invoke('manage-ttn-settings', {
         body: {
           action: 'test',
           cluster: config.cluster,
@@ -55,23 +69,63 @@ export default function StepApiKey({
         },
       });
 
-      if (error) {
-        setTestResult({ ok: false, message: error.message });
-        markStepPassed(3, false, error.message);
+      if (connError) {
+        setTestResult({ ok: false, message: connError.message });
+        markStepPassed(3, false, connError.message);
         return;
       }
 
-      if (data?.ok && data?.connected) {
-        setTestResult({ ok: true, message: 'API key valid! Connected to TTN.' });
-        markStepPassed(3, true);
-      } else {
+      if (!connData?.ok || !connData?.connected) {
         setTestResult({
           ok: false,
-          message: data?.error || 'Connection failed',
-          hint: data?.hint,
-          code: data?.code,
+          message: connData?.error || 'Connection failed',
+          hint: connData?.hint,
+          code: connData?.code,
         });
-        markStepPassed(3, false, data?.error);
+        markStepPassed(3, false, connData?.error);
+        return;
+      }
+
+      // Step 2: Permission check
+      const { data: permData, error: permError } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'check_app_permissions',
+          cluster: config.cluster,
+          application_id: config.applicationId,
+          api_key: config.apiKey,
+        },
+      });
+
+      if (permError) {
+        // Connection worked but permission check failed - still show success with warning
+        setTestResult({ 
+          ok: true, 
+          message: 'Connected to TTN (could not verify permissions)',
+          hint: 'Permission check failed, but connection is valid.',
+        });
+        markStepPassed(3, true);
+        return;
+      }
+
+      if (permData?.ok && permData?.permissions) {
+        setTestResult({
+          ok: true,
+          message: 'API key valid with all required permissions!',
+          permissions: permData.permissions,
+          can_simulate: permData.can_simulate,
+        });
+        markStepPassed(3, true);
+      } else {
+        // Connected but missing permissions
+        setTestResult({
+          ok: false,
+          message: 'API key connected but missing permissions',
+          hint: permData?.hint,
+          permissions: permData?.permissions,
+          can_simulate: permData?.can_simulate,
+        });
+        // Still mark as failed if missing critical permissions
+        markStepPassed(3, false, 'Missing required permissions');
       }
     } catch (err: any) {
       setTestResult({ ok: false, message: err.message });
@@ -89,6 +143,16 @@ export default function StepApiKey({
 
   const ttnApiKeysUrl = `https://${config.cluster}.cloud.thethings.network/console/applications/${config.applicationId}/api-keys`;
 
+  // Get icon component for a permission
+  const getPermissionIcon = (key: string) => {
+    const found = PERMISSION_CONFIG.find(p => p.key === key);
+    return found?.icon || ShieldCheck;
+  };
+
+  const isCriticalPermission = (key: string) => {
+    return PERMISSION_CONFIG.find(p => p.key === key)?.critical || false;
+  };
+
   return (
     <div className="space-y-6">
       <div className="space-y-2">
@@ -101,19 +165,58 @@ export default function StepApiKey({
         </p>
       </div>
 
-      {/* Required Permissions Checklist */}
-      <div className="bg-muted/50 rounded-lg p-4 space-y-3">
-        <Label className="text-sm font-medium">Required Permissions</Label>
-        <div className="grid gap-2">
-          {REQUIRED_PERMISSIONS.map((perm) => (
-            <div key={perm.key} className="flex items-center gap-2 text-sm">
-              <ShieldCheck className="h-4 w-4 text-primary" />
-              <code className="bg-background px-1 rounded text-xs">{perm.key}</code>
-              <span className="text-muted-foreground">— {perm.label}</span>
-            </div>
-          ))}
+      {/* Required Permissions Checklist - before testing */}
+      {!testResult?.permissions && (
+        <div className="bg-muted/50 rounded-lg p-4 space-y-3">
+          <Label className="text-sm font-medium">Required Permissions</Label>
+          <div className="grid gap-2">
+            {PERMISSION_CONFIG.map((perm) => {
+              const Icon = perm.icon;
+              return (
+                <div key={perm.key} className="flex items-center gap-2 text-sm">
+                  <Icon className="h-4 w-4 text-primary" />
+                  <span className="text-muted-foreground">{perm.label}</span>
+                  {perm.critical && (
+                    <Badge variant="secondary" className="text-xs">Required for simulation</Badge>
+                  )}
+                </div>
+              );
+            })}
+          </div>
         </div>
-      </div>
+      )}
+
+      {/* Permission Status - after testing */}
+      {testResult?.permissions && (
+        <div className="bg-muted/50 rounded-lg p-4 space-y-3">
+          <Label className="text-sm font-medium">Permission Status</Label>
+          <div className="grid gap-2">
+            {testResult.permissions.map((perm) => {
+              const Icon = getPermissionIcon(perm.key);
+              const isCritical = isCriticalPermission(perm.key);
+              return (
+                <div key={perm.key} className="flex items-center gap-2 text-sm">
+                  {perm.granted ? (
+                    <Check className="h-4 w-4 text-green-500" />
+                  ) : (
+                    <X className="h-4 w-4 text-destructive" />
+                  )}
+                  <Icon className={`h-4 w-4 ${perm.granted ? 'text-muted-foreground' : 'text-destructive'}`} />
+                  <span className={perm.granted ? 'text-muted-foreground' : 'text-destructive font-medium'}>
+                    {perm.label}
+                  </span>
+                  {!perm.granted && (
+                    <Badge variant="destructive" className="text-xs">Missing</Badge>
+                  )}
+                  {perm.granted && isCritical && (
+                    <Badge variant="outline" className="text-xs text-green-600 border-green-200">Ready</Badge>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
 
       <div className="space-y-4">
         <div className="space-y-2">
@@ -154,7 +257,7 @@ export default function StepApiKey({
           ) : testResult?.ok ? (
             <Check className="h-4 w-4 mr-2" />
           ) : null}
-          Test Connection
+          {testResult?.permissions ? 'Re-check Permissions' : 'Test Connection & Permissions'}
         </Button>
 
         {testResult && (
@@ -164,7 +267,11 @@ export default function StepApiKey({
             ) : (
               <X className="h-4 w-4" />
             )}
-            <AlertTitle>{testResult.ok ? 'Connected!' : 'Connection Failed'}</AlertTitle>
+            <AlertTitle>
+              {testResult.ok 
+                ? (testResult.can_simulate ? 'Ready for Simulation!' : 'Connected!') 
+                : 'Connection Failed'}
+            </AlertTitle>
             <AlertDescription className="space-y-2">
               <p>{testResult.message}</p>
               {testResult.code && (

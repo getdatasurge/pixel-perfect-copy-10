@@ -56,6 +56,22 @@ interface TTNTestResult {
   required_permissions?: string[];
 }
 
+interface PermissionStatus {
+  key: string;
+  label: string;
+  description?: string;
+  required: boolean;
+  granted: boolean;
+}
+
+interface PermissionCheckResult {
+  ok: boolean;
+  permissions?: PermissionStatus[];
+  missing?: string[];
+  can_simulate?: boolean;
+  hint?: string;
+}
+
 interface TTNSettingsFromDB {
   enabled: boolean;
   cluster: string;
@@ -98,6 +114,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   
   // Test result state
   const [testResult, setTestResult] = useState<TTNTestResult | null>(null);
+  
+  // Permission check state
+  const [isCheckingPermissions, setIsCheckingPermissions] = useState(false);
+  const [permissionResult, setPermissionResult] = useState<PermissionCheckResult | null>(null);
   
   // Cluster detection state
   const [detectedCluster, setDetectedCluster] = useState<string | null>(null);
@@ -676,6 +696,76 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     }
   };
 
+  // Check API key permissions
+  const checkPermissions = async () => {
+    if (!orgId) {
+      toast({ title: 'No Organization', description: 'Select an organization first', variant: 'destructive' });
+      return;
+    }
+
+    if (!ttnApiKeySet && !ttnApiKey) {
+      toast({ title: 'No API Key', description: 'Enter or save an API key first', variant: 'destructive' });
+      return;
+    }
+
+    setIsCheckingPermissions(true);
+    setPermissionResult(null);
+
+    try {
+      // If user entered a new key, use it directly; otherwise use stored key via test_stored first
+      let apiKeyToUse = ttnApiKey;
+      
+      if (!apiKeyToUse && ttnApiKeySet) {
+        // We need to call a different endpoint that loads the stored key
+        // For now, just call check_app_permissions and let backend load stored key
+        // Actually, check_app_permissions requires api_key - we'll need to call test_stored first
+        // Let's just do the test and then permissions in one go
+        toast({ 
+          title: 'Permission Check', 
+          description: 'Use "Test Connection" which includes permission checking', 
+        });
+        setIsCheckingPermissions(false);
+        return;
+      }
+
+      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'check_app_permissions',
+          cluster: ttnCluster,
+          application_id: ttnApplicationId,
+          api_key: apiKeyToUse,
+        },
+      });
+
+      if (error) {
+        setPermissionResult({ ok: false, hint: error.message });
+        toast({ title: 'Permission Check Failed', description: error.message, variant: 'destructive' });
+        return;
+      }
+
+      const result: PermissionCheckResult = data;
+      setPermissionResult(result);
+
+      if (result.ok) {
+        toast({ 
+          title: 'All Permissions Granted', 
+          description: result.can_simulate ? 'Ready for simulation!' : 'Connected successfully',
+        });
+      } else {
+        toast({
+          title: 'Missing Permissions',
+          description: result.missing?.join(', ') || 'Some permissions are missing',
+          variant: 'destructive',
+        });
+      }
+    } catch (err: any) {
+      setPermissionResult({ ok: false, hint: err.message });
+      toast({ title: 'Check Failed', description: err.message, variant: 'destructive' });
+    } finally {
+      setIsCheckingPermissions(false);
+    }
+  };
+
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
   };
@@ -813,6 +903,50 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     } finally {
       setIsTesting(false);
     }
+  };
+
+  // Render permission status
+  const renderPermissionStatus = () => {
+    if (!permissionResult?.permissions) return null;
+
+    return (
+      <div className="bg-muted/50 rounded-lg p-4 space-y-3">
+        <div className="flex items-center justify-between">
+          <Label className="text-sm font-medium">API Key Permissions</Label>
+          {permissionResult.can_simulate ? (
+            <Badge variant="outline" className="text-green-600 border-green-200">
+              <Check className="h-3 w-3 mr-1" />
+              Simulation Ready
+            </Badge>
+          ) : (
+            <Badge variant="destructive">
+              <X className="h-3 w-3 mr-1" />
+              Missing Permissions
+            </Badge>
+          )}
+        </div>
+        <div className="grid gap-1.5">
+          {permissionResult.permissions.map((perm) => (
+            <div key={perm.key} className="flex items-center gap-2 text-sm">
+              {perm.granted ? (
+                <Check className="h-4 w-4 text-green-500 shrink-0" />
+              ) : (
+                <X className="h-4 w-4 text-destructive shrink-0" />
+              )}
+              <span className={perm.granted ? 'text-muted-foreground' : 'text-destructive'}>
+                {perm.label}
+              </span>
+              {!perm.granted && (
+                <Badge variant="destructive" className="text-xs">Missing</Badge>
+              )}
+            </div>
+          ))}
+        </div>
+        {permissionResult.hint && (
+          <p className="text-xs bg-background/50 p-2 rounded">{permissionResult.hint}</p>
+        )}
+      </div>
+    );
   };
 
   // Render test result diagnostics
@@ -1195,6 +1329,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
               {/* Test Result Diagnostics */}
               {renderTestDiagnostics()}
 
+              {/* Permission Status */}
+              {renderPermissionStatus()}
+
               {/* TTN Device Registration Notice */}
               <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 space-y-3">
                 <div className="flex items-start gap-2">
@@ -1246,6 +1383,21 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       <Radio className="h-4 w-4" />
                     )}
                     Test Connection
+                  </Button>
+                  
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={checkPermissions}
+                    disabled={!canTestConnection || isCheckingPermissions}
+                    className="flex items-center gap-1"
+                  >
+                    {isCheckingPermissions ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <ShieldCheck className="h-4 w-4" />
+                    )}
+                    Check Permissions
                   </Button>
                 </div>
 

@@ -13,7 +13,7 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway' | 'check_gateway_permissions';
+  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway' | 'check_gateway_permissions' | 'check_app_permissions';
   org_id?: string;
   selected_user_id?: string; // For testing specific user's TTN settings
   enabled?: boolean;
@@ -26,6 +26,14 @@ interface TTNSettingsRequest {
   gateway_owner_type?: 'user' | 'organization';
   gateway_owner_id?: string;
 }
+
+// TTN Rights that we check for
+const TTN_RIGHTS = {
+  APP_INFO_READ: 'RIGHT_APPLICATION_INFO',
+  APP_DEVICES_READ: 'RIGHT_APPLICATION_DEVICES_READ',
+  APP_DEVICES_WRITE: 'RIGHT_APPLICATION_DEVICES_WRITE',
+  APP_TRAFFIC_DOWN_WRITE: 'RIGHT_APPLICATION_TRAFFIC_DOWN_WRITE',
+} as const;
 
 // Generate correlation ID for debugging
 function generateRequestId(): string {
@@ -120,6 +128,9 @@ Deno.serve(async (req) => {
 
       case 'check_gateway_permissions':
         return await handleCheckGatewayPermissions(supabaseAdmin, body, requestId);
+
+      case 'check_app_permissions':
+        return await handleCheckAppPermissions(body, requestId);
 
       default:
         return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
@@ -621,6 +632,175 @@ async function handleTest(
     ttn_status: status,
     ttn_message: ttnMessage,
     baseUrl,
+  }, 200, requestId);
+}
+
+// Check application permissions by calling the rights endpoint
+async function handleCheckAppPermissions(
+  body: Partial<TTNSettingsRequest>,
+  requestId: string
+): Promise<Response> {
+  const { cluster, application_id, api_key } = body;
+
+  console.log(`[${requestId}] Checking app permissions: cluster=${cluster}, app=${application_id}`);
+
+  // Validate required fields
+  if (!cluster || !VALID_CLUSTERS.includes(cluster as TTNCluster)) {
+    return buildResponse({
+      ok: false,
+      error: 'Valid cluster is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  if (!application_id) {
+    return buildResponse({
+      ok: false,
+      error: 'Application ID is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  if (!api_key) {
+    return buildResponse({
+      ok: false,
+      error: 'API Key is required',
+      code: 'VALIDATION_ERROR',
+    }, 200, requestId);
+  }
+
+  const baseUrl = getBaseUrl(cluster);
+  const rightsUrl = `${baseUrl}/api/v3/applications/${application_id}/rights`;
+
+  console.log(`[${requestId}] Fetching rights: ${rightsUrl}`);
+
+  let response: Response;
+  try {
+    response = await fetch(rightsUrl, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${api_key}`,
+        'Accept': 'application/json',
+      },
+    });
+  } catch (fetchError: unknown) {
+    const errorMsg = fetchError instanceof Error ? fetchError.message : 'Unknown network error';
+    console.error(`[${requestId}] Network error:`, errorMsg);
+    return buildResponse({
+      ok: false,
+      error: 'Network error connecting to TTN',
+      code: 'NETWORK_ERROR',
+      hint: `Could not reach ${baseUrl}. Check internet connection.`,
+    }, 200, requestId);
+  }
+
+  const status = response.status;
+  console.log(`[${requestId}] TTN rights response status: ${status}`);
+
+  if (status !== 200) {
+    // Handle error cases
+    let ttnMessage = '';
+    try {
+      const errorBody = await response.json();
+      ttnMessage = errorBody.message || errorBody.error || '';
+    } catch { /* ignore */ }
+
+    if (status === 401) {
+      return buildResponse({
+        ok: false,
+        error: 'Invalid or expired API key',
+        code: 'AUTH_INVALID',
+        hint: 'Generate a new API key in TTN Console',
+      }, 200, requestId);
+    }
+
+    if (status === 403) {
+      return buildResponse({
+        ok: false,
+        error: 'API key cannot access this application',
+        code: 'PERMISSION_DENIED',
+        hint: 'Ensure the API key is scoped to this application',
+      }, 200, requestId);
+    }
+
+    return buildResponse({
+      ok: false,
+      error: `TTN returned status ${status}`,
+      code: 'TTN_ERROR',
+      hint: ttnMessage || 'Check TTN Console',
+    }, 200, requestId);
+  }
+
+  // Parse the rights response
+  let rightsData: { rights?: string[] } = {};
+  try {
+    rightsData = await response.json();
+  } catch (parseErr) {
+    console.error(`[${requestId}] Failed to parse rights response:`, parseErr);
+    return buildResponse({
+      ok: false,
+      error: 'Failed to parse TTN response',
+      code: 'PARSE_ERROR',
+    }, 200, requestId);
+  }
+
+  const rights = rightsData.rights || [];
+  console.log(`[${requestId}] Rights granted: ${rights.length}`, rights);
+
+  // Define required permissions with user-friendly labels
+  const requiredPermissions = [
+    { 
+      key: TTN_RIGHTS.APP_INFO_READ, 
+      label: 'Read application info', 
+      required: true,
+      description: 'View application settings'
+    },
+    { 
+      key: TTN_RIGHTS.APP_DEVICES_READ, 
+      label: 'Read devices', 
+      required: true,
+      description: 'List and view device information'
+    },
+    { 
+      key: TTN_RIGHTS.APP_DEVICES_WRITE, 
+      label: 'Write devices', 
+      required: true,
+      description: 'Register and configure devices'
+    },
+    { 
+      key: TTN_RIGHTS.APP_TRAFFIC_DOWN_WRITE, 
+      label: 'Write downlink traffic', 
+      required: true,
+      description: 'Required for simulation (simulate uplinks)'
+    },
+  ];
+
+  // Check each permission
+  const permissions = requiredPermissions.map(perm => ({
+    key: perm.key,
+    label: perm.label,
+    description: perm.description,
+    required: perm.required,
+    granted: rights.includes(perm.key),
+  }));
+
+  const missingPermissions = permissions.filter(p => p.required && !p.granted);
+  const allPermissionsOk = missingPermissions.length === 0;
+
+  console.log(`[${requestId}] Permission check: all_ok=${allPermissionsOk}, missing=${missingPermissions.length}`);
+
+  return buildResponse({
+    ok: allPermissionsOk,
+    connected: true,
+    permissions,
+    missing: missingPermissions.map(p => p.label),
+    rights_count: rights.length,
+    can_simulate: permissions.find(p => p.key === TTN_RIGHTS.APP_TRAFFIC_DOWN_WRITE)?.granted || false,
+    hint: allPermissionsOk 
+      ? undefined 
+      : `Missing permissions: ${missingPermissions.map(p => p.label).join(', ')}. Edit your API key in TTN Console to add these permissions.`,
+    cluster,
+    application_id,
   }, 200, requestId);
 }
 
