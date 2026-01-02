@@ -5,7 +5,6 @@
 // This is because supabase.functions.invoke() doesn't properly expose error response
 // bodies for non-2xx status codes, causing clients to see generic error messages.
 
-import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
 const corsHeaders = {
@@ -33,7 +32,16 @@ interface PullTelemetryResult {
   diagnostics?: Record<string, unknown>;
 }
 
-serve(async (req) => {
+// Always return HTTP 200 so supabase.functions.invoke() can access the response body.
+// Error state is indicated by ok:false in the response.
+function buildResponse(data: PullTelemetryResult): Response {
+  return new Response(JSON.stringify(data), {
+    status: 200, // Always 200 - errors are in the body with ok:false
+    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
+  });
+}
+
+Deno.serve(async (req) => {
   const requestId = crypto.randomUUID().slice(0, 8);
 
   // Handle CORS preflight requests
@@ -54,13 +62,27 @@ serve(async (req) => {
   console.log(`[pull-frostguard-telemetry][${requestId}] ENV_CHECK:`, JSON.stringify(envDiagnostics));
 
   try {
-    const body = await req.json() as PullTelemetryRequest;
+    // Parse request body with error handling
+    let body: PullTelemetryRequest;
+    try {
+      body = await req.json() as PullTelemetryRequest;
+    } catch (parseError) {
+      console.error(`[pull-frostguard-telemetry][${requestId}] JSON parse error:`, parseError);
+      return buildResponse({
+        ok: false,
+        request_id: requestId,
+        error: 'Invalid JSON in request body',
+        error_code: 'INVALID_JSON',
+        hint: 'Ensure request body is valid JSON with org_id or unit_id',
+        diagnostics: envDiagnostics,
+      });
+    }
+
     const { org_id, unit_id, sync_to_local = false } = body;
 
     // Validate required inputs
     if (!org_id && !unit_id) {
       console.log(`[pull-frostguard-telemetry][${requestId}] Missing org_id and unit_id`);
-      // Always return 200 so client can see error details
       return buildResponse({
         ok: false,
         request_id: requestId,
@@ -83,7 +105,6 @@ serve(async (req) => {
 
     if (!frostguardKey) {
       console.error(`[pull-frostguard-telemetry][${requestId}] Missing FROSTGUARD_ANON_KEY`);
-      // Always return 200 so client can see error details
       return buildResponse({
         ok: false,
         request_id: requestId,
@@ -94,18 +115,18 @@ serve(async (req) => {
       });
     }
 
+    console.log(`[pull-frostguard-telemetry][${requestId}] Connecting to FrostGuard at ${frostguardUrl.slice(0, 30)}...`);
     const frostguard = createClient(frostguardUrl, frostguardKey);
 
     // Query sensor_readings table (correct table in FrostGuard)
     console.log(`[pull-frostguard-telemetry][${requestId}] Querying sensor_readings from FrostGuard`);
-    
+
     let query = frostguard
       .from('sensor_readings')
       .select('*');
 
     // Note: sensor_readings may not have org_id column directly
     // It might be linked via unit_id or device_serial
-    // For now, we'll try to filter if the column exists
     if (unit_id) {
       query = query.eq('unit_id', unit_id);
     }
@@ -125,26 +146,26 @@ serve(async (req) => {
       }));
 
       // Check if it's a table not found error
-      if (fetchError.code === 'PGRST205' || fetchError.message?.includes('not find')) {
+      if (fetchError.code === 'PGRST205' || fetchError.message?.includes('not find') || fetchError.message?.includes('does not exist')) {
         return buildResponse({
           ok: false,
           request_id: requestId,
           error: `Table not found in FrostGuard: ${fetchError.message}`,
           error_code: 'TABLE_NOT_FOUND',
-          hint: `FrostGuard schema may have changed. Check if sensor_readings table exists. Hint from DB: ${fetchError.hint || 'none'}`,
+          hint: `The sensor_readings table may not exist in FrostGuard, or the table name has changed. DB hint: ${fetchError.hint || 'none'}`,
           table_attempted: 'sensor_readings',
           diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
         });
       }
 
       // Check if it's an RLS/permission error
-      if (fetchError.code === '42501' || fetchError.message?.includes('permission')) {
+      if (fetchError.code === '42501' || fetchError.message?.includes('permission') || fetchError.code === 'PGRST301') {
         return buildResponse({
           ok: false,
           request_id: requestId,
           error: `Permission denied: ${fetchError.message}`,
           error_code: 'PERMISSION_DENIED',
-          hint: 'FrostGuard RLS policies may be blocking access. Check that FROSTGUARD_ANON_KEY has SELECT permission on sensor_readings.',
+          hint: 'FrostGuard RLS policies may be blocking access. The FROSTGUARD_ANON_KEY may not have SELECT permission on sensor_readings.',
           table_attempted: 'sensor_readings',
           diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
         });
@@ -156,7 +177,7 @@ serve(async (req) => {
         request_id: requestId,
         error: fetchError.message,
         error_code: fetchError.code || 'QUERY_ERROR',
-        hint: fetchError.hint || `Query to FrostGuard sensor_readings failed. PostgreSQL error code: ${fetchError.code || 'unknown'}`,
+        hint: fetchError.hint || `Query to FrostGuard sensor_readings failed. Error code: ${fetchError.code || 'unknown'}`,
         table_attempted: 'sensor_readings',
         diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code, pg_hint: fetchError.hint },
       });
@@ -171,65 +192,74 @@ serve(async (req) => {
         count: 0,
         source: 'sensor_readings',
         synced_to_local: false,
-        hint: 'No telemetry data found in FrostGuard for the given criteria',
+        hint: 'No telemetry data found in FrostGuard for the given criteria. This is normal if no sensors have reported yet.',
       });
     }
 
     console.log(`[pull-frostguard-telemetry][${requestId}] Found ${readingsData.length} readings`);
 
     // Optionally sync to local database
+    let syncResult = { synced: false, syncedCount: 0, syncError: null as string | null };
+
     if (sync_to_local && readingsData.length > 0) {
       try {
-        const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
-        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
-        const localSupabase = createClient(supabaseUrl, supabaseServiceKey);
+        const supabaseUrl = Deno.env.get('SUPABASE_URL');
+        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-        // Convert sensor_readings to unit_telemetry format
-        // Group by unit_id and take the most recent values
-        const telemetryByUnit = new Map<string, Record<string, unknown>>();
+        if (!supabaseUrl || !supabaseServiceKey) {
+          console.warn(`[pull-frostguard-telemetry][${requestId}] Missing local Supabase credentials for sync`);
+          syncResult.syncError = 'Local Supabase credentials missing';
+        } else {
+          const localSupabase = createClient(supabaseUrl, supabaseServiceKey);
 
-        for (const reading of readingsData) {
-          const unitId = reading.unit_id;
-          if (!unitId) continue;
+          // Convert sensor_readings to unit_telemetry format
+          // Group by unit_id and take the most recent values
+          const telemetryByUnit = new Map<string, Record<string, unknown>>();
 
-          // Only keep the most recent reading per unit
-          if (!telemetryByUnit.has(unitId)) {
-            telemetryByUnit.set(unitId, {
-              unit_id: unitId,
-              org_id: org_id || reading.org_id,
-              last_temp_f: reading.temperature || null,
-              last_humidity: reading.humidity || null,
-              door_state: 'unknown', // sensor_readings may not have door state
-              battery_pct: reading.battery_level || null,
-              rssi_dbm: reading.signal_strength || null,
-              snr_db: null,
-              last_uplink_at: reading.created_at,
-              updated_at: reading.created_at,
-              expected_checkin_minutes: 5,
-              warn_after_missed: 1,
-              critical_after_missed: 5,
-            });
+          for (const reading of readingsData) {
+            const unitId = reading.unit_id;
+            if (!unitId) continue;
+
+            // Only keep the most recent reading per unit
+            if (!telemetryByUnit.has(unitId)) {
+              telemetryByUnit.set(unitId, {
+                unit_id: unitId,
+                org_id: org_id || reading.org_id,
+                last_temp_f: reading.temperature || null,
+                last_humidity: reading.humidity || null,
+                door_state: 'unknown', // sensor_readings may not have door state
+                battery_pct: reading.battery_level || null,
+                rssi_dbm: reading.signal_strength || null,
+                snr_db: null,
+                last_uplink_at: reading.created_at,
+                updated_at: reading.created_at,
+                expected_checkin_minutes: 5,
+                warn_after_missed: 1,
+                critical_after_missed: 5,
+              });
+            }
           }
-        }
 
-        // Upsert aggregated telemetry
-        let syncedCount = 0;
-        for (const [unitId, telemetry] of telemetryByUnit) {
-          const { error: upsertError } = await localSupabase
-            .from('unit_telemetry')
-            .upsert(telemetry, { onConflict: 'unit_id' });
+          // Upsert aggregated telemetry
+          for (const [unitId, telemetry] of telemetryByUnit) {
+            const { error: upsertError } = await localSupabase
+              .from('unit_telemetry')
+              .upsert(telemetry, { onConflict: 'unit_id' });
 
-          if (upsertError) {
-            console.warn(`[pull-frostguard-telemetry][${requestId}] Upsert warning for ${unitId}:`, upsertError.message);
-          } else {
-            syncedCount++;
+            if (upsertError) {
+              console.warn(`[pull-frostguard-telemetry][${requestId}] Upsert warning for ${unitId}:`, upsertError.message);
+            } else {
+              syncResult.syncedCount++;
+            }
           }
-        }
 
-        console.log(`[pull-frostguard-telemetry][${requestId}] Synced ${syncedCount} telemetry records from ${readingsData.length} readings`);
+          syncResult.synced = true;
+          console.log(`[pull-frostguard-telemetry][${requestId}] Synced ${syncResult.syncedCount} telemetry records from ${readingsData.length} readings`);
+        }
       } catch (syncErr) {
+        const syncErrMsg = syncErr instanceof Error ? syncErr.message : 'Unknown sync error';
         console.warn(`[pull-frostguard-telemetry][${requestId}] Local sync error:`, syncErr);
-        // Don't fail the whole request, just note sync failed
+        syncResult.syncError = syncErrMsg;
       }
     }
 
@@ -237,6 +267,7 @@ serve(async (req) => {
       count: readingsData.length,
       source: 'sensor_readings',
       synced: sync_to_local,
+      syncedCount: syncResult.syncedCount,
     });
 
     return buildResponse({
@@ -245,7 +276,11 @@ serve(async (req) => {
       data: readingsData,
       count: readingsData.length,
       source: 'sensor_readings',
-      synced_to_local: sync_to_local,
+      synced_to_local: syncResult.synced,
+      diagnostics: sync_to_local ? {
+        synced_count: syncResult.syncedCount,
+        sync_error: syncResult.syncError
+      } : undefined,
     });
 
   } catch (error) {
@@ -272,12 +307,3 @@ serve(async (req) => {
     });
   }
 });
-
-// Always return HTTP 200 so supabase.functions.invoke() can access the response body.
-// Error state is indicated by ok:false in the response.
-function buildResponse(data: PullTelemetryResult): Response {
-  return new Response(JSON.stringify(data), {
-    status: 200, // Always 200 - errors are in the body with ok:false
-    headers: { ...corsHeaders, 'Content-Type': 'application/json' },
-  });
-}

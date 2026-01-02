@@ -76,15 +76,38 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
 
       console.log('[TelemetryMonitor] Response:', { data, error });
 
+      // When Edge Function returns 200 with ok:false, error will be null and data will contain error details
+      // When Edge Function crashes or returns non-2xx, error will be set
       if (error) {
         console.error('[TelemetryMonitor] Edge function error:', error);
+
+        // Try to extract more details from the error
+        // FunctionsHttpError has a context property that may contain the response
+        let errorMessage = error.message || 'Edge function error';
+        let errorContext: Record<string, unknown> | undefined;
+
+        // Check if error has additional context (FunctionsHttpError type)
+        if ('context' in error && error.context) {
+          errorContext = error.context as Record<string, unknown>;
+          console.error('[TelemetryMonitor] Error context:', errorContext);
+        }
+
+        // Check for specific error types
+        if (errorMessage.includes('non-2xx')) {
+          errorMessage = 'Edge Function returned an error. This usually means the function crashed or a required secret is missing. Check Supabase Edge Function logs.';
+        } else if (errorMessage.includes('Failed to fetch') || errorMessage.includes('network')) {
+          errorMessage = 'Network error connecting to Edge Function. Check your internet connection.';
+        }
+
         const pullError: PullError = {
-          message: error.message || 'Edge function error',
+          message: errorMessage,
           error_code: 'EDGE_FUNCTION_ERROR',
+          hint: 'Check Supabase Dashboard > Edge Functions > Logs for detailed error information. Most likely cause: FROSTGUARD_ANON_KEY secret is not configured.',
           request_id: data?.request_id,
+          diagnostics: errorContext ? { error_context: errorContext } : undefined,
         };
         setLastPullError(pullError);
-        debug.error('FROSTGUARD_TELEMETRY_ERROR', { ...pullError });
+        debug.error('FROSTGUARD_TELEMETRY_ERROR', { ...pullError, originalError: error });
         throw error;
       }
 
