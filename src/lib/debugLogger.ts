@@ -277,6 +277,133 @@ export function clearDebugContext(): void {
   notifyListeners();
 }
 
+// ============================================================================
+// Legacy sync debug support (migrated from debug.ts)
+// ============================================================================
+
+/**
+ * Sync debug object - provides backwards-compatible API matching the legacy debug.ts
+ * Use the newer `debug` object for new code.
+ */
+export const syncDebug = {
+  log: (...args: unknown[]) => {
+    const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+    log('org-sync', 'info', message);
+  },
+  warn: (...args: unknown[]) => {
+    const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+    log('org-sync', 'warn', message);
+  },
+  error: (...args: unknown[]) => {
+    const message = args.map(a => typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ');
+    log('error', 'error', message);
+  },
+  group: (label: string) => {
+    if (isDebugEnabled()) {
+      console.group(`[ORG-SYNC] ${label}`);
+    }
+  },
+  groupEnd: () => {
+    if (isDebugEnabled()) {
+      console.groupEnd();
+    }
+  },
+  stringify: (obj: unknown): string => {
+    try {
+      return JSON.stringify(obj, null, 2);
+    } catch {
+      return String(obj);
+    }
+  },
+  table: (data: unknown[]) => {
+    if (isDebugEnabled() && Array.isArray(data)) {
+      console.table(data);
+    }
+  },
+};
+
+/**
+ * Get Supabase environment info (safe to log)
+ */
+export function getSupabaseEnvInfo(): {
+  urlConfigured: boolean;
+  anonKeyConfigured: boolean;
+  projectRef: string;
+  urlDomain: string;
+} {
+  const url = import.meta.env.VITE_SUPABASE_URL || '';
+  const anonKey = import.meta.env.VITE_SUPABASE_PUBLISHABLE_KEY ||
+                  import.meta.env.VITE_SUPABASE_ANON_KEY || '';
+
+  // Extract project ref from URL (e.g., "jyxzaagcirhbdzvofkom" from "https://jyxzaagcirhbdzvofkom.supabase.co")
+  const projectRefMatch = url.match(/https:\/\/([a-z0-9]+)\.supabase\.co/);
+  const projectRef = projectRefMatch?.[1] || 'unknown';
+
+  let urlDomain = 'not-set';
+  try {
+    if (url) urlDomain = new URL(url).hostname;
+  } catch {
+    urlDomain = 'invalid-url';
+  }
+
+  return {
+    urlConfigured: !!url,
+    anonKeyConfigured: !!anonKey,
+    projectRef,
+    urlDomain,
+  };
+}
+
+/**
+ * Create a debug report that can be copied
+ */
+export function createDebugReport(context: {
+  component: string;
+  action: string;
+  sessionUserId?: string | null;
+  requestDetails?: {
+    functionName?: string;
+    status?: number | string;
+    responseTimeMs?: number;
+  };
+  error?: {
+    code: string;
+    message: string;
+    details?: string;
+  };
+  extra?: Record<string, unknown>;
+}): Record<string, unknown> {
+  const envInfo = getSupabaseEnvInfo();
+
+  return {
+    timestamp: new Date().toISOString(),
+    appUrl: typeof window !== 'undefined' ? window.location.href : 'N/A',
+    component: context.component,
+    action: context.action,
+    session: context.sessionUserId ? `user:${context.sessionUserId.slice(0, 8)}...` : 'no-session',
+    environment: {
+      supabaseProject: envInfo.projectRef,
+      supabaseConfigured: envInfo.urlConfigured && envInfo.anonKeyConfigured,
+    },
+    request: context.requestDetails || null,
+    error: context.error || null,
+    extra: context.extra || null,
+  };
+}
+
+/**
+ * Copy debug report to clipboard
+ */
+export async function copyDebugReport(report: Record<string, unknown>): Promise<boolean> {
+  try {
+    await navigator.clipboard.writeText(JSON.stringify(report, null, 2));
+    return true;
+  } catch {
+    console.error('[DEBUG] Failed to copy to clipboard');
+    return false;
+  }
+}
+
 // Initialize error handlers
 export function initErrorHandlers(): void {
   if (typeof window === 'undefined') return;
