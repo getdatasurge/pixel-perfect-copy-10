@@ -5,15 +5,18 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import UnitSelect from './UnitSelect';
+import SiteSelect from './SiteSelect';
 import { OrgStateUnit } from '@/lib/frostguardOrgSync';
-
+import { log } from '@/lib/debugLogger';
+import { downloadSnapshot, buildSupportSnapshot } from '@/lib/supportSnapshot';
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
   gateways: GatewayConfig[];
@@ -51,6 +54,7 @@ export default function DeviceManager({
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
   const [assigningId, setAssigningId] = useState<string | null>(null);
+  const [assignmentErrors, setAssignmentErrors] = useState<Map<string, string>>(new Map());
 
   const canSync = !!webhookConfig?.testOrgId;
 
@@ -92,43 +96,163 @@ export default function DeviceManager({
     );
   };
 
-  // Handle unit assignment change
-  const handleUnitChange = async (
-    deviceId: string, 
-    unitId: string | undefined, 
-    unit?: OrgStateUnit
-  ) => {
-    // Determine site_id from selected unit or keep existing
+  // Handle site assignment change
+  const handleSiteChange = async (deviceId: string, siteId: string | undefined) => {
     const device = devices.find(d => d.id === deviceId);
-    const siteId = unit?.site_id || device?.siteId;
-    
-    // Update local state immediately for responsiveness
-    updateDevice(deviceId, { 
-      unitId, 
-      siteId,
+    if (!device) return;
+
+    // Clear any previous error for this device
+    setAssignmentErrors(prev => {
+      const next = new Map(prev);
+      next.delete(deviceId);
+      return next;
     });
-    
+
+    // Check if current unit belongs to new site - if not, clear it
+    let newUnitId = device.unitId;
+    if (device.unitId && siteId) {
+      const currentUnit = availableUnits?.find(u => u.id === device.unitId);
+      if (currentUnit && currentUnit.site_id !== siteId) {
+        newUnitId = undefined; // Clear unit if it doesn't belong to new site
+        toast({ 
+          title: 'Unit Cleared', 
+          description: 'Previous unit was in a different site',
+          variant: 'default' 
+        });
+      }
+    }
+    // If site is cleared, also clear unit
+    if (!siteId) {
+      newUnitId = undefined;
+    }
+
+    // Log the request
+    log('context', 'info', 'ASSIGNMENT_UPDATE_REQUEST', {
+      device_id: deviceId,
+      device_name: device.name,
+      new_site_id: siteId || 'null',
+      new_unit_id: newUnitId || 'null',
+      previous_site_id: device.siteId || 'null',
+      previous_unit_id: device.unitId || 'null',
+    });
+
+    // Update local state immediately for responsiveness
+    updateDevice(deviceId, { siteId, unitId: newUnitId });
+
     // Sync to FrostGuard if callback provided
     if (onAssignUnit) {
       setAssigningId(deviceId);
+      const startTime = Date.now();
       try {
-        await onAssignUnit(deviceId, unitId, siteId);
-        toast({ title: 'Unit Assigned', description: 'Device location updated successfully' });
-      } catch (err) {
-        // Revert local state on error
-        updateDevice(deviceId, { 
-          unitId: device?.unitId,
-          siteId: device?.siteId,
+        await onAssignUnit(deviceId, newUnitId, siteId);
+        log('context', 'info', 'ASSIGNMENT_UPDATE_SUCCESS', {
+          device_id: deviceId,
+          site_id: siteId,
+          unit_id: newUnitId,
+          duration_ms: Date.now() - startTime,
         });
+        toast({ title: 'Site Assigned', description: 'Device location updated successfully' });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        log('context', 'error', 'ASSIGNMENT_UPDATE_ERROR', {
+          device_id: deviceId,
+          error: errorMessage,
+          duration_ms: Date.now() - startTime,
+        });
+        // Revert local state on error
+        updateDevice(deviceId, { siteId: device.siteId, unitId: device.unitId });
+        // Store error for inline display
+        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorMessage));
         toast({ 
           title: 'Assignment Failed', 
-          description: err instanceof Error ? err.message : 'Unknown error',
+          description: errorMessage,
           variant: 'destructive' 
         });
       } finally {
         setAssigningId(null);
       }
     }
+  };
+
+  // Handle unit assignment change
+  const handleUnitChange = async (
+    deviceId: string, 
+    unitId: string | undefined, 
+    unit?: OrgStateUnit
+  ) => {
+    const device = devices.find(d => d.id === deviceId);
+    if (!device) return;
+
+    // Clear any previous error for this device
+    setAssignmentErrors(prev => {
+      const next = new Map(prev);
+      next.delete(deviceId);
+      return next;
+    });
+
+    // Determine site_id from selected unit or keep existing
+    const siteId = unit?.site_id || device.siteId;
+
+    // Log the request
+    log('context', 'info', 'ASSIGNMENT_UPDATE_REQUEST', {
+      device_id: deviceId,
+      device_name: device.name,
+      new_site_id: siteId || 'null',
+      new_unit_id: unitId || 'null',
+      previous_site_id: device.siteId || 'null',
+      previous_unit_id: device.unitId || 'null',
+    });
+    
+    // Update local state immediately for responsiveness
+    updateDevice(deviceId, { unitId, siteId });
+    
+    // Sync to FrostGuard if callback provided
+    if (onAssignUnit) {
+      setAssigningId(deviceId);
+      const startTime = Date.now();
+      try {
+        await onAssignUnit(deviceId, unitId, siteId);
+        log('context', 'info', 'ASSIGNMENT_UPDATE_SUCCESS', {
+          device_id: deviceId,
+          site_id: siteId,
+          unit_id: unitId,
+          duration_ms: Date.now() - startTime,
+        });
+        toast({ title: 'Unit Assigned', description: 'Device location updated successfully' });
+      } catch (err) {
+        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        log('context', 'error', 'ASSIGNMENT_UPDATE_ERROR', {
+          device_id: deviceId,
+          error: errorMessage,
+          duration_ms: Date.now() - startTime,
+        });
+        // Revert local state on error
+        updateDevice(deviceId, { unitId: device.unitId, siteId: device.siteId });
+        // Store error for inline display
+        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorMessage));
+        toast({ 
+          title: 'Assignment Failed', 
+          description: errorMessage,
+          variant: 'destructive' 
+        });
+      } finally {
+        setAssigningId(null);
+      }
+    }
+  };
+
+  // Retry assignment for a device
+  const handleRetryAssignment = (deviceId: string) => {
+    const device = devices.find(d => d.id === deviceId);
+    if (device) {
+      handleSiteChange(deviceId, device.siteId);
+    }
+  };
+
+  // Export support snapshot for a specific device issue
+  const handleExportSnapshot = async () => {
+    const snapshot = buildSupportSnapshot();
+    downloadSnapshot(snapshot);
   };
 
 
@@ -579,18 +703,21 @@ export default function DeviceManager({
                 <div className="flex items-center gap-2">
                   <Label className="text-xs font-medium">Location</Label>
                   {getLocationBadge(device)}
+                  {assigningId === device.id && (
+                    <Loader2 className="h-3 w-3 animate-spin text-muted-foreground" />
+                  )}
                 </div>
                 
                 <div className="grid grid-cols-2 gap-4">
-                  {/* Store/Site Display */}
+                  {/* Store/Site Dropdown */}
                   <div className="space-y-2">
                     <Label className="text-xs text-muted-foreground">Store / Site</Label>
-                    <div className="flex items-center gap-2 h-9 px-3 border rounded-md bg-muted/50">
-                      <MapPin className="h-3 w-3 text-muted-foreground" />
-                      <span className="text-sm truncate">
-                        {getSiteName(device.siteId) || device.siteId?.slice(0, 8) || 'Unassigned'}
-                      </span>
-                    </div>
+                    <SiteSelect
+                      sites={availableSites || []}
+                      selectedSiteId={device.siteId}
+                      onSelect={(siteId) => handleSiteChange(device.id, siteId)}
+                      disabled={disabled || assigningId === device.id}
+                    />
                   </div>
                   
                   {/* Unit Dropdown */}
@@ -606,6 +733,36 @@ export default function DeviceManager({
                     />
                   </div>
                 </div>
+
+                {/* Inline assignment error display */}
+                {assignmentErrors.get(device.id) && (
+                  <Alert variant="destructive" className="py-2">
+                    <AlertCircle className="h-3 w-3" />
+                    <AlertDescription className="flex items-center justify-between text-sm">
+                      <span className="flex-1">{assignmentErrors.get(device.id)}</span>
+                      <div className="flex gap-1 ml-2">
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          className="h-6 px-2 text-xs"
+                          onClick={() => handleRetryAssignment(device.id)}
+                        >
+                          <RotateCcw className="h-3 w-3 mr-1" />
+                          Retry
+                        </Button>
+                        <Button 
+                          size="sm" 
+                          variant="ghost" 
+                          className="h-6 px-2 text-xs"
+                          onClick={handleExportSnapshot}
+                        >
+                          <Download className="h-3 w-3 mr-1" />
+                          Export
+                        </Button>
+                      </div>
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
 
 

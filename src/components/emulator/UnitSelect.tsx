@@ -25,9 +25,10 @@ export default function UnitSelect({
 }: UnitSelectProps) {
   const [searchQuery, setSearchQuery] = useState('');
 
-  // Filter units by site and search query
+  // Filter units by site (if selected) and search query
   const filteredUnits = units.filter(unit => {
-    // Only show units for the selected site
+    // If site is selected, only show units for that site
+    // If no site selected, show ALL units (user can pick any, site will auto-set)
     if (siteId && unit.site_id !== siteId) return false;
     // Filter by search query
     if (searchQuery) {
@@ -62,8 +63,9 @@ export default function UnitSelect({
   };
 
   const getPlaceholder = () => {
-    if (!siteId) return 'Select site first';
-    if (filteredUnits.length === 0 && !searchQuery) return 'No units in site';
+    if (units.length === 0) return 'No units available';
+    if (!siteId) return 'Select unit (will set site)';
+    if (filteredUnits.length === 0 && !searchQuery) return 'No units in this site';
     return 'Select unit...';
   };
 
@@ -71,7 +73,7 @@ export default function UnitSelect({
     <Select
       value={selectedUnitId || '__none__'}
       onValueChange={handleValueChange}
-      disabled={disabled || !siteId}
+      disabled={disabled}
     >
       <SelectTrigger className="w-full">
         <SelectValue placeholder={getPlaceholder()}>
