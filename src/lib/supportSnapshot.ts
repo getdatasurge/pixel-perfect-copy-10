@@ -71,6 +71,22 @@ export interface AssignmentEvent {
   duration_ms: number;
 }
 
+// TTN Simulate uplink event
+export interface TTNSimulateEvent {
+  timestamp: string;
+  device_id: string;
+  application_id?: string;
+  cluster?: string;
+  status: 'success' | 'error';
+  status_code?: number;
+  request_id?: string;
+  error_type?: string;
+  error?: string;
+  hint?: string;
+  required_rights?: string[];
+  settings_source?: string;
+}
+
 // History storage
 const MAX_HISTORY = 20;
 let orgSyncHistory: OrgSyncEvent[] = [];
@@ -78,6 +94,7 @@ let provisioningHistory: ProvisioningEvent[] = [];
 let ttnTestHistory: TTNTestEvent[] = [];
 let syncToFrostguardHistory: SyncToFrostguardEvent[] = [];
 let assignmentHistory: AssignmentEvent[] = [];
+let ttnSimulateHistory: TTNSimulateEvent[] = [];
 
 // Reconciliation tracking
 let lastReconciliation = {
@@ -143,6 +160,17 @@ export function logAssignmentEvent(event: AssignmentEvent): void {
   }
 }
 
+export function logTTNSimulateEvent(event: TTNSimulateEvent): void {
+  ttnSimulateHistory.push({
+    ...event,
+    error: event.error ? redactString(event.error) : undefined,
+    hint: event.hint ? redactString(event.hint) : undefined,
+  });
+  if (ttnSimulateHistory.length > MAX_HISTORY) {
+    ttnSimulateHistory = ttnSimulateHistory.slice(-MAX_HISTORY);
+  }
+}
+
 export function updateReconciliation(data: Partial<typeof lastReconciliation>): void {
   lastReconciliation = { ...lastReconciliation, ...data };
 }
@@ -167,6 +195,10 @@ export function getSyncToFrostguardHistory(): SyncToFrostguardEvent[] {
 
 export function getAssignmentHistory(): AssignmentEvent[] {
   return [...assignmentHistory];
+}
+
+export function getTTNSimulateHistory(): TTNSimulateEvent[] {
+  return [...ttnSimulateHistory];
 }
 
 export function getReconciliationSummary(): typeof lastReconciliation {
@@ -305,6 +337,11 @@ export interface SupportSnapshot {
     last_preflight_host?: string;
   };
   
+  ttn_simulate_diagnostics: {
+    recent_attempts: TTNSimulateEvent[];
+    last_error?: TTNSimulateEvent;
+  };
+  
   logs: {
     total_captured: number;
     included_count: number;
@@ -396,6 +433,11 @@ export function buildSupportSnapshot(options: BuildSnapshotOptions = {}): Suppor
       last_n_tests: getTTNTestHistory(),
       api_key_present: ttnInfo.apiKeyPresent,
       api_key_last4: ttnInfo.apiKeyLast4,
+    },
+    
+    ttn_simulate_diagnostics: {
+      recent_attempts: getTTNSimulateHistory().slice(0, 10),
+      last_error: getTTNSimulateHistory().find(e => e.status === 'error'),
     },
     
     logs: {
