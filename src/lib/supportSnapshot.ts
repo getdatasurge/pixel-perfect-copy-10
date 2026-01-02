@@ -17,6 +17,8 @@ export interface OrgSyncEvent {
   sync_version?: number;
   counts?: { sites: number; sensors: number; gateways: number };
   error?: string;
+  request_id?: string;
+  status_code?: number;
 }
 
 export interface ProvisioningEvent {

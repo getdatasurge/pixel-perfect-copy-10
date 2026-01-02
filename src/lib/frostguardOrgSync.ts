@@ -66,10 +66,42 @@ export interface OrgState {
   ttn?: OrgStateTTN;
 }
 
+// Structured error details for debugging and UI
+export interface FrostGuardErrorDetails {
+  status_code?: number;
+  error_code?: string;
+  request_id?: string;
+  message: string;
+  details?: unknown;
+  hint: string;  // User-friendly next step
+}
+
 export interface FetchOrgStateResult {
   ok: boolean;
   data?: OrgStateResponse;
   error?: string;
+  errorDetails?: FrostGuardErrorDetails;
+}
+
+/**
+ * Generates user-friendly hints based on error status codes and messages.
+ */
+function getErrorHint(status?: number, code?: string, message?: string): string {
+  if (status === 401) return 'Check that PROJECT2_SYNC_API_KEY is correctly configured in project secrets.';
+  if (status === 403) return 'The API key may lack required permissions for this organization.';
+  if (status === 400) {
+    if (code === 'MISSING_ORG_ID') return 'No organization ID was provided. Try selecting a different user.';
+    return 'The request was malformed. Verify the organization ID is valid.';
+  }
+  if (status === 404) return 'Organization not found in FrostGuard. Check that the organization still exists.';
+  if (status === 500 || status === 502 || status === 503) {
+    return 'FrostGuard encountered an internal error. Try again in a moment or export a snapshot for support.';
+  }
+  if (message?.includes('not configured')) return 'Check project secrets configuration in Lovable settings.';
+  if (message?.includes('Failed after') || message?.includes('timeout')) {
+    return 'Network connection issues. Check your internet connection and try again.';
+  }
+  return 'Try again or export a support snapshot for diagnosis.';
 }
 
 // Maximum retry attempts for transient failures
@@ -89,6 +121,9 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
   
   debug.sync('Starting org state fetch', { org_id: orgId });
   const endTiming = logTimed('org-sync', 'Fetch org state from FrostGuard', { org_id: orgId });
+  
+  // Log start event for debug terminal
+  log('network', 'info', 'PULL_ORG_STATE_START', { org_id: orgId });
   
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -149,16 +184,44 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
       }
 
       if (!data.ok) {
-        lastError = data.error || 'FrostGuard returned failure status';
-        debug.error('FrostGuard API error', { error: lastError, org_id: orgId });
+        const statusCode = data.status_code as number | undefined;
+        const errorCode = data.error_code as string | undefined;
+        const requestId = data.request_id as string | undefined;
+        const errorMessage = data.error || 'FrostGuard returned failure status';
+        
+        // Build structured error details
+        const errorDetails: FrostGuardErrorDetails = {
+          status_code: statusCode,
+          error_code: errorCode,
+          request_id: requestId,
+          message: errorMessage,
+          details: data.details,
+          hint: getErrorHint(statusCode, errorCode, errorMessage),
+        };
+        
+        debug.error('FrostGuard API error', { 
+          ...errorDetails,
+          org_id: orgId,
+        });
+        
+        // Log network event for debug terminal
+        log('network', 'error', 'PULL_ORG_STATE_ERROR', {
+          status_code: statusCode,
+          error_code: errorCode,
+          request_id: requestId,
+          duration_ms: Math.round(performance.now() - startTime),
+          error: errorMessage,
+        });
+        
         endTiming();
         logOrgSyncEvent({
           timestamp: new Date().toISOString(),
           status: 'error',
           duration_ms: Math.round(performance.now() - startTime),
-          error: lastError,
+          error: errorMessage,
+          request_id: requestId,
         });
-        return { ok: false, error: lastError };
+        return { ok: false, error: errorMessage, errorDetails };
       }
 
       const duration = Math.round(performance.now() - startTime);
@@ -172,6 +235,15 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
       });
 
       endTiming();
+      
+      // Log success event for debug terminal
+      log('network', 'info', 'PULL_ORG_STATE_SUCCESS', {
+        duration_ms: duration,
+        sync_version: data.sync_version,
+        sites_count: data.sites?.length || 0,
+        sensors_count: data.sensors?.length || 0,
+        gateways_count: data.gateways?.length || 0,
+      });
       
       // Log successful sync event for snapshot
       logOrgSyncEvent({

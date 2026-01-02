@@ -15,13 +15,21 @@ serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
+  const localRequestId = crypto.randomUUID().slice(0, 8);
+
   try {
     const body = await req.json() as FetchOrgStateRequest;
     const { org_id } = body;
 
     if (!org_id) {
       return new Response(
-        JSON.stringify({ ok: false, error: 'org_id is required' }),
+        JSON.stringify({ 
+          ok: false, 
+          status_code: 400,
+          error: 'org_id is required',
+          error_code: 'MISSING_ORG_ID',
+          request_id: localRequestId,
+        }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -33,7 +41,13 @@ serve(async (req) => {
     if (!frostguardUrl) {
       console.error('[fetch-org-state] FROSTGUARD_SUPABASE_URL not configured');
       return new Response(
-        JSON.stringify({ ok: false, error: 'FrostGuard URL not configured' }),
+        JSON.stringify({ 
+          ok: false, 
+          status_code: 500,
+          error: 'FrostGuard URL not configured',
+          error_code: 'CONFIG_MISSING',
+          request_id: localRequestId,
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -41,7 +55,13 @@ serve(async (req) => {
     if (!syncApiKey) {
       console.error('[fetch-org-state] PROJECT2_SYNC_API_KEY not configured');
       return new Response(
-        JSON.stringify({ ok: false, error: 'Sync API key not configured' }),
+        JSON.stringify({ 
+          ok: false, 
+          status_code: 500,
+          error: 'Sync API key not configured',
+          error_code: 'CONFIG_MISSING',
+          request_id: localRequestId,
+        }),
         { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -63,11 +83,27 @@ serve(async (req) => {
       const errorText = await response.text();
       console.error(`[fetch-org-state] FrostGuard returned ${response.status}:`, errorText);
       
+      // Try to parse JSON for structured errors from FrostGuard
+      let errorData: Record<string, unknown> = {};
+      try {
+        errorData = JSON.parse(errorText);
+      } catch {
+        errorData = { raw: errorText.slice(0, 500) };
+      }
+
+      // Extract fields from FrostGuard's structured response
+      const frostguardRequestId = errorData.request_id as string | undefined;
+      const errorMessage = (errorData.error || errorData.message || `FrostGuard API error: ${response.status}`) as string;
+      const errorCode = (errorData.error_code || errorData.code) as string | undefined;
+
       return new Response(
         JSON.stringify({ 
           ok: false, 
-          error: `FrostGuard API error: ${response.status}`,
-          details: errorText.slice(0, 200), // Truncate for safety
+          status_code: response.status,
+          error: errorMessage,
+          error_code: errorCode || null,
+          request_id: frostguardRequestId || localRequestId,
+          details: errorData,
         }),
         { status: response.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -93,7 +129,13 @@ serve(async (req) => {
     console.error('[fetch-org-state] Error:', error);
     const message = error instanceof Error ? error.message : 'Unknown error';
     return new Response(
-      JSON.stringify({ ok: false, error: message }),
+      JSON.stringify({ 
+        ok: false, 
+        status_code: 500,
+        error: message,
+        error_code: 'INTERNAL_ERROR',
+        request_id: localRequestId,
+      }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

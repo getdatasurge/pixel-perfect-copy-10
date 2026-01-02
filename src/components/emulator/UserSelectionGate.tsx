@@ -2,12 +2,15 @@ import { useState, useEffect, useCallback } from 'react';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
-import { Loader2, User, AlertCircle, RefreshCw, Radio, Thermometer, CheckCircle2, Download } from 'lucide-react';
+import { Badge } from '@/components/ui/badge';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import { Loader2, User, AlertCircle, RefreshCw, Thermometer, CheckCircle2, Download, FileDown, ChevronDown } from 'lucide-react';
 import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from '@/lib/ttn-payload';
-import { fetchOrgState, trackEntityChanges, OrgStateResponse } from '@/lib/frostguardOrgSync';
+import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
-import { debug, log, logStateReplacement, setDebugContext, clearDebugContext } from '@/lib/debugLogger';
+import { debug, log, clearDebugContext } from '@/lib/debugLogger';
+import { buildSupportSnapshot, downloadSnapshot } from '@/lib/supportSnapshot';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 
@@ -68,10 +71,11 @@ export default function UserSelectionGate({
 }: UserSelectionGateProps) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<{ message: string; details?: FrostGuardErrorDetails } | null>(null);
   const [showUserSearch, setShowUserSearch] = useState(false);
   const [syncSummary, setSyncSummary] = useState<string | null>(null);
   const [pendingUser, setPendingUser] = useState<UserProfile | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
 
   // Check for stored context on mount
   useEffect(() => {
@@ -147,7 +151,13 @@ export default function UserSelectionGate({
       const result = await fetchOrgState(user.organization_id);
 
       if (!result.ok || !result.data) {
-        throw new Error(result.error || 'Failed to fetch org state from FrostGuard');
+        // Set structured error with full details - do NOT update any local state
+        setError({
+          message: result.error || 'Failed to fetch org state from FrostGuard',
+          details: result.errorDetails,
+        });
+        setIsLoading(false);
+        return; // Early exit, no state mutation on failure
       }
 
       const orgState: OrgStateResponse = result.data;
@@ -275,6 +285,7 @@ export default function UserSelectionGate({
       setSyncSummary(summary);
       setIsHydrated(true);
       setPendingUser(null);
+      setRetryCount(0); // Reset retry count on success
 
       // Show toast with removal info if applicable
       let toastDescription = summary;
@@ -290,7 +301,7 @@ export default function UserSelectionGate({
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[UserSelectionGate] Pull sync failed:', message);
-      setError(message);
+      setError({ message });
       toast({
         title: 'Sync Failed',
         description: message,
@@ -309,7 +320,73 @@ export default function UserSelectionGate({
     executeSync(user);
   }, [executeSync]);
 
-  // Clear context and return to selection
+  // Handle retry with backoff for 5xx errors
+  const handleRetry = useCallback(async () => {
+    if (!pendingUser) return;
+    
+    const lastStatus = error?.details?.status_code;
+    
+    // For 5xx errors, add exponential backoff
+    if (lastStatus && lastStatus >= 500 && retryCount < 3) {
+      const delay = Math.pow(2, retryCount) * 1000;
+      toast({
+        title: `Retrying in ${delay / 1000}s...`,
+        description: 'Server error - automatic retry with backoff',
+      });
+      await new Promise(r => setTimeout(r, delay));
+      setRetryCount(prev => prev + 1);
+    }
+    
+    executeSync(pendingUser);
+  }, [pendingUser, error, retryCount, executeSync]);
+
+  // Export snapshot for support
+  const handleExportErrorSnapshot = useCallback(() => {
+    const snapshot = buildSupportSnapshot({
+      errorEntryId: `sync-error-${Date.now()}`,
+    });
+    downloadSnapshot(snapshot);
+    toast({
+      title: 'Support snapshot exported',
+      description: 'Redacted diagnostic data saved to file',
+    });
+  }, []);
+
+  // Clear context and reset to selection
+  const handleClearAndReset = useCallback(() => {
+    console.log('[UserSelectionGate] Clearing context and resetting');
+    sessionStorage.removeItem(STORAGE_KEY_USER_CONTEXT);
+    localStorage.removeItem('lorawan-emulator-gateways');
+    localStorage.removeItem('lorawan-emulator-devices');
+    
+    clearDebugContext();
+    setIsHydrated(false);
+    setSyncSummary(null);
+    setError(null);
+    setPendingUser(null);
+    setRetryCount(0);
+    
+    onConfigChange({
+      ...config,
+      testOrgId: undefined,
+      testSiteId: undefined,
+      orgName: undefined,
+      selectedUserId: undefined,
+      selectedUserDisplayName: undefined,
+      selectedUserSites: undefined,
+      ttnConfig: undefined,
+      contextSetAt: undefined,
+      isHydrated: false,
+      lastSyncAt: undefined,
+      lastSyncRunId: undefined,
+      lastSyncSummary: undefined,
+      lastSyncVersion: undefined,
+    });
+    
+    debug.context('User context reset - ready for new selection');
+  }, [config, onConfigChange]);
+
+  // Clear context and return to selection (keeps original for compatibility)
   const handleClearContext = useCallback(() => {
     console.log('[UserSelectionGate] Clearing context');
     sessionStorage.removeItem(STORAGE_KEY_USER_CONTEXT);
@@ -363,33 +440,75 @@ export default function UserSelectionGate({
         </CardHeader>
 
         <CardContent className="space-y-6">
-          {/* Error state */}
+          {/* Error state - Enhanced with structured details */}
           {error && (
             <Alert variant="destructive">
               <AlertCircle className="h-4 w-4" />
-              <AlertTitle>Sync Failed</AlertTitle>
-              <AlertDescription className="mt-2">
-                {error}
+              <AlertTitle className="flex items-center gap-2">
+                Sync Failed
+                {error.details?.status_code && (
+                  <Badge variant="outline" className="font-mono text-xs">
+                    {error.details.status_code}
+                  </Badge>
+                )}
+              </AlertTitle>
+              <AlertDescription className="mt-2 space-y-3">
+                {/* Error message */}
+                <p className="font-medium">{error.message}</p>
+                
+                {/* Request ID for support */}
+                {error.details?.request_id && (
+                  <p className="text-xs font-mono opacity-75">
+                    Request ID: {error.details.request_id}
+                  </p>
+                )}
+                
+                {/* Hint */}
+                {error.details?.hint && (
+                  <p className="text-sm opacity-90">{error.details.hint}</p>
+                )}
+                
+                {/* Expandable technical details */}
+                {error.details?.details && (
+                  <Collapsible>
+                    <CollapsibleTrigger className="flex items-center gap-1 text-xs underline hover:no-underline">
+                      <ChevronDown className="h-3 w-3" />
+                      Show technical details
+                    </CollapsibleTrigger>
+                    <CollapsibleContent>
+                      <pre className="mt-2 p-2 bg-muted rounded text-[10px] overflow-auto max-h-32 whitespace-pre-wrap">
+                        {JSON.stringify(error.details.details, null, 2)}
+                      </pre>
+                    </CollapsibleContent>
+                  </Collapsible>
+                )}
               </AlertDescription>
-              <div className="mt-4 flex gap-2">
+              
+              {/* Action buttons */}
+              <div className="mt-4 flex gap-2 flex-wrap">
                 <Button
                   variant="outline"
                   size="sm"
-                  onClick={() => pendingUser && executeSync(pendingUser)}
+                  onClick={handleRetry}
                   disabled={isLoading || !pendingUser}
                 >
                   <RefreshCw className="h-4 w-4 mr-2" />
                   Retry
                 </Button>
                 <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleExportErrorSnapshot}
+                >
+                  <FileDown className="h-4 w-4 mr-2" />
+                  Export Snapshot
+                </Button>
+                <Button
                   variant="ghost"
                   size="sm"
-                  onClick={() => {
-                    setError(null);
-                    setPendingUser(null);
-                  }}
+                  onClick={handleClearAndReset}
                 >
-                  Change User
+                  Reset & Change User
                 </Button>
               </div>
             </Alert>
