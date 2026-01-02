@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download } from 'lucide-react';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -54,7 +54,16 @@ export default function DeviceManager({
   const [syncingId, setSyncingId] = useState<string | null>(null);
   const [syncedIds, setSyncedIds] = useState<Set<string>>(new Set());
   const [assigningId, setAssigningId] = useState<string | null>(null);
-  const [assignmentErrors, setAssignmentErrors] = useState<Map<string, string>>(new Map());
+  
+  // Rich error info for assignment failures
+  interface AssignmentError {
+    message: string;
+    status_code?: number;
+    hint?: string;
+    request_id?: string;
+    error_code?: string;
+  }
+  const [assignmentErrors, setAssignmentErrors] = useState<Map<string, AssignmentError>>(new Map());
 
   const canSync = !!webhookConfig?.testOrgId;
 
@@ -153,16 +162,37 @@ export default function DeviceManager({
         });
         toast({ title: 'Site Assigned', description: 'Device location updated successfully' });
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        const error = err as Error & { 
+          status_code?: number; 
+          hint?: string; 
+          request_id?: string; 
+          error_code?: string;
+        };
+        const errorMessage = error.message || 'Unknown error';
+        
         log('context', 'error', 'ASSIGNMENT_UPDATE_ERROR', {
           device_id: deviceId,
           error: errorMessage,
+          status_code: error.status_code,
+          error_code: error.error_code,
+          hint: error.hint,
+          request_id: error.request_id,
           duration_ms: Date.now() - startTime,
         });
+        
         // Revert local state on error
         updateDevice(deviceId, { siteId: device.siteId, unitId: device.unitId });
-        // Store error for inline display
-        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorMessage));
+        
+        // Store rich error for inline display
+        const errorInfo: AssignmentError = {
+          message: errorMessage,
+          status_code: error.status_code,
+          hint: error.hint,
+          request_id: error.request_id,
+          error_code: error.error_code,
+        };
+        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorInfo));
+        
         toast({ 
           title: 'Assignment Failed', 
           description: errorMessage,
@@ -220,16 +250,37 @@ export default function DeviceManager({
         });
         toast({ title: 'Unit Assigned', description: 'Device location updated successfully' });
       } catch (err) {
-        const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+        const error = err as Error & { 
+          status_code?: number; 
+          hint?: string; 
+          request_id?: string; 
+          error_code?: string;
+        };
+        const errorMessage = error.message || 'Unknown error';
+        
         log('context', 'error', 'ASSIGNMENT_UPDATE_ERROR', {
           device_id: deviceId,
           error: errorMessage,
+          status_code: error.status_code,
+          error_code: error.error_code,
+          hint: error.hint,
+          request_id: error.request_id,
           duration_ms: Date.now() - startTime,
         });
+        
         // Revert local state on error
         updateDevice(deviceId, { unitId: device.unitId, siteId: device.siteId });
-        // Store error for inline display
-        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorMessage));
+        
+        // Store rich error for inline display
+        const errorInfo: AssignmentError = {
+          message: errorMessage,
+          status_code: error.status_code,
+          hint: error.hint,
+          request_id: error.request_id,
+          error_code: error.error_code,
+        };
+        setAssignmentErrors(prev => new Map(prev).set(deviceId, errorInfo));
+        
         toast({ 
           title: 'Assignment Failed', 
           description: errorMessage,
@@ -734,35 +785,62 @@ export default function DeviceManager({
                   </div>
                 </div>
 
-                {/* Inline assignment error display */}
-                {assignmentErrors.get(device.id) && (
-                  <Alert variant="destructive" className="py-2">
-                    <AlertCircle className="h-3 w-3" />
-                    <AlertDescription className="flex items-center justify-between text-sm">
-                      <span className="flex-1">{assignmentErrors.get(device.id)}</span>
-                      <div className="flex gap-1 ml-2">
-                        <Button 
-                          size="sm" 
-                          variant="ghost" 
-                          className="h-6 px-2 text-xs"
-                          onClick={() => handleRetryAssignment(device.id)}
-                        >
-                          <RotateCcw className="h-3 w-3 mr-1" />
-                          Retry
-                        </Button>
-                        <Button 
-                          size="sm" 
-                          variant="ghost" 
-                          className="h-6 px-2 text-xs"
-                          onClick={handleExportSnapshot}
-                        >
-                          <Download className="h-3 w-3 mr-1" />
-                          Export
-                        </Button>
-                      </div>
-                    </AlertDescription>
-                  </Alert>
-                )}
+                {/* Inline assignment error display with rich details */}
+                {assignmentErrors.get(device.id) && (() => {
+                  const errorInfo = assignmentErrors.get(device.id)!;
+                  return (
+                    <Alert variant="destructive" className="py-2">
+                      <AlertCircle className="h-4 w-4" />
+                      <AlertDescription className="ml-2">
+                        <div className="flex flex-col gap-1">
+                          <span className="font-medium">
+                            {errorInfo.status_code && `[${errorInfo.status_code}] `}
+                            {errorInfo.message}
+                          </span>
+                          {errorInfo.hint && (
+                            <span className="text-xs opacity-80">
+                              {errorInfo.hint}
+                            </span>
+                          )}
+                          <div className="flex flex-wrap gap-1 mt-1">
+                            {errorInfo.request_id && (
+                              <Button 
+                                size="sm" 
+                                variant="ghost" 
+                                className="h-6 px-2 text-xs"
+                                onClick={() => {
+                                  navigator.clipboard.writeText(errorInfo.request_id || '');
+                                  toast({ title: 'Copied', description: 'Request ID copied to clipboard' });
+                                }}
+                              >
+                                <ClipboardCopy className="h-3 w-3 mr-1" />
+                                Copy ID
+                              </Button>
+                            )}
+                            <Button 
+                              size="sm" 
+                              variant="ghost" 
+                              className="h-6 px-2 text-xs"
+                              onClick={() => handleRetryAssignment(device.id)}
+                            >
+                              <RotateCcw className="h-3 w-3 mr-1" />
+                              Retry
+                            </Button>
+                            <Button 
+                              size="sm" 
+                              variant="ghost" 
+                              className="h-6 px-2 text-xs"
+                              onClick={handleExportSnapshot}
+                            >
+                              <Download className="h-3 w-3 mr-1" />
+                              Export
+                            </Button>
+                          </div>
+                        </div>
+                      </AlertDescription>
+                    </Alert>
+                  );
+                })()}
               </div>
 
 

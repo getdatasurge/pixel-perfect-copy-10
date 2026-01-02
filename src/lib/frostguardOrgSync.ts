@@ -4,7 +4,7 @@
 
 import { supabase } from '@/integrations/supabase/client';
 import { debug, logTimed, log, setDebugContext } from '@/lib/debugLogger';
-import { logOrgSyncEvent, updateReconciliation } from '@/lib/supportSnapshot';
+import { logOrgSyncEvent, logAssignmentEvent, updateReconciliation } from '@/lib/supportSnapshot';
 
 // Types for the org-state-api response
 export interface OrgStateSite {
@@ -800,6 +800,7 @@ export async function assignDeviceToUnit(
     if (error) {
       log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
         error: error.message,
+        error_code: 'EDGE_FUNCTION_ERROR',
         duration_ms: Math.round(performance.now() - startTime),
       });
       
@@ -807,33 +808,69 @@ export async function assignDeviceToUnit(
         ok: false,
         error: error.message,
         errorDetails: {
+          error_code: 'EDGE_FUNCTION_ERROR',
           message: error.message,
-          hint: 'Edge function invocation failed',
+          hint: 'Edge function invocation failed. Check network connectivity.',
         },
       };
     }
 
     if (!data?.ok) {
       const errorDetails: FrostGuardErrorDetails = {
+        status_code: data?.status_code,
+        error_code: data?.error_code,
         message: data?.error || 'Unknown error',
-        hint: 'Assignment request failed',
+        hint: data?.hint || 'Assignment request failed',
         request_id: data?.request_id,
+        details: data?.upstream,
       };
       
       log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
         error: data?.error,
+        status_code: data?.status_code,
+        error_code: data?.error_code,
+        hint: data?.hint,
         request_id: data?.request_id,
+        upstream_preview: data?.upstream?.body_preview?.slice(0, 200),
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      
+      // Log to assignment history for support snapshot
+      logAssignmentEvent({
+        timestamp: new Date().toISOString(),
+        sensor_id: sensorId,
+        unit_id: unitId || null,
+        site_id: siteId || null,
+        status: 'error',
+        status_code: data?.status_code,
+        request_id: data?.request_id,
+        error_code: data?.error_code,
+        error: data?.error,
+        hint: data?.hint,
         duration_ms: Math.round(performance.now() - startTime),
       });
       
       return { ok: false, error: data?.error, errorDetails };
     }
 
+    const durationMs = Math.round(performance.now() - startTime);
+    
     log('network', 'info', 'DEVICE_UNIT_ASSIGN_SUCCESS', {
       sensor_id: sensorId,
       unit_id: unitId,
       site_id: siteId,
-      duration_ms: Math.round(performance.now() - startTime),
+      duration_ms: durationMs,
+    });
+
+    // Log success to assignment history
+    logAssignmentEvent({
+      timestamp: new Date().toISOString(),
+      sensor_id: sensorId,
+      unit_id: unitId || null,
+      site_id: siteId || null,
+      status: 'success',
+      request_id: data?.request_id,
+      duration_ms: durationMs,
     });
 
     debug.sync('Device assigned to unit successfully', { sensor_id: sensorId, unit_id: unitId });
@@ -842,10 +879,23 @@ export async function assignDeviceToUnit(
 
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    const durationMs = Math.round(performance.now() - startTime);
     
     log('network', 'error', 'DEVICE_UNIT_ASSIGN_ERROR', {
       error: message,
-      duration_ms: Math.round(performance.now() - startTime),
+      duration_ms: durationMs,
+    });
+    
+    // Log to assignment history
+    logAssignmentEvent({
+      timestamp: new Date().toISOString(),
+      sensor_id: sensorId,
+      unit_id: unitId || null,
+      site_id: siteId || null,
+      status: 'error',
+      error: message,
+      hint: 'Unexpected error during device assignment',
+      duration_ms: durationMs,
     });
     
     return {

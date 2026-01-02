@@ -128,9 +128,14 @@ Deno.serve(async (req: Request) => {
           ok: false,
           error: responseData.error || responseData.message || `FrostGuard returned ${frostguardResponse.status}`,
           error_code: responseData.error_code || responseData.code || `HTTP_${frostguardResponse.status}`,
+          status_code: frostguardResponse.status,
           hint,
           request_id: requestId,
           frostguard_request_id: responseData.request_id,
+          upstream: {
+            status_code: frostguardResponse.status,
+            body_preview: JSON.stringify(responseData).slice(0, 500),
+          },
         }),
         { status: frostguardResponse.status, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
@@ -144,8 +149,14 @@ Deno.serve(async (req: Request) => {
           ok: false,
           error: responseData.error || 'FrostGuard returned failure status',
           error_code: responseData.error_code || 'UPSTREAM_FAILURE',
+          status_code: 400,
+          hint: responseData.hint || 'FrostGuard rejected the assignment request.',
           request_id: requestId,
           frostguard_request_id: responseData.request_id,
+          upstream: {
+            status_code: 400,
+            body_preview: JSON.stringify(responseData).slice(0, 500),
+          },
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
