@@ -13,7 +13,7 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway';
+  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway' | 'check_gateway_permissions';
   org_id?: string;
   selected_user_id?: string; // For testing specific user's TTN settings
   enabled?: boolean;
@@ -115,6 +115,9 @@ Deno.serve(async (req) => {
 
       case 'check_gateway':
         return await handleCheckGateway(supabaseAdmin, body, requestId);
+
+      case 'check_gateway_permissions':
+        return await handleCheckGatewayPermissions(supabaseAdmin, body, requestId);
 
       default:
         return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
@@ -721,4 +724,128 @@ async function handleCheckGateway(
       gateway_id,
     }, 200, requestId);
   }
+}
+
+// Check gateway-specific permissions (gateways:read, gateways:write)
+async function handleCheckGatewayPermissions(
+  supabase: any,
+  body: TTNSettingsRequest,
+  requestId: string
+): Promise<Response> {
+  const { org_id, cluster } = body;
+
+  console.log(`[${requestId}] Checking gateway permissions for org ${org_id || 'none'}`);
+
+  // Load API key from org settings
+  let apiKey: string | null = null;
+  let ttnCluster = cluster || 'eu1';
+
+  if (org_id) {
+    const { data } = await supabase
+      .from('ttn_settings')
+      .select('api_key, cluster')
+      .eq('org_id', org_id)
+      .maybeSingle();
+
+    apiKey = data?.api_key || null;
+    ttnCluster = cluster || data?.cluster || 'eu1';
+  }
+
+  if (!apiKey) {
+    return buildResponse({
+      ok: false,
+      error: 'No API key configured',
+      code: 'NO_API_KEY',
+      permissions: { gateway_read: false, gateway_write: false },
+    }, 200, requestId);
+  }
+
+  const baseUrl = getBaseUrl(ttnCluster);
+
+  // Test 1: Gateway list access (gateways:read)
+  let canReadGateways = false;
+  let readError = '';
+  try {
+    console.log(`[${requestId}] Testing gateway read permission: ${baseUrl}/api/v3/gateways?limit=1`);
+    const listResponse = await fetch(`${baseUrl}/api/v3/gateways?limit=1`, {
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+      },
+    });
+    canReadGateways = listResponse.status === 200;
+    if (listResponse.status === 403) {
+      readError = 'API key lacks gateways:read permission';
+    } else if (listResponse.status === 401) {
+      readError = 'API key invalid or expired';
+    }
+    console.log(`[${requestId}] Gateway read check: status=${listResponse.status}, passed=${canReadGateways}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Unknown error';
+    readError = `Network error: ${msg}`;
+    console.error(`[${requestId}] Gateway read check failed:`, msg);
+  }
+
+  // Test 2: Gateway write access - try to list user's own gateways (requires write scope)
+  // The /api/v3/users/{user_id}/gateways endpoint requires gateways:write to create
+  // We use a simpler check: attempt to POST to gateways with an invalid body to see if we get 403 vs 400
+  let canWriteGateways = false;
+  let writeError = '';
+  try {
+    // Try a "dry run" - POST with empty body. If we get 400 (bad request), we have write permission.
+    // If we get 403, we don't have permission.
+    console.log(`[${requestId}] Testing gateway write permission with dry-run POST`);
+    const writeTestResponse = await fetch(`${baseUrl}/api/v3/users/admin/gateways`, {
+      method: 'POST',
+      headers: {
+        'Authorization': `Bearer ${apiKey}`,
+        'Accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({}), // Empty body - should get 400 if we have permission, 403 if not
+    });
+
+    // 400 = bad request means we have permission but invalid payload
+    // 403 = forbidden means no write permission
+    // 401 = invalid auth
+    if (writeTestResponse.status === 400) {
+      canWriteGateways = true;
+    } else if (writeTestResponse.status === 403) {
+      writeError = 'API key lacks gateways:write permission';
+    } else if (writeTestResponse.status === 401) {
+      writeError = 'API key invalid or expired';
+    } else if (writeTestResponse.status === 200 || writeTestResponse.status === 201) {
+      // Shouldn't happen with empty body, but treat as success
+      canWriteGateways = true;
+    }
+    console.log(`[${requestId}] Gateway write check: status=${writeTestResponse.status}, passed=${canWriteGateways}`);
+  } catch (e: unknown) {
+    const msg = e instanceof Error ? e.message : 'Unknown error';
+    writeError = `Network error: ${msg}`;
+    console.error(`[${requestId}] Gateway write check failed:`, msg);
+  }
+
+  const allPermissionsOk = canReadGateways && canWriteGateways;
+
+  console.log(`[${requestId}] Gateway permissions: read=${canReadGateways}, write=${canWriteGateways}, overall=${allPermissionsOk}`);
+
+  return buildResponse({
+    ok: allPermissionsOk,
+    connected: true,
+    permissions: {
+      gateway_read: canReadGateways,
+      gateway_write: canWriteGateways,
+    },
+    error: allPermissionsOk ? undefined : 'Missing gateway permissions',
+    hint: allPermissionsOk
+      ? undefined
+      : 'Generate a new API key in TTN Console with gateways:read and gateways:write permissions',
+    diagnostics: {
+      cluster: ttnCluster,
+      gateway_read_status: canReadGateways ? 'passed' : 'failed',
+      gateway_read_error: readError || undefined,
+      gateway_write_status: canWriteGateways ? 'passed' : 'failed',
+      gateway_write_error: writeError || undefined,
+    },
+  }, 200, requestId);
 }
