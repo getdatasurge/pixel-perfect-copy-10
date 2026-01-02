@@ -147,6 +147,36 @@ curl -X POST https://your-emulator.supabase.co/functions/v1/ttn-simulate \
 3. Check **Live Data** tab
 4. You should see the simulated uplink appear
 
+## Edge Function CORS Expectations
+
+Supabase edge functions handling TTN webhooks and sync operations should respond to preflight requests with a `204` and the following headers:
+
+- `Access-Control-Allow-Origin: *` (or your configured origin)
+- `Access-Control-Allow-Methods: POST, OPTIONS` (for `search-users`, expect `GET, POST, OPTIONS`)
+- `Access-Control-Allow-Headers: authorization, x-client-info, apikey, content-type`
+- `Access-Control-Allow-Headers` should also include `x-ttn-webhook-secret` for webhook endpoints (`ttn-webhook` and `ttn-webhook-forward`)
+
+Use the verification script to check all functions defined in `supabase/config.toml`:
+
+```bash
+./scripts/verify-functions.sh
+```
+
+## Deployment Checklist (Supabase Edge Functions)
+
+1. **Confirm project ref**: `jyxzaagcirhbdzvofkom` (from `supabase/config.toml`)
+2. **Deploy a function**:
+
+```bash
+supabase functions deploy <name>
+```
+
+3. **Verify preflight**:
+
+```bash
+curl -i -X OPTIONS https://jyxzaagcirhbdzvofkom.supabase.co/functions/v1/<name>
+```
+
 ## Security
 
 ✅ **RLS Enabled**: Only service role can access `synced_users.ttn`
