@@ -5,11 +5,12 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2 } from 'lucide-react';
+import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
+import { cn } from '@/lib/utils';
 
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
@@ -45,7 +46,11 @@ export default function DeviceManager({
     const defaultGateway = gateways[0]?.id || '';
     const count = devices.filter(d => d.type === type).length + 1;
     const name = type === 'temperature' ? `Temp Sensor ${count}` : `Door Sensor ${count}`;
-    const newDevice = createDevice(name, type, defaultGateway);
+    const newDevice = {
+      ...createDevice(name, type, defaultGateway),
+      credentialSource: 'local_generated' as const,
+      credentialsLockedFromFrostguard: false,
+    };
     onDevicesChange([...devices, newDevice]);
     toast({ title: 'Device added', description: `Created ${name}` });
   };
@@ -73,8 +78,59 @@ export default function DeviceManager({
       devEui: generateEUI(),
       joinEui: generateEUI(),
       appKey: generateAppKey(),
+      credentialSource: 'manual_override',
+      credentialsLockedFromFrostguard: false,
     });
     toast({ title: 'Regenerated', description: 'New credentials generated' });
+  };
+
+  const unlockCredentials = (id: string) => {
+    updateDevice(id, {
+      credentialsLockedFromFrostguard: false,
+      credentialSource: 'manual_override',
+    });
+    toast({ title: 'Credentials Unlocked', description: 'You can now edit the credentials' });
+  };
+
+  const getCredentialSourceBadge = (device: LoRaWANDevice) => {
+    if (!device.joinEui && !device.appKey) {
+      return (
+        <Badge variant="destructive" className="text-xs gap-1">
+          Missing
+        </Badge>
+      );
+    }
+    
+    switch (device.credentialSource) {
+      case 'frostguard_pull':
+        return (
+          <Badge variant="outline" className="text-xs text-green-600 border-green-600 gap-1">
+            <Lock className="h-2 w-2" />
+            FrostGuard
+          </Badge>
+        );
+      case 'frostguard_generated':
+        return (
+          <Badge variant="outline" className="text-xs text-blue-600 border-blue-600 gap-1">
+            <Lock className="h-2 w-2" />
+            Generated
+          </Badge>
+        );
+      case 'local_generated':
+        return (
+          <Badge variant="outline" className="text-xs text-yellow-600 border-yellow-600">
+            Local
+          </Badge>
+        );
+      case 'manual_override':
+        return (
+          <Badge variant="outline" className="text-xs text-muted-foreground">
+            Override
+          </Badge>
+        );
+      default:
+        return null;
+    }
   };
 
   const copyField = async (value: string, fieldId: string) => {
@@ -463,32 +519,76 @@ export default function DeviceManager({
                 </p>
               </div>
 
-              {/* Row 3: JoinEUI + AppKey */}
-              <div className="grid grid-cols-2 gap-4">
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">JoinEUI (AppEUI)</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={device.joinEui}
-                      onChange={e => updateDevice(device.id, { joinEui: e.target.value.toUpperCase() })}
-                      disabled={disabled}
-                      className="font-mono text-xs h-9"
-                      maxLength={16}
-                    />
-                    <CopyButton value={device.joinEui} fieldId={`${device.id}-joineui`} />
-                  </div>
+              {/* Row 3: JoinEUI + AppKey with credential source */}
+              <div className="space-y-3">
+                <div className="flex items-center gap-2">
+                  <Label className="text-xs font-medium">OTAA Credentials</Label>
+                  {getCredentialSourceBadge(device)}
+                  {device.credentialsLockedFromFrostguard && (
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="h-6 w-6"
+                            onClick={() => unlockCredentials(device.id)}
+                          >
+                            <Unlock className="h-3 w-3" />
+                          </Button>
+                        </TooltipTrigger>
+                        <TooltipContent>
+                          <p>Unlock to edit credentials (will lose FrostGuard sync)</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  )}
                 </div>
-                <div className="space-y-2">
-                  <Label className="text-xs text-muted-foreground">AppKey</Label>
-                  <div className="flex gap-2">
-                    <Input
-                      value={device.appKey}
-                      onChange={e => updateDevice(device.id, { appKey: e.target.value.toUpperCase() })}
-                      disabled={disabled}
-                      className="font-mono text-xs h-9"
-                      maxLength={32}
-                    />
-                    <CopyButton value={device.appKey} fieldId={`${device.id}-appkey`} />
+                
+                <div className="grid grid-cols-2 gap-4">
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">JoinEUI (AppEUI)</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={device.joinEui}
+                        onChange={e => updateDevice(device.id, { 
+                          joinEui: e.target.value.toUpperCase(),
+                          credentialSource: 'manual_override',
+                          credentialsLockedFromFrostguard: false,
+                        })}
+                        disabled={disabled || device.credentialsLockedFromFrostguard}
+                        readOnly={device.credentialsLockedFromFrostguard}
+                        className={cn(
+                          "font-mono text-xs h-9",
+                          device.credentialsLockedFromFrostguard && "bg-muted cursor-not-allowed"
+                        )}
+                        maxLength={16}
+                        placeholder={!device.joinEui ? "Missing" : undefined}
+                      />
+                      <CopyButton value={device.joinEui} fieldId={`${device.id}-joineui`} />
+                    </div>
+                  </div>
+                  <div className="space-y-2">
+                    <Label className="text-xs text-muted-foreground">AppKey</Label>
+                    <div className="flex gap-2">
+                      <Input
+                        value={device.appKey}
+                        onChange={e => updateDevice(device.id, { 
+                          appKey: e.target.value.toUpperCase(),
+                          credentialSource: 'manual_override',
+                          credentialsLockedFromFrostguard: false,
+                        })}
+                        disabled={disabled || device.credentialsLockedFromFrostguard}
+                        readOnly={device.credentialsLockedFromFrostguard}
+                        className={cn(
+                          "font-mono text-xs h-9",
+                          device.credentialsLockedFromFrostguard && "bg-muted cursor-not-allowed"
+                        )}
+                        maxLength={32}
+                        placeholder={!device.appKey ? "Missing" : undefined}
+                      />
+                      <CopyButton value={device.appKey} fieldId={`${device.id}-appkey`} />
+                    </div>
                   </div>
                 </div>
               </div>

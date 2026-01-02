@@ -6,7 +6,7 @@ import { Badge } from '@/components/ui/badge';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { Loader2, User, AlertCircle, RefreshCw, Thermometer, CheckCircle2, Download, FileDown, ChevronDown, Terminal, Copy } from 'lucide-react';
 import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from '@/lib/ttn-payload';
-import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails, generateCurlCommand } from '@/lib/frostguardOrgSync';
+import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails, generateCurlCommand, backfillMissingCredentials } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
 import { debug, log, clearDebugContext, setDebugContext } from '@/lib/debugLogger';
@@ -47,7 +47,10 @@ interface StoredUserContext {
     appKey: string;
     type: 'temperature' | 'door';
     gatewayId: string;
+    credentialSource?: 'frostguard_pull' | 'frostguard_generated' | 'local_generated' | 'manual_override';
+    credentialsLockedFromFrostguard?: boolean;
   }>;
+  devicesMissingCredentials?: string[]; // dev_eui list for backfill tracking
 }
 
 interface UserSelectionGateProps {
@@ -185,15 +188,29 @@ export default function UserSelectionGate({
         isOnline: g.is_online,
       }));
 
-      const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => ({
-        id: s.id,
-        name: s.name,
-        devEui: s.dev_eui,
-        joinEui: s.join_eui,
-        appKey: s.app_key,
-        type: s.type === 'door' ? 'door' : 'temperature',
-        gatewayId: s.gateway_id || '',
-      }));
+      const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => {
+        const hasFrostguardCredentials = !!s.join_eui && !!s.app_key;
+        return {
+          id: s.id,
+          name: s.name,
+          devEui: s.dev_eui,
+          joinEui: s.join_eui || '',
+          appKey: s.app_key || '',
+          type: s.type === 'door' ? 'door' : 'temperature',
+          gatewayId: s.gateway_id || '',
+          credentialSource: hasFrostguardCredentials ? 'frostguard_pull' as const : undefined,
+          credentialsLockedFromFrostguard: hasFrostguardCredentials,
+        };
+      });
+
+      // Identify devices missing credentials for backfill
+      const devicesMissingCredentials = pulledDevices.filter(d => !d.joinEui || !d.appKey);
+      if (devicesMissingCredentials.length > 0) {
+        debug.sync('Devices missing OTAA credentials - will trigger backfill', {
+          count: devicesMissingCredentials.length,
+          devEuis: devicesMissingCredentials.map(d => d.devEui.slice(-4)),
+        });
+      }
 
       // Update local state (complete replacement, not merge)
       onGatewaysChange(pulledGateways);
@@ -297,6 +314,49 @@ export default function UserSelectionGate({
         title: 'Context Ready',
         description: toastDescription,
       });
+
+      // Trigger async backfill for devices missing credentials (non-blocking)
+      if (devicesMissingCredentials.length > 0) {
+        backfillMissingCredentials(
+          user.organization_id,
+          devicesMissingCredentials.map(d => ({ id: d.id, devEui: d.devEui }))
+        ).then(backfillResults => {
+          if (backfillResults.length > 0) {
+            // Merge backfilled credentials into devices
+            const updatedDevices = pulledDevices.map(device => {
+              const backfilled = backfillResults.find(r => r.id === device.id);
+              if (backfilled) {
+                return {
+                  ...device,
+                  joinEui: backfilled.joinEui,
+                  appKey: backfilled.appKey,
+                  credentialSource: 'frostguard_generated' as const,
+                  credentialsLockedFromFrostguard: true,
+                };
+              }
+              return device;
+            });
+            
+            onDevicesChange(updatedDevices);
+            
+            // Update session storage with backfilled devices
+            const currentContext = sessionStorage.getItem(STORAGE_KEY_USER_CONTEXT);
+            if (currentContext) {
+              const parsed = JSON.parse(currentContext);
+              parsed.pulledDevices = updatedDevices;
+              sessionStorage.setItem(STORAGE_KEY_USER_CONTEXT, JSON.stringify(parsed));
+            }
+            
+            toast({
+              title: 'Credentials Resolved',
+              description: `${backfillResults.length} device(s) now have OTAA credentials from FrostGuard`,
+            });
+          }
+        }).catch(err => {
+          debug.error('Backfill failed', { error: err instanceof Error ? err.message : String(err) });
+          // Don't show error toast - devices still work, just without FrostGuard credentials
+        });
+      }
 
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
