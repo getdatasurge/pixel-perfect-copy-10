@@ -50,15 +50,6 @@ export default function StepCompletion({
     downloadSnapshot(snapshot);
     toast({ title: 'Support snapshot downloaded' });
   };
-  const isGatewayMode = mode === 'gateways';
-  const entityLabelPlural = isGatewayMode ? 'gateway(s)' : 'device(s)';
-  
-  const ttnConsoleUrl = isGatewayMode
-    ? `https://${ttnConfig?.cluster || 'eu1'}.cloud.thethings.network/console/gateways`
-    : `https://${ttnConfig?.cluster || 'eu1'}.cloud.thethings.network/console/applications/${ttnConfig?.applicationId}/devices`;
-
-  const successCount = summary.created + summary.already_exists;
-  const hasFailures = summary.failed > 0;
 
   return (
     <div className="space-y-6 py-4">

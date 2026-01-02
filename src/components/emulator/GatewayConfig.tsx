@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Switch } from '@/components/ui/switch';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Radio, Plus, Trash2, Copy, Check, Cloud, Loader2, Pencil } from 'lucide-react';
+import { Radio, Plus, Trash2, Copy, Check, Cloud, Loader2, Pencil, CheckCircle, AlertCircle } from 'lucide-react';
 import { GatewayConfig as GatewayConfigType, WebhookConfig, createGateway } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -254,7 +254,24 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
                     <Badge variant={primaryGateway.isOnline ? 'default' : 'secondary'}>
                       {primaryGateway.isOnline ? 'Online' : 'Offline'}
                     </Badge>
-                    {ttnProvisionedGateways?.has(primaryGateway.eui) && (
+                    {primaryGateway.provisioningStatus === 'completed' && (
+                      <Badge variant="outline" className="text-green-600 border-green-600 gap-1">
+                        <CheckCircle className="h-3 w-3" />
+                        Provisioned
+                      </Badge>
+                    )}
+                    {primaryGateway.provisioningStatus === 'failed' && (
+                      <Tooltip>
+                        <TooltipTrigger>
+                          <Badge variant="destructive" className="gap-1">
+                            <AlertCircle className="h-3 w-3" />
+                            Failed
+                          </Badge>
+                        </TooltipTrigger>
+                        <TooltipContent>{primaryGateway.lastProvisionError || 'Unknown error'}</TooltipContent>
+                      </Tooltip>
+                    )}
+                    {!primaryGateway.provisioningStatus && ttnProvisionedGateways?.has(primaryGateway.eui) && (
                       <Badge variant="outline" className="text-green-600 border-green-600 gap-1">
                         <Radio className="h-3 w-3" />
                         TTN
@@ -357,7 +374,24 @@ export default function GatewayConfig({ gateways, onGatewaysChange, disabled, we
                             <span className="text-xs text-muted-foreground">
                               {gateway.isOnline ? 'Online' : 'Offline'}
                             </span>
-                            {ttnProvisionedGateways?.has(gateway.eui) && (
+                            {gateway.provisioningStatus === 'completed' && (
+                              <Badge variant="outline" className="text-green-600 border-green-600 text-xs gap-1">
+                                <CheckCircle className="h-2 w-2" />
+                                Provisioned
+                              </Badge>
+                            )}
+                            {gateway.provisioningStatus === 'failed' && (
+                              <Tooltip>
+                                <TooltipTrigger>
+                                  <Badge variant="destructive" className="text-xs gap-1">
+                                    <AlertCircle className="h-2 w-2" />
+                                    Failed
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>{gateway.lastProvisionError || 'Unknown error'}</TooltipContent>
+                              </Tooltip>
+                            )}
+                            {!gateway.provisioningStatus && ttnProvisionedGateways?.has(gateway.eui) && (
                               <Badge variant="outline" className="text-green-600 border-green-600 text-xs gap-1">
                                 <Radio className="h-2 w-2" />
                                 TTN
