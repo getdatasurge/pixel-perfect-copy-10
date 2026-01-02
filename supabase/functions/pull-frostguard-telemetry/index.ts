@@ -1,9 +1,13 @@
-// Pull Telemetry from FrostGuard
-// Queries sensor_readings table from FrostGuard (Project 1) and optionally syncs to local
+// Pull Telemetry - Query local sensor_readings and sync to unit_telemetry
 //
-// IMPORTANT: This function always returns HTTP 200 with ok:true/false in the body.
-// This is because supabase.functions.invoke() doesn't properly expose error response
-// bodies for non-2xx status codes, causing clients to see generic error messages.
+// ARCHITECTURE NOTE:
+// Telemetry data flows: Sensors → TTN → ttn-webhook (local) → local sensor_readings/unit_telemetry
+// This function queries the LOCAL database, not FrostGuard, because:
+// 1. FrostGuard's sensor_readings table has RLS that blocks direct access
+// 2. The ttn-webhook already writes telemetry to the local database
+// 3. Querying local data is faster and more reliable
+//
+// If you need FrostGuard org data (sensors, gateways, sites), use fetch-org-state instead.
 
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
@@ -33,10 +37,9 @@ interface PullTelemetryResult {
 }
 
 // Always return HTTP 200 so supabase.functions.invoke() can access the response body.
-// Error state is indicated by ok:false in the response.
 function buildResponse(data: PullTelemetryResult): Response {
   return new Response(JSON.stringify(data), {
-    status: 200, // Always 200 - errors are in the body with ok:false
+    status: 200,
     headers: { ...corsHeaders, 'Content-Type': 'application/json' },
   });
 }
@@ -49,20 +52,18 @@ Deno.serve(async (req) => {
     return new Response(null, { headers: corsHeaders });
   }
 
-  // Diagnostic: Log environment variable availability (not values)
+  // Diagnostic: Log environment variable availability
   const envDiagnostics = {
-    has_frostguard_url: !!Deno.env.get('FROSTGUARD_SUPABASE_URL'),
-    has_frostguard_key: !!Deno.env.get('FROSTGUARD_ANON_KEY'),
     has_supabase_url: !!Deno.env.get('SUPABASE_URL'),
     has_service_role_key: !!Deno.env.get('SUPABASE_SERVICE_ROLE_KEY'),
-    frostguard_url_preview: Deno.env.get('FROSTGUARD_SUPABASE_URL')?.slice(0, 30) || '(not set)',
+    source: 'local_database',
   };
 
   console.log(`[pull-frostguard-telemetry][${requestId}] Request received`);
   console.log(`[pull-frostguard-telemetry][${requestId}] ENV_CHECK:`, JSON.stringify(envDiagnostics));
 
   try {
-    // Parse request body with error handling
+    // Parse request body
     let body: PullTelemetryRequest;
     try {
       body = await req.json() as PullTelemetryRequest;
@@ -99,188 +100,130 @@ Deno.serve(async (req) => {
       sync_to_local,
     });
 
-    // Connect to FrostGuard (Project 1)
-    const frostguardUrl = Deno.env.get('FROSTGUARD_SUPABASE_URL') || 'https://mfwyiifehsvwnjwqoxht.supabase.co';
-    const frostguardKey = Deno.env.get('FROSTGUARD_ANON_KEY');
+    // Connect to LOCAL Supabase database
+    const supabaseUrl = Deno.env.get('SUPABASE_URL');
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
 
-    if (!frostguardKey) {
-      console.error(`[pull-frostguard-telemetry][${requestId}] Missing FROSTGUARD_ANON_KEY`);
+    if (!supabaseUrl || !supabaseServiceKey) {
+      console.error(`[pull-frostguard-telemetry][${requestId}] Missing local Supabase credentials`);
       return buildResponse({
         ok: false,
         request_id: requestId,
-        error: 'FrostGuard credentials not configured',
-        error_code: 'MISSING_FROSTGUARD_CONFIG',
-        hint: 'FROSTGUARD_ANON_KEY environment variable is missing. Configure it in Supabase Dashboard > Project Settings > Edge Functions > Secrets.',
+        error: 'Local Supabase credentials not configured',
+        error_code: 'MISSING_CONFIG',
+        hint: 'SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY environment variable is missing.',
         diagnostics: envDiagnostics,
       });
     }
 
-    console.log(`[pull-frostguard-telemetry][${requestId}] Connecting to FrostGuard at ${frostguardUrl.slice(0, 30)}...`);
-    const frostguard = createClient(frostguardUrl, frostguardKey);
+    console.log(`[pull-frostguard-telemetry][${requestId}] Connecting to local Supabase...`);
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
-    // Query sensor_readings table (correct table in FrostGuard)
-    console.log(`[pull-frostguard-telemetry][${requestId}] Querying sensor_readings from FrostGuard`);
+    // First, try to get data from unit_telemetry (aggregated telemetry)
+    console.log(`[pull-frostguard-telemetry][${requestId}] Querying unit_telemetry from local database`);
 
-    let query = frostguard
-      .from('sensor_readings')
+    let telemetryQuery = supabase
+      .from('unit_telemetry')
       .select('*');
 
-    // Note: sensor_readings may not have org_id column directly
-    // It might be linked via unit_id or device_serial
+    if (org_id) {
+      telemetryQuery = telemetryQuery.eq('org_id', org_id);
+    }
     if (unit_id) {
-      query = query.eq('unit_id', unit_id);
+      telemetryQuery = telemetryQuery.eq('unit_id', unit_id);
     }
 
-    // Get the most recent readings
-    query = query.order('created_at', { ascending: false }).limit(50);
+    telemetryQuery = telemetryQuery.order('last_uplink_at', { ascending: false }).limit(50);
 
-    const { data: readingsData, error: fetchError } = await query;
+    const { data: telemetryData, error: telemetryError } = await telemetryQuery;
 
-    if (fetchError) {
-      console.error(`[pull-frostguard-telemetry][${requestId}] FrostGuard query error:`, fetchError);
-      console.error(`[pull-frostguard-telemetry][${requestId}] Error details:`, JSON.stringify({
-        code: fetchError.code,
-        message: fetchError.message,
-        hint: fetchError.hint,
-        details: fetchError.details,
-      }));
+    if (telemetryError) {
+      console.error(`[pull-frostguard-telemetry][${requestId}] unit_telemetry query error:`, telemetryError);
 
-      // Check if it's a table not found error
-      if (fetchError.code === 'PGRST205' || fetchError.message?.includes('not find') || fetchError.message?.includes('does not exist')) {
+      // If unit_telemetry doesn't exist or has issues, try sensor_readings
+      console.log(`[pull-frostguard-telemetry][${requestId}] Falling back to sensor_readings...`);
+
+      let readingsQuery = supabase
+        .from('sensor_readings')
+        .select('*');
+
+      if (unit_id) {
+        readingsQuery = readingsQuery.eq('unit_id', unit_id);
+      }
+
+      readingsQuery = readingsQuery.order('created_at', { ascending: false }).limit(50);
+
+      const { data: readingsData, error: readingsError } = await readingsQuery;
+
+      if (readingsError) {
+        console.error(`[pull-frostguard-telemetry][${requestId}] sensor_readings query error:`, readingsError);
+
+        // Check for specific error types
+        const errorMessage = readingsError.message || 'Unknown database error';
+        const errorCode = readingsError.code || 'QUERY_ERROR';
+
+        let hint = 'Database query failed. ';
+        if (errorCode === 'PGRST204' || errorMessage.includes('does not exist')) {
+          hint += 'The sensor_readings table may not exist. Telemetry data is created when the TTN webhook receives uplinks.';
+        } else if (errorCode === '42501' || errorMessage.includes('permission')) {
+          hint += 'Permission denied. Check database RLS policies.';
+        } else {
+          hint += `Error: ${errorMessage}`;
+        }
+
         return buildResponse({
           ok: false,
           request_id: requestId,
-          error: `Table not found in FrostGuard: ${fetchError.message}`,
-          error_code: 'TABLE_NOT_FOUND',
-          hint: `The sensor_readings table may not exist in FrostGuard, or the table name has changed. DB hint: ${fetchError.hint || 'none'}`,
+          error: errorMessage,
+          error_code: errorCode,
+          hint,
           table_attempted: 'sensor_readings',
-          diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
+          diagnostics: { ...envDiagnostics, pg_error_code: errorCode },
         });
       }
 
-      // Check if it's an RLS/permission error
-      if (fetchError.code === '42501' || fetchError.message?.includes('permission') || fetchError.code === 'PGRST301') {
-        return buildResponse({
-          ok: false,
-          request_id: requestId,
-          error: `Permission denied: ${fetchError.message}`,
-          error_code: 'PERMISSION_DENIED',
-          hint: 'FrostGuard RLS policies may be blocking access. The FROSTGUARD_ANON_KEY may not have SELECT permission on sensor_readings.',
-          table_attempted: 'sensor_readings',
-          diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code },
-        });
-      }
+      // Return sensor_readings data
+      console.log(`[pull-frostguard-telemetry][${requestId}] Found ${readingsData?.length || 0} sensor_readings`);
 
-      // Generic query error - include all available details
       return buildResponse({
-        ok: false,
+        ok: true,
         request_id: requestId,
-        error: fetchError.message,
-        error_code: fetchError.code || 'QUERY_ERROR',
-        hint: fetchError.hint || `Query to FrostGuard sensor_readings failed. Error code: ${fetchError.code || 'unknown'}`,
-        table_attempted: 'sensor_readings',
-        diagnostics: { ...envDiagnostics, pg_error_code: fetchError.code, pg_hint: fetchError.hint },
+        data: readingsData || [],
+        count: readingsData?.length || 0,
+        source: 'sensor_readings',
+        synced_to_local: false,
+        hint: readingsData?.length ? undefined : 'No sensor readings found. Telemetry is created when sensors send uplinks via TTN.',
       });
     }
 
-    if (!readingsData || readingsData.length === 0) {
-      console.log(`[pull-frostguard-telemetry][${requestId}] No telemetry data found`);
+    // Success with unit_telemetry
+    console.log(`[pull-frostguard-telemetry][${requestId}] Found ${telemetryData?.length || 0} unit_telemetry records`);
+
+    if (!telemetryData || telemetryData.length === 0) {
       return buildResponse({
         ok: true,
         request_id: requestId,
         data: [],
         count: 0,
-        source: 'sensor_readings',
+        source: 'unit_telemetry',
         synced_to_local: false,
-        hint: 'No telemetry data found in FrostGuard for the given criteria. This is normal if no sensors have reported yet.',
+        hint: 'No telemetry data found. Telemetry is created when sensors send uplinks via the TTN webhook.',
+        diagnostics: envDiagnostics,
       });
     }
 
-    console.log(`[pull-frostguard-telemetry][${requestId}] Found ${readingsData.length} readings`);
-
-    // Optionally sync to local database
-    let syncResult = { synced: false, syncedCount: 0, syncError: null as string | null };
-
-    if (sync_to_local && readingsData.length > 0) {
-      try {
-        const supabaseUrl = Deno.env.get('SUPABASE_URL');
-        const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY');
-
-        if (!supabaseUrl || !supabaseServiceKey) {
-          console.warn(`[pull-frostguard-telemetry][${requestId}] Missing local Supabase credentials for sync`);
-          syncResult.syncError = 'Local Supabase credentials missing';
-        } else {
-          const localSupabase = createClient(supabaseUrl, supabaseServiceKey);
-
-          // Convert sensor_readings to unit_telemetry format
-          // Group by unit_id and take the most recent values
-          const telemetryByUnit = new Map<string, Record<string, unknown>>();
-
-          for (const reading of readingsData) {
-            const unitId = reading.unit_id;
-            if (!unitId) continue;
-
-            // Only keep the most recent reading per unit
-            if (!telemetryByUnit.has(unitId)) {
-              telemetryByUnit.set(unitId, {
-                unit_id: unitId,
-                org_id: org_id || reading.org_id,
-                last_temp_f: reading.temperature || null,
-                last_humidity: reading.humidity || null,
-                door_state: 'unknown', // sensor_readings may not have door state
-                battery_pct: reading.battery_level || null,
-                rssi_dbm: reading.signal_strength || null,
-                snr_db: null,
-                last_uplink_at: reading.created_at,
-                updated_at: reading.created_at,
-                expected_checkin_minutes: 5,
-                warn_after_missed: 1,
-                critical_after_missed: 5,
-              });
-            }
-          }
-
-          // Upsert aggregated telemetry
-          for (const [unitId, telemetry] of telemetryByUnit) {
-            const { error: upsertError } = await localSupabase
-              .from('unit_telemetry')
-              .upsert(telemetry, { onConflict: 'unit_id' });
-
-            if (upsertError) {
-              console.warn(`[pull-frostguard-telemetry][${requestId}] Upsert warning for ${unitId}:`, upsertError.message);
-            } else {
-              syncResult.syncedCount++;
-            }
-          }
-
-          syncResult.synced = true;
-          console.log(`[pull-frostguard-telemetry][${requestId}] Synced ${syncResult.syncedCount} telemetry records from ${readingsData.length} readings`);
-        }
-      } catch (syncErr) {
-        const syncErrMsg = syncErr instanceof Error ? syncErr.message : 'Unknown sync error';
-        console.warn(`[pull-frostguard-telemetry][${requestId}] Local sync error:`, syncErr);
-        syncResult.syncError = syncErrMsg;
-      }
-    }
-
     console.log(`[pull-frostguard-telemetry][${requestId}] PULL_SUCCESS`, {
-      count: readingsData.length,
-      source: 'sensor_readings',
-      synced: sync_to_local,
-      syncedCount: syncResult.syncedCount,
+      count: telemetryData.length,
+      source: 'unit_telemetry',
     });
 
     return buildResponse({
       ok: true,
       request_id: requestId,
-      data: readingsData,
-      count: readingsData.length,
-      source: 'sensor_readings',
-      synced_to_local: syncResult.synced,
-      diagnostics: sync_to_local ? {
-        synced_count: syncResult.syncedCount,
-        sync_error: syncResult.syncError
-      } : undefined,
+      data: telemetryData,
+      count: telemetryData.length,
+      source: 'unit_telemetry',
+      synced_to_local: true, // Already in local DB
     });
 
   } catch (error) {
@@ -288,20 +231,17 @@ Deno.serve(async (req) => {
     const message = error instanceof Error ? error.message : 'Unknown error';
     const stack = error instanceof Error ? error.stack : undefined;
 
-    // Log the full stack trace for debugging
     if (stack) {
       console.error(`[pull-frostguard-telemetry][${requestId}] Stack trace:`, stack);
     }
 
-    // Always return 200 so client can see error details
     return buildResponse({
       ok: false,
       request_id: requestId,
       error: message,
       error_code: 'UNKNOWN_ERROR',
-      hint: 'An unexpected error occurred while pulling telemetry. Check Supabase Edge Function logs for details.',
+      hint: 'An unexpected error occurred. Check Supabase Edge Function logs for details.',
       diagnostics: {
-        has_frostguard_key: !!Deno.env.get('FROSTGUARD_ANON_KEY'),
         error_type: error instanceof Error ? error.constructor.name : typeof error,
       },
     });
