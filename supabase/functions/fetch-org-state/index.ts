@@ -260,6 +260,8 @@ serve(async (req) => {
     return new Response(
       JSON.stringify({
         ...data,
+        ok: true,
+        status_code: 200,
         request_id: data.request_id || localRequestId,
         diagnostics: {
           duration_ms: durationMs,
