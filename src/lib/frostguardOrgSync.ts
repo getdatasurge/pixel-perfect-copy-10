@@ -406,6 +406,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         duration_ms: duration,
         sync_version: data.sync_version,
         sites_count: data.sites?.length || 0,
+        units_count: data.units?.length || 0,
         sensors_count: data.sensors?.length || 0,
         gateways_count: data.gateways?.length || 0,
         request_id: data.request_id,
@@ -420,6 +421,7 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
         sync_version: data.sync_version,
         counts: {
           sites: data.sites?.length || 0,
+          units: data.units?.length || 0,
           sensors: data.sensors?.length || 0,
           gateways: data.gateways?.length || 0,
         },

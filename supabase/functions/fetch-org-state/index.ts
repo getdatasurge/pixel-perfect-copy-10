@@ -236,6 +236,7 @@ serve(async (req) => {
           details: {
             sync_version: data.sync_version,
             has_sites: Array.isArray(data.sites),
+            has_units: Array.isArray(data.units),
             has_sensors: Array.isArray(data.sensors),
             has_gateways: Array.isArray(data.gateways),
             org_id_requested: org_id,
@@ -250,6 +251,7 @@ serve(async (req) => {
     console.log(`[fetch-org-state][${localRequestId}] Successfully fetched org state:`, {
       sync_version: data.sync_version,
       sites_count: data.sites?.length || 0,
+      units_count: data.units?.length || 0,
       sensors_count: data.sensors?.length || 0,
       gateways_count: data.gateways?.length || 0,
       ttn_enabled: data.ttn?.enabled || false,
