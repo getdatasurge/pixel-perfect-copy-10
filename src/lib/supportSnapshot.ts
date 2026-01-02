@@ -56,12 +56,28 @@ export interface SyncToFrostguardEvent {
   error?: string;
 }
 
+// Assignment event for device unit/site changes
+export interface AssignmentEvent {
+  timestamp: string;
+  sensor_id: string;
+  unit_id: string | null;
+  site_id: string | null;
+  status: 'success' | 'error';
+  status_code?: number;
+  request_id?: string;
+  error_code?: string;
+  error?: string;
+  hint?: string;
+  duration_ms: number;
+}
+
 // History storage
 const MAX_HISTORY = 20;
 let orgSyncHistory: OrgSyncEvent[] = [];
 let provisioningHistory: ProvisioningEvent[] = [];
 let ttnTestHistory: TTNTestEvent[] = [];
 let syncToFrostguardHistory: SyncToFrostguardEvent[] = [];
+let assignmentHistory: AssignmentEvent[] = [];
 
 // Reconciliation tracking
 let lastReconciliation = {
@@ -116,6 +132,17 @@ export function logSyncToFrostguardEvent(event: SyncToFrostguardEvent): void {
   }
 }
 
+export function logAssignmentEvent(event: AssignmentEvent): void {
+  assignmentHistory.push({
+    ...event,
+    error: event.error ? redactString(event.error) : undefined,
+    hint: event.hint ? redactString(event.hint) : undefined,
+  });
+  if (assignmentHistory.length > MAX_HISTORY) {
+    assignmentHistory = assignmentHistory.slice(-MAX_HISTORY);
+  }
+}
+
 export function updateReconciliation(data: Partial<typeof lastReconciliation>): void {
   lastReconciliation = { ...lastReconciliation, ...data };
 }
@@ -136,6 +163,10 @@ export function getTTNTestHistory(): TTNTestEvent[] {
 
 export function getSyncToFrostguardHistory(): SyncToFrostguardEvent[] {
   return [...syncToFrostguardHistory];
+}
+
+export function getAssignmentHistory(): AssignmentEvent[] {
+  return [...assignmentHistory];
 }
 
 export function getReconciliationSummary(): typeof lastReconciliation {
@@ -261,6 +292,11 @@ export interface SupportSnapshot {
     last_n_requests: SyncToFrostguardEvent[];
   };
   
+  assignment_diagnostics: {
+    recent_attempts: AssignmentEvent[];
+    last_error?: AssignmentEvent;
+  };
+  
   ttn_diagnostics: {
     last_n_tests: TTNTestEvent[];
     api_key_present: boolean;
@@ -347,6 +383,11 @@ export function buildSupportSnapshot(options: BuildSnapshotOptions = {}): Suppor
     
     sync_to_frostguard_diagnostics: {
       last_n_requests: getSyncToFrostguardHistory(),
+    },
+    
+    assignment_diagnostics: {
+      recent_attempts: getAssignmentHistory().slice(0, 5),
+      last_error: getAssignmentHistory().find(a => a.status === 'error'),
     },
     
     ttn_diagnostics: {
@@ -450,6 +491,7 @@ export function clearAllHistory(): void {
   provisioningHistory = [];
   ttnTestHistory = [];
   syncToFrostguardHistory = [];
+  assignmentHistory = [];
   lastReconciliation = {
     gateways_added: 0,
     gateways_removed: 0,

@@ -666,7 +666,20 @@ export default function LoRaWANEmulator() {
     );
     
     if (!result.ok) {
-      throw new Error(result.error || 'Assignment failed');
+      // Create enriched error with full details from errorDetails
+      const enrichedError = new Error(result.error || 'Assignment failed') as Error & {
+        status_code?: number;
+        hint?: string;
+        request_id?: string;
+        error_code?: string;
+      };
+      if (result.errorDetails) {
+        enrichedError.status_code = result.errorDetails.status_code;
+        enrichedError.hint = result.errorDetails.hint;
+        enrichedError.request_id = result.errorDetails.request_id;
+        enrichedError.error_code = result.errorDetails.error_code;
+      }
+      throw enrichedError;
     }
     
     // Re-pull org state to confirm the change from FrostGuard
