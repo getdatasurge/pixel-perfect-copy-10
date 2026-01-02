@@ -6,7 +6,7 @@ import { Search, Loader2, User, Building2, MapPin, Box, AlertCircle, Star, Radio
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
 import { FunctionsHttpError, FunctionsRelayError, FunctionsFetchError } from '@supabase/supabase-js';
-import { syncDebug, getSupabaseEnvInfo, createDebugReport, copyDebugReport } from '@/lib/debug';
+import { syncDebug, getSupabaseEnvInfo, createDebugReport, copyDebugReport } from '@/lib/debugLogger';
 import { validateSearchUsersResponse } from '@/lib/schemas';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 
