@@ -1,12 +1,25 @@
-import "https://deno.land/x/xhr@0.1.0/mod.ts";
 import { serve } from "https://deno.land/std@0.168.0/http/server.ts";
 import { createClient } from "https://esm.sh/@supabase/supabase-js@2";
 
+// CORS headers - MUST be included in EVERY response
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-sync-api-key',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 };
+
+// Helper: Build response with CORS headers
+// IMPORTANT: Always return HTTP 200 so supabase.functions.invoke() can parse the body.
+// Error state is indicated by success:false in the response.
+function buildResponse(body: Record<string, unknown>, requestId: string): Response {
+  return new Response(
+    JSON.stringify({ ...body, request_id: requestId }),
+    {
+      status: 200, // Always 200 - errors indicated by success:false in body
+      headers: { ...corsHeaders, 'Content-Type': 'application/json' }
+    }
+  );
+}
 
 interface SimulateUplinkRequest {
   org_id?: string;
@@ -282,16 +295,13 @@ serve(async (req) => {
     // ONLY use user's full API key from synced_users.ttn (no org fallback)
     if (!selected_user_id) {
       console.error(`[ttn-simulate][${requestId}] No selected_user_id provided`);
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'No user selected. Please select a user from the user selector to simulate TTN uplinks.',
-          errorType: 'no_user_selected',
-          hint: 'Use the user selector at the top of the page to choose a user with TTN credentials.',
-          request_id: requestId,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return buildResponse({
+        success: false,
+        error: 'No user selected. Please select a user from the user selector to simulate TTN uplinks.',
+        errorType: 'no_user_selected',
+        hint: 'Use the user selector at the top of the page to choose a user with TTN credentials.',
+        status: 400,
+      }, requestId);
     }
 
     console.log(`[ttn-simulate][${requestId}] Loading user TTN settings for: ${selected_user_id}`);
@@ -299,17 +309,14 @@ serve(async (req) => {
 
     if (!userSettings) {
       console.error(`[ttn-simulate][${requestId}] No TTN settings found for user ${selected_user_id}`);
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: `No TTN settings found for the selected user. User must be synced from FrostGuard first.`,
-          errorType: 'no_user_settings',
-          hint: 'Trigger a user sync from FrostGuard to populate TTN credentials for this user.',
-          userId: selected_user_id,
-          request_id: requestId,
-        }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return buildResponse({
+        success: false,
+        error: `No TTN settings found for the selected user. User must be synced from FrostGuard first.`,
+        errorType: 'no_user_settings',
+        hint: 'Trigger a user sync from FrostGuard to populate TTN credentials for this user.',
+        userId: selected_user_id,
+        status: 404,
+      }, requestId);
     }
 
     // Get application_id and cluster from user settings
@@ -343,21 +350,18 @@ serve(async (req) => {
     // Final validation
     if (!apiKey || !applicationId) {
       console.error(`[ttn-simulate][${requestId}] Incomplete TTN settings after fallback: hasApiKey=${!!apiKey}, hasApplicationId=${!!applicationId}`);
-      return new Response(
-        JSON.stringify({
-          success: false,
-          error: 'Incomplete TTN settings. Missing API key or application ID.',
-          errorType: 'incomplete_settings',
-          hint: apiKey ? 'Application ID is missing. Configure TTN settings in Webhook Settings.' : 'API key is missing. Save your API key in Webhook Settings → TTN Configuration.',
-          userId: selected_user_id,
-          orgId: org_id,
-          hasApiKey: !!apiKey,
-          hasApplicationId: !!applicationId,
-          settingsSource,
-          request_id: requestId,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return buildResponse({
+        success: false,
+        error: 'Incomplete TTN settings. Missing API key or application ID.',
+        errorType: 'incomplete_settings',
+        hint: apiKey ? 'Application ID is missing. Configure TTN settings in Webhook Settings.' : 'API key is missing. Save your API key in Webhook Settings → TTN Configuration.',
+        userId: selected_user_id,
+        orgId: org_id,
+        hasApiKey: !!apiKey,
+        hasApplicationId: !!applicationId,
+        settingsSource,
+        status: 400,
+      }, requestId);
     }
 
     console.log(`[ttn-simulate][${requestId}] TTN_REQUEST`, {
@@ -383,17 +387,14 @@ serve(async (req) => {
     const validationError = validateConfig(applicationId!, deviceId, cluster!);
     if (validationError) {
       console.error(`[ttn-simulate][${requestId}] Validation error:`, validationError);
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: validationError,
-          errorType: 'validation_error',
-          deviceId,
-          expectedFormat: 'sensor-XXXXXXXXXXXXXXXX',
-          request_id: requestId,
-        }),
-        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return buildResponse({
+        success: false,
+        error: validationError,
+        errorType: 'validation_error',
+        deviceId,
+        expectedFormat: 'sensor-XXXXXXXXXXXXXXXX',
+        status: 400,
+      }, requestId);
     }
 
     console.log('Simulating uplink:', { 
@@ -409,21 +410,18 @@ serve(async (req) => {
     const deviceCheck = await checkDeviceExists(cluster!, applicationId!, deviceId, apiKey);
     if (!deviceCheck.exists) {
       console.error(`[ttn-simulate][${requestId}] Preflight check failed: device not found in TTN`);
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: deviceCheck.error,
-          errorType: 'device_not_found',
-          hint: deviceCheck.hint,
-          deviceId,
-          applicationId,
-          cluster,
-          cluster_used: cluster,
-          host_used: `${cluster}.cloud.thethings.network`,
-          request_id: requestId,
-        }),
-        { status: 404, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+      return buildResponse({
+        success: false,
+        error: deviceCheck.error,
+        errorType: 'device_not_found',
+        hint: deviceCheck.hint,
+        deviceId,
+        applicationId,
+        cluster,
+        cluster_used: cluster,
+        host_used: `${cluster}.cloud.thethings.network`,
+        status: 404,
+      }, requestId);
     }
 
     // Build the TTN Simulate Uplink API URL
@@ -473,56 +471,61 @@ serve(async (req) => {
 
     if (!response.ok) {
       const parsedError = parseTTNError(response.status, responseText, applicationId!, deviceId);
-      
-      return new Response(
-        JSON.stringify({ 
-          success: false, 
-          error: parsedError.message,
-          errorType: parsedError.errorType,
-          requiredRights: parsedError.requiredRights,
-          hint: parsedError.hint,
-          status: response.status,
-          applicationId,
-          deviceId,
-          cluster,
-          cluster_used: cluster,
-          host_used: `${cluster}.cloud.thethings.network`,
-          settingsSource,
-          request_id: requestId,
-          cluster_hint: response.status === 404 
-            ? `Device not found on ${cluster}.cloud.thethings.network. Verify this is the correct cluster for your TTN Console.`
-            : undefined,
-        }),
-        { 
-          status: response.status >= 400 && response.status < 500 ? response.status : 502,
-          headers: { ...corsHeaders, 'Content-Type': 'application/json' } 
-        }
-      );
+
+      // Always return HTTP 200 so frontend can parse the body
+      // TTN status is preserved in the status field
+      return buildResponse({
+        success: false,
+        error: parsedError.message,
+        errorType: parsedError.errorType,
+        requiredRights: parsedError.requiredRights,
+        hint: parsedError.hint,
+        status: response.status, // Original TTN status
+        applicationId,
+        deviceId,
+        cluster,
+        cluster_used: cluster,
+        host_used: `${cluster}.cloud.thethings.network`,
+        settingsSource,
+        cluster_hint: response.status === 404
+          ? `Device not found on ${cluster}.cloud.thethings.network. Verify this is the correct cluster for your TTN Console.`
+          : undefined,
+        ttn_response: responseText.slice(0, 500), // Include TTN response for debugging
+      }, requestId);
     }
 
     console.log(`[ttn-simulate][${requestId}] Success: uplink simulated for ${deviceId}`);
 
     // TTN simulate endpoint returns empty response on success
-    return new Response(
-      JSON.stringify({ 
-        success: true, 
-        message: 'Uplink simulated successfully',
-        ttnResponse: responseText || null,
-        settingsSource,
-        cluster,
-        applicationId,
-        deviceId,
-        request_id: requestId,
-      }),
-      { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    return buildResponse({
+      success: true,
+      message: 'Uplink simulated successfully',
+      ttnResponse: responseText || null,
+      settingsSource,
+      cluster,
+      applicationId,
+      deviceId,
+    }, requestId);
 
   } catch (error: unknown) {
     const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-    console.error(`[ttn-simulate] Error in function:`, error);
-    return new Response(
-      JSON.stringify({ success: false, error: errorMessage, errorType: 'internal_error' }),
-      { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-    );
+    const errorStack = error instanceof Error ? error.stack : undefined;
+
+    console.error(`[ttn-simulate][${requestId}] Unhandled error:`, error);
+    if (errorStack) {
+      console.error(`[ttn-simulate][${requestId}] Stack trace:`, errorStack);
+    }
+
+    // Always return 200 with error details so frontend can parse
+    return buildResponse({
+      success: false,
+      error: errorMessage,
+      errorType: 'internal_error',
+      hint: 'An unexpected error occurred. Check Supabase Edge Function logs for details.',
+      status: 500,
+      diagnostics: {
+        error_type: error instanceof Error ? error.constructor.name : typeof error,
+      },
+    }, requestId);
   }
 });
