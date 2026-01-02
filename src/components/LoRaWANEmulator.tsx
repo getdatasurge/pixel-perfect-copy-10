@@ -214,7 +214,7 @@ export default function LoRaWANEmulator() {
   );
 
   // Handle provisioning wizard completion
-  const handleProvisioningComplete = useCallback((results?: Array<{ dev_eui?: string; eui?: string; status: string }>) => {
+  const handleProvisioningComplete = useCallback((results?: Array<{ dev_eui?: string; eui?: string; status: string; error?: string; ttn_gateway_id?: string }>) => {
     if (results) {
       if (provisioningMode === 'devices') {
         const newProvisioned = new Set(ttnProvisionedDevices);
@@ -226,6 +226,22 @@ export default function LoRaWANEmulator() {
         setTtnProvisionedDevices(newProvisioned);
         toast({ title: 'Provisioning Complete', description: 'Devices registered in TTN' });
       } else {
+        // Update gateway provisioning state with results
+        setGateways(prev => prev.map(g => {
+          const result = results.find(r => r.eui === g.eui);
+          if (result) {
+            return {
+              ...g,
+              provisioningStatus: result.status === 'failed' ? 'failed' : 'completed',
+              lastProvisionedAt: new Date().toISOString(),
+              lastProvisionError: result.error,
+              ttnGatewayId: result.ttn_gateway_id,
+            } as typeof g;
+          }
+          return g;
+        }));
+        
+        // Also update the provisioned set
         const newProvisioned = new Set(ttnProvisionedGateways);
         results.forEach(r => {
           if ((r.status === 'created' || r.status === 'already_exists') && r.eui) {
