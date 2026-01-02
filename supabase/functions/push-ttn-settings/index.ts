@@ -9,6 +9,7 @@ const corsHeaders = {
 
 interface PushTTNSettingsRequest {
   org_id: string;
+  user_id?: string; // Selected user ID to also update synced_users.ttn
   enabled?: boolean;
   cluster?: string;
   application_id?: string;
@@ -28,6 +29,7 @@ interface PushResult {
     message?: string;
   };
   local_updated?: boolean;
+  user_ttn_updated?: boolean;
   error?: string;
   hint?: string;
   step?: string;
@@ -45,7 +47,7 @@ Deno.serve(async (req) => {
 
   try {
     const body: PushTTNSettingsRequest = await req.json();
-    const { org_id, enabled, cluster, application_id, api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
+    const { org_id, user_id, enabled, cluster, application_id, api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
 
     // Validate required fields
     if (!org_id) {
@@ -60,6 +62,7 @@ Deno.serve(async (req) => {
     // Log the push request (redacted)
     console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_REQUEST`, {
       org_id,
+      user_id: user_id || null,
       enabled,
       cluster,
       application_id,
@@ -142,8 +145,9 @@ Deno.serve(async (req) => {
       }, fgResponse.status >= 400 && fgResponse.status < 500 ? fgResponse.status : 502);
     }
 
-    // Step 2: Also update local ttn_settings for consistency
+    // Step 2: Also update local ttn_settings AND synced_users.ttn for consistency
     let localUpdated = false;
+    let userTtnUpdated = false;
     try {
       const { createClient } = await import('https://esm.sh/@supabase/supabase-js@2');
       const supabaseUrl = Deno.env.get('SUPABASE_URL');
@@ -152,7 +156,7 @@ Deno.serve(async (req) => {
       if (supabaseUrl && supabaseKey) {
         const supabase = createClient(supabaseUrl, supabaseKey);
 
-        // Upsert local ttn_settings
+        // Upsert local ttn_settings (org-level canonical source)
         const updateData: Record<string, unknown> = {
           org_id,
           enabled: enabled ?? true,
@@ -180,10 +184,42 @@ Deno.serve(async (req) => {
           .upsert(updateData, { onConflict: 'org_id' });
 
         if (upsertError) {
-          console.warn(`[push-ttn-settings][${requestId}] Local upsert warning:`, upsertError.message);
+          console.warn(`[push-ttn-settings][${requestId}] Local ttn_settings upsert warning:`, upsertError.message);
         } else {
           localUpdated = true;
           console.log(`[push-ttn-settings][${requestId}] Local ttn_settings updated`);
+        }
+
+        // Also update synced_users.ttn for the selected user (used by ttn-simulate)
+        if (user_id) {
+          const ttnJsonData: Record<string, unknown> = {
+            enabled: enabled ?? true,
+            cluster: cluster || 'eu1',
+            application_id,
+            api_key_last4: api_key ? api_key.slice(-4) : fgData?.api_key_last4,
+            webhook_secret_last4: webhook_secret ? webhook_secret.slice(-4) : null,
+            updated_at: new Date().toISOString(),
+          };
+
+          // Include full API key if provided (ttn-simulate reads from here)
+          if (api_key) {
+            ttnJsonData.api_key = api_key;
+          }
+          if (webhook_secret) {
+            ttnJsonData.webhook_secret = webhook_secret;
+          }
+
+          const { error: userUpdateError } = await supabase
+            .from('synced_users')
+            .update({ ttn: ttnJsonData })
+            .eq('id', user_id);
+
+          if (userUpdateError) {
+            console.warn(`[push-ttn-settings][${requestId}] synced_users.ttn update warning:`, userUpdateError.message);
+          } else {
+            userTtnUpdated = true;
+            console.log(`[push-ttn-settings][${requestId}] synced_users.ttn updated for user ${user_id}`);
+          }
         }
       }
     } catch (localErr) {
@@ -195,6 +231,7 @@ Deno.serve(async (req) => {
       api_key_last4: fgData.api_key_last4 ? `****${fgData.api_key_last4}` : null,
       updated_at: fgData.updated_at,
       local_updated: localUpdated,
+      user_ttn_updated: userTtnUpdated,
     });
 
     return buildResponse({
@@ -207,6 +244,7 @@ Deno.serve(async (req) => {
         message: fgData.message || 'Settings saved',
       },
       local_updated: localUpdated,
+      user_ttn_updated: userTtnUpdated,
     }, 200);
 
   } catch (err) {

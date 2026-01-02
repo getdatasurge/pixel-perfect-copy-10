@@ -43,6 +43,7 @@ import {
 import { assignDeviceToUnit, fetchOrgState } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
+import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig } from '@/lib/ttnConfigStore';
 import CreateUnitModal from './emulator/CreateUnitModal';
 
 interface LogEntry {
@@ -358,40 +359,58 @@ export default function LoRaWANEmulator() {
       
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
-        // Freshness guard: Check if TTN config is stale or missing API key
-        const configUpdatedAt = ttnConfig.updated_at ? new Date(ttnConfig.updated_at).getTime() : 0;
-        const configAge = Date.now() - configUpdatedAt;
-        const MAX_CONFIG_AGE_MS = 5 * 60 * 1000; // 5 minutes
+        // Check centralized config store for canonical values
+        const canonicalConfig = getCanonicalConfig();
         
-        if ((configAge > MAX_CONFIG_AGE_MS || !ttnConfig.api_key_last4) && webhookConfig.testOrgId) {
-          log('ttn-sync', 'info', 'TTN_CONFIG_STALE', { 
-            age_ms: configAge, 
-            has_key_last4: !!ttnConfig.api_key_last4,
-            threshold_ms: MAX_CONFIG_AGE_MS,
+        // Freshness guard: Check if TTN config is stale or not from canonical source
+        const shouldRefresh = 
+          canonicalConfig.source !== 'FROSTGUARD_CANONICAL' ||
+          isConfigStale(5 * 60 * 1000) || // 5 minutes
+          !canonicalConfig.apiKeyLast4;
+        
+        if (shouldRefresh && webhookConfig.testOrgId) {
+          log('ttn-sync', 'info', 'TTN_CONFIG_STALE_OR_NOT_CANONICAL', { 
+            source: canonicalConfig.source,
+            isStale: isConfigStale(5 * 60 * 1000),
+            has_key_last4: !!canonicalConfig.apiKeyLast4,
+            orgId: webhookConfig.testOrgId,
           });
           
           // Auto-refresh from FrostGuard
           const pullResult = await fetchOrgState(webhookConfig.testOrgId);
           if (pullResult.ok && pullResult.data?.ttn) {
-            log('ttn-sync', 'info', 'TTN_CONFIG_REFRESHED', {
-              api_key_last4: pullResult.data.ttn.api_key_last4 
-                ? `****${pullResult.data.ttn.api_key_last4}` 
-                : null,
+            const fgTtn = pullResult.data.ttn;
+            log('ttn-sync', 'info', 'TTN_CONFIG_REFRESHED_FOR_SIMULATE', {
+              api_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
               source: 'FROSTGUARD_CANONICAL',
             });
+            
+            // Update the centralized store
+            setCanonicalConfig({
+              enabled: fgTtn.enabled,
+              cluster: fgTtn.cluster,
+              applicationId: fgTtn.application_id,
+              apiKeyLast4: fgTtn.api_key_last4 || null,
+              webhookSecretLast4: fgTtn.webhook_secret_last4 || null,
+              updatedAt: new Date().toISOString(),
+              source: 'FROSTGUARD_CANONICAL',
+              orgId: webhookConfig.testOrgId,
+              userId: webhookConfig.selectedUserId || null,
+            });
+            
             // Update the webhook config with fresh TTN settings
             setWebhookConfig(prev => ({
               ...prev,
               ttnConfig: {
                 ...prev.ttnConfig,
-                enabled: pullResult.data!.ttn!.enabled,
-                applicationId: pullResult.data!.ttn!.application_id,
-                cluster: pullResult.data!.ttn!.cluster as 'eu1' | 'nam1',
-                api_key_last4: pullResult.data!.ttn!.api_key_last4,
+                enabled: fgTtn.enabled,
+                applicationId: fgTtn.application_id,
+                cluster: fgTtn.cluster as 'eu1' | 'nam1',
+                api_key_last4: fgTtn.api_key_last4,
                 updated_at: new Date().toISOString(),
               },
             }));
-          } else if (!ttnConfig.api_key_last4) {
+          } else if (!canonicalConfig.apiKeyLast4 && !ttnConfig.api_key_last4) {
             // Can't proceed without a key
             addLog('error', '❌ TTN API key not configured. Save TTN settings first.');
             toast({
@@ -402,6 +421,15 @@ export default function LoRaWANEmulator() {
             return;
           }
         }
+        
+        // Log which config source is being used
+        const configToUse = hasCanonicalConfig() ? getCanonicalConfig() : null;
+        log('ttn-sync', 'info', 'TTN_CONFIG_USED_FOR_CALL', {
+          source: configToUse?.source || 'PROPS_FALLBACK',
+          apiKeyLast4: configToUse?.apiKeyLast4 || ttnConfig.api_key_last4 || null,
+          cluster: configToUse?.cluster || ttnConfig.cluster,
+          applicationId: configToUse?.applicationId || ttnConfig.applicationId,
+        });
         
         // Use canonical device_id format: sensor-{normalized_deveui}
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();

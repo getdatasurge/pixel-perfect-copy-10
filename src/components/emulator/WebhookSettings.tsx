@@ -16,6 +16,7 @@ import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway,
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { debug } from '@/lib/debugLogger';
+import { setCanonicalConfig, getCanonicalConfig } from '@/lib/ttnConfigStore';
 import {
   Select,
   SelectContent,
@@ -376,6 +377,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // Step 1: Push settings to FrostGuard via new edge function
       debug.ttnSync('TTN_PUSH_TO_FROSTGUARD_START', {
         orgId,
+        userId: config.selectedUserId,
         cluster: ttnCluster,
         application_id: ttnApplicationId,
         has_api_key: !!ttnApiKey,
@@ -384,6 +386,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const { data: pushResult, error: pushError } = await supabase.functions.invoke('push-ttn-settings', {
         body: {
           org_id: orgId,
+          user_id: config.selectedUserId || undefined, // Include user_id to update synced_users.ttn
           enabled: ttnEnabled,
           cluster: ttnCluster,
           application_id: ttnApplicationId,
@@ -451,12 +454,27 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           setTtnApiKeySet(!!fgTtn.api_key_last4);
           setTtnWebhookSecretSet(!!fgTtn.webhook_secret_last4);
           
-          // Update parent config with canonical values
+          // Update parent config with canonical values including updated_at
+          const updatedAt = new Date().toISOString();
           updateTTN({ 
             enabled: fgTtn.enabled, 
             applicationId: fgTtn.application_id, 
             cluster: fgTtn.cluster,
             api_key_last4: fgTtn.api_key_last4,
+            updated_at: updatedAt,
+          });
+
+          // Update centralized TTN config store with canonical values
+          setCanonicalConfig({
+            enabled: fgTtn.enabled,
+            cluster: fgTtn.cluster,
+            applicationId: fgTtn.application_id,
+            apiKeyLast4: fgTtn.api_key_last4 || null,
+            webhookSecretLast4: fgTtn.webhook_secret_last4 || null,
+            updatedAt,
+            source: 'FROSTGUARD_CANONICAL',
+            orgId,
+            userId: config.selectedUserId || null,
           });
 
           debug.ttnSync('TTN_CONFIG_SOURCE', {
@@ -471,6 +489,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // Step 4: Clear sensitive input fields after successful save
       setTtnApiKey('');
       setTtnWebhookSecret('');
+      
+      // Also clear any stale localStorage TTN cache
+      localStorage.removeItem('lorawan-emulator-ttn-cache');
+
 
       // Step 5: Show success with last4 from FrostGuard response
       const canonicalLast4 = pullResult.ok && pullResult.data?.ttn?.api_key_last4
