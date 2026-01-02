@@ -11,6 +11,7 @@ import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
 import { debug, log, clearDebugContext, setDebugContext } from '@/lib/debugLogger';
 import { buildSupportSnapshot, downloadSnapshot } from '@/lib/supportSnapshot';
+import { setCanonicalConfig, clearCanonicalConfig } from '@/lib/ttnConfigStore';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 
@@ -251,7 +252,7 @@ export default function UserSelectionGate({
         siteToSelect = user.default_site_id;
       }
 
-      // Build TTN config from pulled data
+      // Build TTN config from pulled data and update canonical store
       const ttnConfig = orgState.ttn ? {
         enabled: orgState.ttn.enabled || false,
         applicationId: orgState.ttn.application_id || '',
@@ -259,6 +260,27 @@ export default function UserSelectionGate({
         api_key_last4: orgState.ttn.api_key_last4 || null,
         webhook_secret_last4: orgState.ttn.webhook_secret_last4 || null,
       } : undefined;
+
+      // Update centralized TTN config store with canonical values from FrostGuard
+      if (ttnConfig) {
+        setCanonicalConfig({
+          enabled: ttnConfig.enabled,
+          cluster: ttnConfig.cluster,
+          applicationId: ttnConfig.applicationId,
+          apiKeyLast4: ttnConfig.api_key_last4 || null,
+          webhookSecretLast4: ttnConfig.webhook_secret_last4 || null,
+          updatedAt: new Date().toISOString(),
+          source: 'FROSTGUARD_CANONICAL',
+          orgId: user.organization_id,
+          userId: user.id,
+        });
+        
+        log('ttn-sync', 'info', 'TTN_CONFIG_STORE_INIT_FROM_PULL', {
+          source: 'FROSTGUARD_CANONICAL',
+          orgId: user.organization_id,
+          apiKeyLast4: ttnConfig.api_key_last4 ? `****${ttnConfig.api_key_last4}` : null,
+        });
+      }
 
       // Build summary message
       const summaryParts: string[] = [];
@@ -519,6 +541,9 @@ export default function UserSelectionGate({
     // Also clear localStorage cache for entities
     localStorage.removeItem('lorawan-emulator-gateways');
     localStorage.removeItem('lorawan-emulator-devices');
+    
+    // Clear the centralized TTN config store
+    clearCanonicalConfig();
     
     setIsHydrated(false);
     setSyncSummary(null);
