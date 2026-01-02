@@ -190,9 +190,9 @@ async function checkApplicationExists(
     }
 
     if (response.status === 403) {
-      return { 
-        exists: false, 
-        error: `API key does not have permission to access application "${applicationId}"`,
+      return {
+        exists: false,
+        error: `API key does not have permission to access application "${applicationId}". Required permissions: "Read application traffic" and "Write downlink application traffic". Edit your API key in TTN Console to add these permissions.`,
       };
     }
 

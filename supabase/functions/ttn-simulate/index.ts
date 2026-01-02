@@ -43,8 +43,8 @@ function generateTTNDeviceId(devEui: string): string | null {
 }
 
 // Parse common TTN error codes and provide user-friendly messages
-function parseTTNError(status: number, responseText: string, applicationId: string, deviceId: string): { 
-  message: string; 
+function parseTTNError(status: number, responseText: string, applicationId: string, deviceId: string): {
+  message: string;
   errorType: string;
   requiredRights?: string[];
   hint?: string;
@@ -53,7 +53,7 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
     const errorData = JSON.parse(responseText);
     const errorName = errorData?.details?.[0]?.name || '';
     const errorMessage = errorData?.message || '';
-    
+
     if (status === 403) {
       // Check for specific permission errors
       if (errorMessage.includes('downlink') || errorName === 'no_application_rights') {
@@ -61,17 +61,21 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
           message: `API key doesn't have required permissions for application "${applicationId}".`,
           errorType: 'permission_error',
           requiredRights: [
-            'Write downlink application traffic',
+            'Write downlink application traffic (traffic:down:write)',
             'Read application traffic (traffic:read)',
           ],
-          hint: 'Edit your API key in TTN Console → API Keys → Edit, and add the "Write downlink application traffic" permission.',
+          hint: 'Go to TTN Console → Applications → [Your App] → API Keys → Edit your key, then add "Write downlink application traffic" permission.',
         };
       }
+      // Generic 403 - most likely missing application-specific permissions
       return {
         message: `API key doesn't have rights for application "${applicationId}".`,
         errorType: 'permission_error',
-        requiredRights: ['Read application traffic', 'Write downlink application traffic'],
-        hint: 'Verify the API key was created with permissions for this specific application.',
+        requiredRights: [
+          'Read application traffic (traffic:read)',
+          'Write downlink application traffic (traffic:down:write)',
+        ],
+        hint: 'Your API key needs permissions for this specific application. In TTN Console, edit the API key and ensure it has access to this application with "Read application traffic" and "Write downlink application traffic" permissions.',
       };
     }
     

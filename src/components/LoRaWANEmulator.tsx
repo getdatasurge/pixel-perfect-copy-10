@@ -123,6 +123,10 @@ export default function LoRaWANEmulator() {
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
 
+  // Track consecutive permission errors to auto-stop emulation
+  const permissionErrorCountRef = useRef<number>(0);
+  const MAX_PERMISSION_ERRORS = 2; // Stop after 2 consecutive permission errors
+
   // Storage keys for persistence
   const STORAGE_KEY_DEVICES = 'lorawan-emulator-devices';
   const STORAGE_KEY_GATEWAYS = 'lorawan-emulator-gateways';
@@ -534,7 +538,7 @@ export default function LoRaWANEmulator() {
           
           throw new Error(errorDetails.message);
         }
-        
+
         // Handle TTN-level error (API returned non-success)
         if (data && !data.success) {
           const ttnError = {
@@ -546,7 +550,7 @@ export default function LoRaWANEmulator() {
             requiredRights: data.requiredRights,
             requestId: data.request_id,
           };
-          
+
           log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
             error: ttnError.message,
             hint: ttnError.hint,
@@ -556,7 +560,7 @@ export default function LoRaWANEmulator() {
             required_rights: ttnError.requiredRights,
             request_id: ttnError.requestId,
           });
-          
+
           // Log to snapshot history
           logTTNSimulateEvent({
             timestamp: new Date().toISOString(),
@@ -571,24 +575,52 @@ export default function LoRaWANEmulator() {
             hint: ttnError.hint,
             required_rights: ttnError.requiredRights,
           });
-          
+
+          // Track permission errors for auto-stop
+          if (ttnError.errorType === 'permission_error') {
+            permissionErrorCountRef.current += 1;
+
+            // Auto-stop emulation after repeated permission errors
+            if (permissionErrorCountRef.current >= MAX_PERMISSION_ERRORS && isRunning) {
+              addLog('error', '🛑 Stopping emulation due to repeated API key permission errors');
+              addLog('error', '💡 Fix: Edit your API key in TTN Console and add "Write downlink application traffic" permission');
+
+              // Stop emulation asynchronously to avoid calling setState during render
+              setTimeout(() => {
+                setIsRunning(false);
+                if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
+                if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
+                addLog('info', '⏹️ Emulation stopped due to permission errors');
+              }, 0);
+
+              toast({
+                title: 'Emulation Stopped',
+                description: 'API key lacks required permissions. Please update your TTN API key.',
+                variant: 'destructive',
+              });
+            }
+          }
+
           // Show actionable hint in logs
           if (ttnError.hint) {
             addLog('error', `💡 ${ttnError.hint}`);
           }
-          
-          // Show rich error toast for permission errors
-          if (ttnError.errorType === 'permission_error') {
+
+          // Show rich error toast for permission errors (only first time)
+          if (ttnError.errorType === 'permission_error' && permissionErrorCountRef.current === 1) {
             toast({
               title: 'TTN Permission Error',
               description: `${ttnError.message}. ${ttnError.hint || ''}`,
               variant: 'destructive',
             });
           }
-          
+
           throw new Error(ttnError.message);
         }
-        
+
+        // Reset permission error counter on success
+        permissionErrorCountRef.current = 0;
+
         // Log success
         log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
           deviceId,
@@ -665,9 +697,10 @@ export default function LoRaWANEmulator() {
 
     const device = getActiveDevice('door');
     const gateway = getActiveGateway(device);
-    
+
     if (!device) {
-      addLog('error', '❌ No door sensor configured');
+      // Only log as info since door sensor might intentionally not be configured
+      addLog('info', '📋 Door sensor not configured - skipping door event');
       return;
     }
     
@@ -870,7 +903,116 @@ export default function LoRaWANEmulator() {
     sendDoorEvent(newStatus ? 'open' : 'closed');
   }, [doorState.doorOpen, sendDoorEvent]);
 
-  const startEmulation = useCallback(() => {
+  // Preflight check: validate TTN configuration and API key permissions before starting
+  const runPreflightCheck = useCallback(async (): Promise<{ ok: boolean; error?: string; hint?: string }> => {
+    const ttnConfig = webhookConfig.ttnConfig;
+
+    // Skip preflight if TTN is not enabled
+    if (!ttnConfig?.enabled || !ttnConfig.applicationId) {
+      return { ok: true }; // No TTN config, proceed with local webhook
+    }
+
+    // Check if user is selected
+    if (!webhookConfig.selectedUserId) {
+      return {
+        ok: false,
+        error: 'No user selected',
+        hint: 'Please select a user from the user selector to simulate TTN uplinks.',
+      };
+    }
+
+    // Get devices to check
+    const devicesToCheck = devices
+      .filter(d => d.devEui)
+      .map(d => ({ dev_eui: d.devEui, name: d.name }));
+
+    try {
+      addLog('info', '🔍 Running TTN preflight check...');
+
+      const { data, error } = await supabase.functions.invoke('ttn-preflight', {
+        body: {
+          selected_user_id: webhookConfig.selectedUserId,
+          org_id: webhookConfig.testOrgId,
+          devices: devicesToCheck,
+        },
+      });
+
+      if (error) {
+        return {
+          ok: false,
+          error: `Preflight check failed: ${error.message}`,
+          hint: 'Check your network connection and try again.',
+        };
+      }
+
+      if (!data.ok) {
+        // Check for specific error types
+        if (data.application && !data.application.exists) {
+          const appError = data.application.error || 'Application not found';
+          // Check if it's a permission error
+          if (appError.includes('permission') || appError.includes('403')) {
+            return {
+              ok: false,
+              error: `API key permission error: ${appError}`,
+              hint: 'Your API key may not have the required permissions. Edit your API key in TTN Console and add: "Read application traffic" and "Write downlink application traffic".',
+            };
+          }
+          return {
+            ok: false,
+            error: appError,
+            hint: `Verify the application ID "${data.application.id}" exists on cluster "${data.cluster}".`,
+          };
+        }
+
+        // Cluster mismatch
+        if (data.cluster_mismatch) {
+          return {
+            ok: false,
+            error: `Cluster mismatch: configured "${data.cluster_mismatch.configured_cluster}" but detected "${data.cluster_mismatch.detected_cluster}"`,
+            hint: data.cluster_mismatch.hint,
+          };
+        }
+
+        // Unregistered devices - this is a warning, not a blocker
+        if (data.unregistered_count > 0) {
+          addLog('info', `⚠️ ${data.unregistered_count} device(s) not registered in TTN - uplinks may be dropped`);
+          // Continue anyway - TTN simulate might still work
+        }
+      }
+
+      addLog('info', '✅ TTN preflight check passed');
+      return { ok: true };
+    } catch (err: any) {
+      return {
+        ok: false,
+        error: `Preflight check error: ${err.message}`,
+        hint: 'Check your network connection and try again.',
+      };
+    }
+  }, [webhookConfig, devices, addLog]);
+
+  const startEmulation = useCallback(async () => {
+    // Reset permission error counter on fresh start
+    permissionErrorCountRef.current = 0;
+
+    // Run preflight check if TTN is enabled
+    const ttnConfig = webhookConfig.ttnConfig;
+    if (ttnConfig?.enabled && ttnConfig.applicationId) {
+      const preflight = await runPreflightCheck();
+      if (!preflight.ok) {
+        addLog('error', `❌ ${preflight.error}`);
+        if (preflight.hint) {
+          addLog('error', `💡 ${preflight.hint}`);
+        }
+        toast({
+          title: 'Cannot Start Emulation',
+          description: preflight.error,
+          variant: 'destructive',
+        });
+        return; // Don't start emulation if preflight fails
+      }
+    }
+
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
@@ -882,11 +1024,11 @@ export default function LoRaWANEmulator() {
 
     // Set up intervals
     tempIntervalRef.current = setInterval(sendTempReading, tempState.intervalSeconds * 1000);
-    
+
     if (doorState.enabled) {
       doorIntervalRef.current = setInterval(() => sendDoorEvent(), doorState.intervalSeconds * 1000);
     }
-  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog]);
+  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog, webhookConfig, runPreflightCheck]);
 
   const stopEmulation = useCallback(() => {
     setIsRunning(false);
