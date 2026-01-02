@@ -9,7 +9,7 @@ import { WebhookConfig, GatewayConfig as GatewayConfigType, LoRaWANDevice } from
 import { fetchOrgState, trackEntityChanges, OrgStateResponse, FrostGuardErrorDetails } from '@/lib/frostguardOrgSync';
 import { toast } from '@/hooks/use-toast';
 import UserSearchDialog, { UserProfile } from './UserSearchDialog';
-import { debug, log, clearDebugContext } from '@/lib/debugLogger';
+import { debug, log, clearDebugContext, setDebugContext } from '@/lib/debugLogger';
 import { buildSupportSnapshot, downloadSnapshot } from '@/lib/supportSnapshot';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
@@ -314,6 +314,18 @@ export default function UserSelectionGate({
 
   // Handle user selection from dialog
   const handleUserSelect = useCallback((user: UserProfile) => {
+    // Set debug context immediately on user selection
+    setDebugContext({
+      userId: user.id,
+      userEmail: user.email,
+      orgId: user.organization_id,
+    });
+    
+    debug.context('User selected from search', { 
+      userId: user.id, 
+      email: user.email,
+      orgId: user.organization_id,
+    });
     console.log('[UserSelectionGate] User selected:', user.id);
     setPendingUser(user);
     setShowUserSearch(false);
@@ -467,6 +479,12 @@ export default function UserSelectionGate({
                 {error.details?.hint && (
                   <p className="text-sm opacity-90">{error.details.hint}</p>
                 )}
+
+                {/* Endpoint diagnostics */}
+                <div className="text-xs opacity-75 space-y-1 pt-2 border-t border-destructive/20">
+                  <p>Endpoint: <code className="bg-muted px-1 rounded text-[10px]">fetch-org-state</code></p>
+                  <p>Target: <code className="bg-muted px-1 rounded text-[10px]">FrostGuard org-state-api</code></p>
+                </div>
                 
                 {/* Expandable technical details */}
                 {error.details?.details && (

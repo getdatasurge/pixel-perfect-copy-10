@@ -66,10 +66,29 @@ serve(async (req) => {
       );
     }
 
+    // Validate org_id format (UUID)
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(org_id)) {
+      console.error('[fetch-org-state] Invalid org_id format:', org_id);
+      return new Response(
+        JSON.stringify({ 
+          ok: false, 
+          status_code: 400,
+          error: 'Invalid organization ID format',
+          error_code: 'INVALID_ORG_ID',
+          request_id: localRequestId,
+          hint: 'The organization ID must be a valid UUID.',
+        }),
+        { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     // Build the request to FrostGuard's org-state-api
     const orgStateUrl = `${frostguardUrl}/functions/v1/org-state-api?org_id=${encodeURIComponent(org_id)}`;
     
     console.log(`[fetch-org-state] Fetching org state from FrostGuard for org: ${org_id}`);
+    console.log(`[fetch-org-state] Target URL: ${orgStateUrl.replace(/org_id=.*/, 'org_id=[REDACTED]')}`);
+    console.log(`[fetch-org-state] Auth: Bearer token present, key last4: ${syncApiKey.slice(-4)}`);
 
     const response = await fetch(orgStateUrl, {
       method: 'GET',
@@ -111,6 +130,33 @@ serve(async (req) => {
 
     const data = await response.json();
     
+    // Check if FrostGuard returned ok: false in the body (even with HTTP 200)
+    if (data.ok === false) {
+      console.error('[fetch-org-state] FrostGuard returned ok=false in body:', {
+        error: data.error,
+        error_code: data.error_code,
+        request_id: data.request_id,
+      });
+      
+      return new Response(
+        JSON.stringify({
+          ok: false,
+          status_code: data.status_code || 200,
+          error: data.error || data.message || 'FrostGuard returned failure in response body',
+          error_code: data.error_code || data.code || 'UPSTREAM_FAILURE',
+          request_id: data.request_id || localRequestId,
+          hint: data.hint || 'FrostGuard processed the request but returned an error.',
+          details: {
+            sync_version: data.sync_version,
+            has_sites: Array.isArray(data.sites),
+            has_sensors: Array.isArray(data.sensors),
+            has_gateways: Array.isArray(data.gateways),
+          },
+        }),
+        { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+      );
+    }
+
     console.log(`[fetch-org-state] Successfully fetched org state:`, {
       sync_version: data.sync_version,
       sites_count: data.sites?.length || 0,

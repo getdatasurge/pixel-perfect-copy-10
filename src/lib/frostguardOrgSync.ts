@@ -3,7 +3,7 @@
 // Uses pull-based architecture with API key authentication (no JWT, no Service Role).
 
 import { supabase } from '@/integrations/supabase/client';
-import { debug, logTimed, log } from '@/lib/debugLogger';
+import { debug, logTimed, log, setDebugContext } from '@/lib/debugLogger';
 import { logOrgSyncEvent, updateReconciliation } from '@/lib/supportSnapshot';
 
 // Types for the org-state-api response
@@ -119,11 +119,41 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
   let lastError: string = 'Unknown error';
   const startTime = performance.now();
   
+  // Validate org_id format (UUID) before making the request
+  const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+  if (!uuidRegex.test(orgId)) {
+    const errorDetails: FrostGuardErrorDetails = {
+      status_code: 400,
+      error_code: 'INVALID_ORG_ID',
+      message: 'Invalid organization ID format',
+      hint: 'The organization ID must be a valid UUID. Try selecting a different user.',
+    };
+    log('network', 'error', 'VALIDATION_ERROR', { org_id: orgId, error: 'Invalid UUID format' });
+    logOrgSyncEvent({
+      timestamp: new Date().toISOString(),
+      status: 'error',
+      duration_ms: Math.round(performance.now() - startTime),
+      error: errorDetails.message,
+    });
+    return { ok: false, error: errorDetails.message, errorDetails };
+  }
+
+  // Set debug context for this sync operation
+  setDebugContext({
+    orgId,
+    lastSyncAt: new Date().toISOString(),
+  });
+
   debug.sync('Starting org state fetch', { org_id: orgId });
   const endTiming = logTimed('org-sync', 'Fetch org state from FrostGuard', { org_id: orgId });
   
-  // Log start event for debug terminal
-  log('network', 'info', 'PULL_ORG_STATE_START', { org_id: orgId });
+  // Log start event for debug terminal with endpoint info
+  log('network', 'info', 'PULL_ORG_STATE_START', { 
+    org_id: orgId,
+    endpoint: 'fetch-org-state',
+    target: 'FrostGuard org-state-api',
+    timestamp: new Date().toISOString(),
+  });
   
   for (let attempt = 0; attempt < MAX_RETRIES; attempt++) {
     try {
@@ -204,13 +234,17 @@ export async function fetchOrgState(orgId: string): Promise<FetchOrgStateResult>
           org_id: orgId,
         });
         
-        // Log network event for debug terminal
+        // Log network event for debug terminal with full details
         log('network', 'error', 'PULL_ORG_STATE_ERROR', {
+          org_id: orgId,
+          endpoint: 'fetch-org-state',
+          target: 'FrostGuard org-state-api',
           status_code: statusCode,
           error_code: errorCode,
           request_id: requestId,
           duration_ms: Math.round(performance.now() - startTime),
           error: errorMessage,
+          hint: errorDetails.hint,
         });
         
         endTiming();
