@@ -85,6 +85,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [ttnWebhookSecret, setTtnWebhookSecret] = useState('');
   const [ttnApiKeyPreview, setTtnApiKeyPreview] = useState<string | null>(null);
   const [ttnApiKeySet, setTtnApiKeySet] = useState(false);
+  // Gateway owner config
+  const [gatewayOwnerType, setGatewayOwnerType] = useState<'user' | 'organization'>('user');
+  const [gatewayOwnerId, setGatewayOwnerId] = useState('');
   const [ttnWebhookSecretSet, setTtnWebhookSecretSet] = useState(false);
   
   // Connection status tracking
@@ -305,6 +308,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           application_id: ttnApplicationId,
           api_key: ttnApiKey || undefined, // Only send if new value provided
           webhook_secret: ttnWebhookSecret || undefined,
+          gateway_owner_type: gatewayOwnerType,
+          gateway_owner_id: gatewayOwnerId || undefined,
         },
       });
 
@@ -953,6 +958,56 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   <p className="text-xs text-muted-foreground">
                     For webhook signature verification
                   </p>
+                </div>
+              </div>
+
+              {/* Gateway Owner Configuration */}
+              <div className="pt-4 border-t space-y-3">
+                <div className="flex items-center gap-2">
+                  <Label className="text-sm font-medium">Gateway Owner (for provisioning)</Label>
+                  <TooltipProvider>
+                    <Tooltip>
+                      <TooltipTrigger asChild>
+                        <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                      </TooltipTrigger>
+                      <TooltipContent className="max-w-xs">
+                        <p>Gateways in TTN are owned by users or organizations. Set your TTN username or org ID to provision gateways.</p>
+                      </TooltipContent>
+                    </Tooltip>
+                  </TooltipProvider>
+                </div>
+                <div className="grid gap-4 sm:grid-cols-2">
+                  <div className="space-y-2">
+                    <Label htmlFor="gatewayOwnerType">Owner Type</Label>
+                    <Select
+                      value={gatewayOwnerType}
+                      onValueChange={(v) => setGatewayOwnerType(v as 'user' | 'organization')}
+                      disabled={disabled || isLoading}
+                    >
+                      <SelectTrigger>
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="user">Personal (User)</SelectItem>
+                        <SelectItem value="organization">Organization</SelectItem>
+                      </SelectContent>
+                    </Select>
+                  </div>
+                  <div className="space-y-2">
+                    <Label htmlFor="gatewayOwnerId">
+                      {gatewayOwnerType === 'organization' ? 'Organization ID' : 'TTN Username'}
+                    </Label>
+                    <Input
+                      id="gatewayOwnerId"
+                      placeholder={gatewayOwnerType === 'organization' ? 'my-org' : 'my-username'}
+                      value={gatewayOwnerId}
+                      onChange={e => setGatewayOwnerId(e.target.value)}
+                      disabled={disabled || isLoading}
+                    />
+                    <p className="text-xs text-muted-foreground">
+                      Required for gateway provisioning. Use a Personal API key for user scope.
+                    </p>
+                  </div>
                 </div>
               </div>
 

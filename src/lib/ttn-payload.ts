@@ -66,6 +66,9 @@ export interface TTNConfig {
   lastTestAt?: Date | string | null;
   lastTestSuccess?: boolean | null;
   updated_at?: string | null; // For cache invalidation
+  // Gateway owner configuration (required for gateway provisioning)
+  gateway_owner_type?: 'user' | 'organization';
+  gateway_owner_id?: string | null;
 }
 
 export interface WebhookConfig {
