@@ -8,7 +8,8 @@ import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
-  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw
+  Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
+  Globe, ArrowRightLeft
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
@@ -97,6 +98,59 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   
   // Test result state
   const [testResult, setTestResult] = useState<TTNTestResult | null>(null);
+  
+  // Cluster detection state
+  const [detectedCluster, setDetectedCluster] = useState<string | null>(null);
+  const [consoleUrlInput, setConsoleUrlInput] = useState('');
+  const [showClusterDetect, setShowClusterDetect] = useState(false);
+
+  // Parse cluster from TTN Console URL
+  const parseClusterFromUrl = (url: string): string | null => {
+    try {
+      const parsed = new URL(url);
+      const host = parsed.hostname;
+      // Match nam1.cloud.thethings.network or console.nam1... patterns
+      const match = host.match(/^(?:console\.)?(nam1|eu1|au1)\.cloud\.thethings\.network$/);
+      if (match) return match[1];
+    } catch {
+      // Invalid URL
+    }
+    return null;
+  };
+
+  const handleDetectCluster = () => {
+    if (!consoleUrlInput) return;
+    const detected = parseClusterFromUrl(consoleUrlInput);
+    if (detected) {
+      setDetectedCluster(detected);
+      if (detected !== ttnCluster) {
+        debug.ttnPreflight('TTN_CLUSTER_MISMATCH_DETECTED', {
+          configured: ttnCluster,
+          detected,
+          console_url: consoleUrlInput.slice(0, 50),
+        });
+      }
+    } else {
+      toast({
+        title: 'Could not detect cluster',
+        description: 'Paste a valid TTN Console URL like https://nam1.cloud.thethings.network/...',
+        variant: 'destructive',
+      });
+    }
+    setShowClusterDetect(false);
+    setConsoleUrlInput('');
+  };
+
+  const handleSwitchCluster = (newCluster: string) => {
+    setTtnCluster(newCluster);
+    setDetectedCluster(null);
+    toast({
+      title: 'Cluster Updated',
+      description: `Switched to ${newCluster}. Don't forget to save settings.`,
+    });
+  };
+
+  const clusterMismatch = detectedCluster && detectedCluster !== ttnCluster;
 
   // Handle wizard completion
   const handleWizardComplete = async (wizardConfig: WizardConfig) => {
@@ -874,12 +928,62 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
           {ttnEnabled && (
             <>
+              {/* Cluster Mismatch Warning */}
+              {clusterMismatch && (
+                <Alert variant="destructive">
+                  <AlertCircle className="h-4 w-4" />
+                  <AlertTitle>Cluster Mismatch Detected</AlertTitle>
+                  <AlertDescription className="space-y-2">
+                    <p>
+                      Your TTN Console is on <code className="bg-background px-1 rounded">{detectedCluster}</code> but 
+                      Emulator is set to <code className="bg-background px-1 rounded">{ttnCluster}</code>.
+                      Uplinks will be dropped with "Entity not found".
+                    </p>
+                    <div className="flex items-center gap-2 mt-2">
+                      <Badge variant="outline">{ttnCluster}</Badge>
+                      <ArrowRightLeft className="h-4 w-4" />
+                      <Badge variant="secondary">{detectedCluster}</Badge>
+                    </div>
+                    <Button 
+                      size="sm" 
+                      variant="secondary"
+                      className="mt-2"
+                      onClick={() => handleSwitchCluster(detectedCluster)}
+                    >
+                      Switch to {detectedCluster}
+                    </Button>
+                  </AlertDescription>
+                </Alert>
+              )}
+
+              {/* Active TTN Host Display */}
+              <div className="flex items-center justify-between p-3 bg-muted/50 rounded-lg border">
+                <div className="flex items-center gap-2">
+                  <Globe className="h-4 w-4 text-muted-foreground" />
+                  <span className="text-sm text-muted-foreground">Active TTN Host</span>
+                </div>
+                <code className="text-sm font-mono">{ttnCluster}.cloud.thethings.network</code>
+              </div>
+
               <div className="grid gap-4 sm:grid-cols-2">
                 <div className="space-y-2">
-                  <Label htmlFor="ttnCluster">TTN Cluster</Label>
+                  <div className="flex items-center justify-between">
+                    <Label htmlFor="ttnCluster">TTN Cluster</Label>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => setShowClusterDetect(!showClusterDetect)}
+                    >
+                      Detect from URL
+                    </Button>
+                  </div>
                   <Select
                     value={ttnCluster}
-                    onValueChange={setTtnCluster}
+                    onValueChange={(v) => {
+                      setTtnCluster(v);
+                      setDetectedCluster(null); // Clear mismatch when manually changed
+                    }}
                     disabled={disabled || isLoading}
                   >
                     <SelectTrigger>
@@ -893,9 +997,19 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    Base URL: https://{ttnCluster}.cloud.thethings.network
-                  </p>
+                  {showClusterDetect && (
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="Paste TTN Console URL..."
+                        value={consoleUrlInput}
+                        onChange={(e) => setConsoleUrlInput(e.target.value)}
+                        className="text-xs"
+                      />
+                      <Button size="sm" onClick={handleDetectCluster}>
+                        Detect
+                      </Button>
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-2">

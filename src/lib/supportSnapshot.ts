@@ -301,6 +301,8 @@ export interface SupportSnapshot {
     last_n_tests: TTNTestEvent[];
     api_key_present: boolean;
     api_key_last4?: string;
+    configured_cluster?: string;
+    last_preflight_host?: string;
   };
   
   logs: {

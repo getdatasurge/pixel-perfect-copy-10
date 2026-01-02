@@ -6,6 +6,7 @@ export type DebugCategory =
   | 'network'      // HTTP requests, edge function calls
   | 'org-sync'     // org-state-api pulls, state replacement
   | 'ttn'          // TTN config, connection tests
+  | 'ttn-preflight' // TTN preflight checks
   | 'provisioning' // Device/gateway provisioning
   | 'error';       // Errors and exceptions
 
@@ -164,6 +165,7 @@ export const debug = {
   network: (message: string, data?: Record<string, unknown>) => log('network', 'info', message, data),
   sync: (message: string, data?: Record<string, unknown>) => log('org-sync', 'info', message, data),
   ttn: (message: string, data?: Record<string, unknown>) => log('ttn', 'info', message, data),
+  ttnPreflight: (message: string, data?: Record<string, unknown>) => log('ttn-preflight', 'info', message, data),
   provisioning: (message: string, data?: Record<string, unknown>) => log('provisioning', 'info', message, data),
   error: (message: string, data?: Record<string, unknown>) => log('error', 'error', message, data),
   warn: (category: DebugCategory, message: string, data?: Record<string, unknown>) => log(category, 'warn', message, data),
