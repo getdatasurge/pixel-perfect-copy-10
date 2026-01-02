@@ -9,14 +9,14 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft
+  Globe, ArrowRightLeft, HardDrive, Clock
 } from 'lucide-react';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
 import { debug } from '@/lib/debugLogger';
-import { setCanonicalConfig, getCanonicalConfig, markLocalDirty } from '@/lib/ttnConfigStore';
+import { setCanonicalConfig, getCanonicalConfig, markLocalDirty, subscribeToConfigChanges, getConfigSummary } from '@/lib/ttnConfigStore';
 import {
   Select,
   SelectContent,
@@ -25,6 +25,102 @@ import {
   SelectValue,
 } from '@/components/ui/select';
 import TTNSetupWizard, { WizardConfig } from './TTNSetupWizard';
+
+// TTN Config Source Badge Component
+interface ConfigSourceBadgeProps {
+  source: string;
+  localDirty: boolean;
+  updatedAt: string | null;
+  apiKeyLast4: string | null;
+}
+
+function TTNConfigSourceBadge({ source, localDirty, updatedAt, apiKeyLast4 }: ConfigSourceBadgeProps) {
+  // Format relative time
+  const formatRelativeTime = (timestamp: string | null): string => {
+    if (!timestamp) return '';
+    const date = new Date(timestamp);
+    const now = new Date();
+    const diffMs = now.getTime() - date.getTime();
+    const diffMins = Math.floor(diffMs / 60000);
+    
+    if (diffMins < 1) return 'just now';
+    if (diffMins < 60) return `${diffMins}m ago`;
+    const diffHours = Math.floor(diffMins / 60);
+    if (diffHours < 24) return `${diffHours}h ago`;
+    const diffDays = Math.floor(diffHours / 24);
+    return `${diffDays}d ago`;
+  };
+
+  // Derive badge display based on source and dirty state
+  const getBadgeConfig = () => {
+    if (localDirty) {
+      return {
+        label: 'Local (pending)',
+        variant: 'secondary' as const,
+        icon: Clock,
+        tooltip: 'Recently saved locally, not yet confirmed synced to FrostGuard',
+        className: 'bg-amber-500/15 text-amber-700 border-amber-500/30 hover:bg-amber-500/20',
+      };
+    }
+    
+    if (source.startsWith('LOCAL') || source === 'LOCAL_CACHE') {
+      return {
+        label: 'Local',
+        variant: 'secondary' as const,
+        icon: HardDrive,
+        tooltip: 'Using locally saved configuration',
+        className: 'bg-blue-500/15 text-blue-700 border-blue-500/30 hover:bg-blue-500/20',
+      };
+    }
+    
+    if (source.startsWith('FROSTGUARD') || source === 'FROSTGUARD_CANONICAL') {
+      return {
+        label: 'Synced',
+        variant: 'default' as const,
+        icon: Cloud,
+        tooltip: 'Synced from FrostGuard',
+        className: 'bg-green-500/15 text-green-700 border-green-500/30 hover:bg-green-500/20',
+      };
+    }
+    
+    return {
+      label: 'Not Set',
+      variant: 'outline' as const,
+      icon: AlertCircle,
+      tooltip: 'No TTN configuration found',
+      className: 'text-muted-foreground',
+    };
+  };
+
+  const config = getBadgeConfig();
+  const IconComponent = config.icon;
+  const timeString = formatRelativeTime(updatedAt);
+
+  return (
+    <TooltipProvider>
+      <Tooltip>
+        <TooltipTrigger asChild>
+          <Badge 
+            variant={config.variant} 
+            className={`gap-1.5 text-xs font-medium cursor-help ${config.className}`}
+          >
+            <IconComponent className="h-3 w-3" />
+            {config.label}
+            {timeString && <span className="opacity-70">• {timeString}</span>}
+          </Badge>
+        </TooltipTrigger>
+        <TooltipContent side="bottom" className="max-w-xs">
+          <p>{config.tooltip}</p>
+          {apiKeyLast4 && (
+            <p className="text-xs text-muted-foreground mt-1">
+              Key: ****{apiKeyLast4}
+            </p>
+          )}
+        </TooltipContent>
+      </Tooltip>
+    </TooltipProvider>
+  );
+}
 
 interface WebhookSettingsProps {
   config: WebhookConfig;
@@ -124,6 +220,17 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [detectedCluster, setDetectedCluster] = useState<string | null>(null);
   const [consoleUrlInput, setConsoleUrlInput] = useState('');
   const [showClusterDetect, setShowClusterDetect] = useState(false);
+  
+  // Config source tracking for badge display
+  const [configSource, setConfigSource] = useState(() => getConfigSummary());
+  
+  // Subscribe to config changes for badge updates
+  useEffect(() => {
+    const unsubscribe = subscribeToConfigChanges(() => {
+      setConfigSource(getConfigSummary());
+    });
+    return unsubscribe;
+  }, []);
 
   // Parse cluster from TTN Console URL
   const parseClusterFromUrl = (url: string): string | null => {
@@ -1061,6 +1168,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           <h3 className="text-lg font-medium flex items-center gap-2">
             <Webhook className="h-5 w-5" />
             TTN Integration
+            <TTNConfigSourceBadge 
+              source={configSource.source}
+              localDirty={configSource.localDirty}
+              updatedAt={configSource.updatedAt || configSource.localSavedAt}
+              apiKeyLast4={configSource.apiKeyLast4}
+            />
           </h3>
           <p className="text-sm text-muted-foreground">
             Route emulator data through The Things Network for production-ready testing
