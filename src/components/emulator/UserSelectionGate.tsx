@@ -262,6 +262,23 @@ export default function UserSelectionGate({
       console.log('[UserSelectionGate] Sync complete:', summary);
 
       // Build the fully hydrated config
+      const pulledUnits = (orgState.units || []).map(u => ({
+        id: u.id,
+        name: u.name,
+        site_id: u.site_id,
+        description: u.description,
+        location: u.location,
+        created_at: u.created_at,
+      }));
+
+      log('context', 'info', 'UNIT_LIST_LOADED', {
+        count: pulledUnits.length,
+        by_site: sites.reduce((acc, s) => {
+          acc[s.site_id] = pulledUnits.filter(u => u.site_id === s.site_id).length;
+          return acc;
+        }, {} as Record<string, number>),
+      });
+
       const hydratedConfig: WebhookConfig = {
         ...config,
         testOrgId: user.organization_id,
@@ -270,6 +287,7 @@ export default function UserSelectionGate({
         selectedUserId: user.id,
         selectedUserDisplayName: user.full_name || user.email || user.id,
         selectedUserSites: sites,
+        availableUnits: pulledUnits,
         ttnConfig,
         contextSetAt: syncedAt,
         isHydrated: true,

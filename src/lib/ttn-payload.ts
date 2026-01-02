@@ -90,6 +90,22 @@ export interface WebhookConfig {
   testOrgId?: string;
   testSiteId?: string;
   testUnitId?: string;
+  // Unit selection for device assignment
+  selectedUnit?: {
+    id: string;
+    name: string;
+    site_id: string;
+    description?: string;
+    location?: string;
+  };
+  availableUnits?: Array<{
+    id: string;
+    name: string;
+    site_id: string;
+    description?: string;
+    location?: string;
+    created_at: string;
+  }>;
   // User tracking fields
   selectedUserId?: string | null;
   selectedUserDisplayName?: string | null;

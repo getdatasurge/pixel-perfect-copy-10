@@ -41,6 +41,16 @@ export interface OrgStateTTN {
   webhook_secret_last4?: string;
 }
 
+// Unit represents a storage unit, freezer, or monitored location within a site
+export interface OrgStateUnit {
+  id: string;
+  name: string;
+  site_id: string;
+  description?: string;
+  location?: string;
+  created_at: string;
+}
+
 export interface OrgStateResponse {
   ok: boolean;
   sync_version: number;
@@ -52,6 +62,7 @@ export interface OrgStateResponse {
   sites: OrgStateSite[];
   sensors: OrgStateSensor[];
   gateways: OrgStateGateway[];
+  units: OrgStateUnit[];
   ttn?: OrgStateTTN;
   error?: string;
 }
@@ -63,6 +74,7 @@ export interface OrgState {
   sites: OrgStateSite[];
   sensors: OrgStateSensor[];
   gateways: OrgStateGateway[];
+  units: OrgStateUnit[];
   ttn?: OrgStateTTN;
 }
 
@@ -610,4 +622,127 @@ export function trackEntityChanges(
   }
 
   return { added, removed, removedIds };
+}
+
+// ============ Unit Creation ============
+
+export interface CreateUnitResult {
+  ok: boolean;
+  unit?: OrgStateUnit;
+  error?: string;
+  errorDetails?: FrostGuardErrorDetails;
+}
+
+/**
+ * Creates a new unit in FrostGuard via the create-unit edge function.
+ * 
+ * @param orgId - The organization ID
+ * @param siteId - The site ID where the unit belongs
+ * @param name - The unit name (required)
+ * @param description - Optional description
+ * @param location - Optional location info
+ * @returns CreateUnitResult with the created unit or error
+ */
+export async function createUnitInFrostGuard(
+  orgId: string,
+  siteId: string,
+  name: string,
+  description?: string,
+  location?: string
+): Promise<CreateUnitResult> {
+  const startTime = performance.now();
+  
+  debug.sync('Creating unit in FrostGuard', {
+    org_id: orgId,
+    site_id: siteId,
+    name,
+  });
+
+  log('network', 'info', 'CREATE_UNIT_START', {
+    org_id: orgId,
+    site_id: siteId,
+    name,
+    endpoint: 'create-unit',
+  });
+
+  try {
+    const { data, error } = await supabase.functions.invoke('create-unit', {
+      body: {
+        org_id: orgId,
+        site_id: siteId,
+        name,
+        description,
+        location,
+      },
+    });
+
+    if (error) {
+      const errorDetails: FrostGuardErrorDetails = {
+        message: error.message || 'Edge function error',
+        hint: 'Check that the create-unit edge function is deployed and FrostGuard endpoint exists',
+      };
+      
+      log('network', 'error', 'CREATE_UNIT_ERROR', {
+        error: error.message,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      
+      return { ok: false, error: error.message, errorDetails };
+    }
+
+    if (!data?.ok) {
+      const errorDetails: FrostGuardErrorDetails = {
+        status_code: data?.status_code,
+        error_code: data?.error_code,
+        request_id: data?.request_id,
+        message: data?.error || 'FrostGuard create-unit failed',
+        hint: data?.hint || 'Check FrostGuard logs for details',
+      };
+      
+      log('network', 'error', 'CREATE_UNIT_ERROR', {
+        error: data?.error,
+        error_code: data?.error_code,
+        request_id: data?.request_id,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+      
+      return { ok: false, error: data?.error, errorDetails };
+    }
+
+    const unit: OrgStateUnit = {
+      id: data.unit.id,
+      name: data.unit.name,
+      site_id: data.unit.site_id,
+      description: data.unit.description,
+      location: data.unit.location,
+      created_at: data.unit.created_at,
+    };
+
+    log('network', 'info', 'CREATE_UNIT_SUCCESS', {
+      unit_id: unit.id,
+      name: unit.name,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    debug.sync('Unit created successfully', { unit_id: unit.id, name: unit.name });
+
+    return { ok: true, unit };
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    
+    log('network', 'error', 'CREATE_UNIT_ERROR', {
+      error: message,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+    
+    return {
+      ok: false,
+      error: message,
+      errorDetails: {
+        message,
+        hint: 'Unexpected error during unit creation',
+      },
+    };
+  }
 }
