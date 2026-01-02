@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo } from 'react';
+import { useState, useEffect, useMemo, useCallback } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
@@ -12,6 +12,10 @@ import { UserSite, TTNConnection } from './UserSearchDialog';
 import SyncReadinessPanel from './SyncReadinessPanel';
 import { validateSyncBundle, ValidationResult } from '@/lib/sync-validation';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
+import UnitSelect from './UnitSelect';
+import CreateUnitModal from './CreateUnitModal';
+import { OrgStateUnit, createUnitInFrostGuard, fetchOrgState } from '@/lib/frostguardOrgSync';
+import { log } from '@/lib/debugLogger';
 
 // Context debug logger - always logs to help diagnose silent failures
 const contextDebug = {
@@ -30,7 +34,10 @@ interface ContextDiagnostics {
   selectedUserId: string | null;
   selectedOrgId: string | null;
   selectedSiteId: string | null;
+  selectedUnitId: string | null;
+  selectedUnitName: string | null;
   userSitesCount: number;
+  unitsCount: number;
   userSitesRaw: UserSite[];
   ttnEnabled: boolean;
   ttnCluster: string | null;
@@ -54,6 +61,7 @@ interface TestContextConfigProps {
   disabled?: boolean;
   gateways?: GatewayConfig[];
   devices?: LoRaWANDevice[];
+  onRefreshOrgState?: () => Promise<void>;
 }
 
 export default function TestContextConfig({ 
@@ -62,6 +70,7 @@ export default function TestContextConfig({
   disabled,
   gateways = [],
   devices = [],
+  onRefreshOrgState,
 }: TestContextConfigProps) {
   // Site dropdown options from selected user
   const [selectedUserSites, setSelectedUserSites] = useState<UserSite[]>([]);
@@ -70,18 +79,34 @@ export default function TestContextConfig({
   // TTN data from user sync payload
   const [selectedUserTTN, setSelectedUserTTN] = useState<TTNConnection | null>(null);
   
+  // Unit creation modal
+  const [showCreateUnitModal, setShowCreateUnitModal] = useState(false);
+  const [isRefreshingAfterCreate, setIsRefreshingAfterCreate] = useState(false);
+  
   // Diagnostics state for debugging
   const [diagnostics, setDiagnostics] = useState<ContextDiagnostics>({
     selectedUserId: null,
     selectedOrgId: null,
     selectedSiteId: null,
+    selectedUnitId: null,
+    selectedUnitName: null,
     userSitesCount: 0,
+    unitsCount: 0,
     userSitesRaw: [],
     ttnEnabled: false,
     ttnCluster: null,
     lastUserSelectAt: null,
   });
   const [isDiagnosticsOpen, setIsDiagnosticsOpen] = useState(false);
+
+  // Get available units from config (filtered by site)
+  const availableUnits: OrgStateUnit[] = (config.availableUnits || []).map(u => ({
+    ...u,
+    created_at: u.created_at || new Date().toISOString(),
+  }));
+  
+  // Get the currently selected site name for the modal
+  const selectedSite = selectedUserSites.find(s => s.site_id === config.testSiteId);
 
   // Preflight validation
   const validationResult: ValidationResult = useMemo(() => {
@@ -138,7 +163,10 @@ export default function TestContextConfig({
         selectedUserId: config.selectedUserId || null,
         selectedOrgId: config.testOrgId || null,
         selectedSiteId: config.testSiteId || null,
+        selectedUnitId: config.testUnitId || null,
+        selectedUnitName: config.selectedUnit?.name || null,
         userSitesCount: sites.length,
+        unitsCount: config.availableUnits?.length || 0,
         userSitesRaw: sites,
         ttnEnabled: config.ttnConfig?.enabled || false,
         ttnCluster: config.ttnConfig?.cluster || null,
@@ -148,7 +176,66 @@ export default function TestContextConfig({
       setSelectedUserSites([]);
       setSelectedUserDefaultSite(null);
     }
-  }, [config.selectedUserSites, config.selectedUserId, config.testOrgId, config.testSiteId, config.ttnConfig, config.contextSetAt]);
+  }, [config.selectedUserSites, config.selectedUserId, config.testOrgId, config.testSiteId, config.testUnitId, config.selectedUnit, config.availableUnits, config.ttnConfig, config.contextSetAt]);
+
+  // Handle unit selection
+  const handleUnitSelect = useCallback((unitId: string | undefined, unit?: OrgStateUnit) => {
+    update({
+      testUnitId: unitId,
+      selectedUnit: unit ? {
+        id: unit.id,
+        name: unit.name,
+        site_id: unit.site_id,
+        description: unit.description,
+        location: unit.location,
+      } : undefined,
+    });
+  }, []);
+
+  // Handle unit creation
+  const handleCreateUnit = useCallback(async (data: { name: string; description?: string; location?: string }) => {
+    if (!config.testOrgId || !config.testSiteId) {
+      throw new Error('Organization and Site must be selected');
+    }
+
+    const result = await createUnitInFrostGuard(
+      config.testOrgId,
+      config.testSiteId,
+      data.name,
+      data.description,
+      data.location
+    );
+
+    if (!result.ok || !result.unit) {
+      throw new Error(result.error || 'Failed to create unit');
+    }
+
+    return result.unit;
+  }, [config.testOrgId, config.testSiteId]);
+
+  // Handle successful unit creation - refresh org state and auto-select
+  const handleUnitCreated = useCallback(async (unit: OrgStateUnit) => {
+    log('context', 'info', 'UNIT_CREATED_REFRESHING', { unit_id: unit.id, name: unit.name });
+    
+    toast({
+      title: 'Unit Created',
+      description: `"${unit.name}" has been created successfully`,
+    });
+
+    // Trigger org state refresh if callback provided
+    if (onRefreshOrgState) {
+      setIsRefreshingAfterCreate(true);
+      try {
+        await onRefreshOrgState();
+        log('context', 'info', 'ORG_STATE_REFRESH_AFTER_UNIT_CREATE', { unit_id: unit.id });
+      } finally {
+        setIsRefreshingAfterCreate(false);
+      }
+    }
+
+    // Auto-select the new unit
+    handleUnitSelect(unit.id, unit);
+  }, [onRefreshOrgState, handleUnitSelect]);
 
   const update = (updates: Partial<WebhookConfig>) => {
     onConfigChange({ ...config, ...updates });
@@ -352,30 +439,47 @@ export default function TestContextConfig({
           </div>
 
           <div className="space-y-2">
-            <Label htmlFor="testUnitId" className="flex items-center gap-1">
+            <Label className="flex items-center gap-1">
               <Box className="h-3 w-3" />
-              Unit ID Override
+              Unit
             </Label>
-            <Input
-              id="testUnitId"
-              placeholder="freezer-01"
-              value={config.testUnitId || ''}
-              onChange={e => update({ testUnitId: e.target.value || undefined })}
-              disabled={disabled}
+            <UnitSelect
+              units={availableUnits}
+              siteId={config.testSiteId}
+              selectedUnitId={config.testUnitId}
+              onSelect={handleUnitSelect}
+              onCreate={() => setShowCreateUnitModal(true)}
+              disabled={disabled || !config.testSiteId || isRefreshingAfterCreate}
             />
             <p className="text-xs text-muted-foreground">
-              Overrides device name
+              {availableUnits.filter(u => u.site_id === config.testSiteId).length} unit(s) in site
             </p>
           </div>
         </div>
 
-        {(config.testOrgId || config.testSiteId) && (
+        {/* Create Unit Modal */}
+        {config.testOrgId && config.testSiteId && (
+          <CreateUnitModal
+            open={showCreateUnitModal}
+            onOpenChange={setShowCreateUnitModal}
+            orgId={config.testOrgId}
+            siteId={config.testSiteId}
+            siteName={selectedSite?.site_name || undefined}
+            existingUnits={availableUnits}
+            onSuccess={handleUnitCreated}
+            onCreateUnit={handleCreateUnit}
+          />
+        )}
+
+        {(config.testOrgId || config.testSiteId || config.testUnitId) && (
           <div className="bg-primary/5 border border-primary/20 rounded-lg p-3">
             <p className="text-xs text-muted-foreground">
               <span className="font-medium text-foreground">Active Context:</span>{' '}
               {config.testOrgId && <span className="font-mono">org={config.testOrgId}</span>}
               {config.testOrgId && config.testSiteId && ' • '}
               {config.testSiteId && <span className="font-mono">site={config.testSiteId}</span>}
+              {config.testSiteId && config.selectedUnit && ' • '}
+              {config.selectedUnit && <span className="font-mono">unit={config.selectedUnit.name}</span>}
             </p>
           </div>
         )}

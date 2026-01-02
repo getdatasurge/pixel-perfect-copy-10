@@ -41,3 +41,6 @@ verify_jwt = false
 
 [functions.ensure-sensor-otaa-keys]
 verify_jwt = false
+
+[functions.create-unit]
+verify_jwt = false
