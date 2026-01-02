@@ -14,6 +14,54 @@ const corsHeaders = {
 const FROSTGUARD_BASE_URL = 'https://mfwyiifehsvwnjwqoxht.supabase.co';
 const PROJECT1_ENDPOINT = 'https://mfwyiifehsvwnjwqoxht.supabase.co/functions/v1/emulator-sync';
 
+// ─── Device Templates (single source of truth) ─────────────────────────────────
+
+interface DeviceTemplate {
+  sensor_kind: 'temp' | 'door' | 'combo';
+  manufacturer: string;
+  model: string;
+  firmware_version: string;
+  description: string;
+}
+
+const DEVICE_TEMPLATES: Record<string, DeviceTemplate> = {
+  temperature: {
+    sensor_kind: 'temp',
+    manufacturer: 'Milesight',
+    model: 'EM300-TH',
+    firmware_version: 'v1.2',
+    description: 'Temperature and humidity sensor',
+  },
+  door: {
+    sensor_kind: 'door',
+    manufacturer: 'Milesight',
+    model: 'WS301',
+    firmware_version: 'v1.1',
+    description: 'Magnetic contact door sensor',
+  },
+  combo: {
+    sensor_kind: 'combo',
+    manufacturer: 'Milesight',
+    model: 'EM300-MCS',
+    firmware_version: 'v1.0',
+    description: 'Combined temperature and door sensor',
+  },
+};
+
+function getDeviceTemplate(deviceType: string): DeviceTemplate {
+  return DEVICE_TEMPLATES[deviceType] || DEVICE_TEMPLATES.temperature;
+}
+
+function normalizeEui(eui: string | undefined | null): string | null {
+  if (!eui) return null;
+  return eui.toUpperCase().replace(/[:\s-]/g, '');
+}
+
+function normalizeAppKey(appKey: string | undefined | null): string | null {
+  if (!appKey) return null;
+  return appKey.toUpperCase().replace(/[:\s-]/g, '');
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 interface ValidationError {
@@ -33,6 +81,8 @@ interface SyncBundle {
     site_id?: string;
     unit_id?: string;
     selected_user_id?: string;
+    ttn_application_id?: string;
+    ttn_region?: string;
   };
   entities: {
     gateways: Array<{
@@ -390,39 +440,55 @@ Deno.serve(async (req) => {
   // - org_id (not organization_id)
   // - sensor_kind (not sensor_type)
   // - unit_id is REQUIRED in FrostGuard schema
+  // - Include metadata from device templates
   for (const device of entities.devices) {
     try {
-      // Map device type to FrostGuard sensor_kind enum
-      const sensorKind = device.type === 'temperature' ? 'temp' : 
-                         device.type === 'door' ? 'door' : 'temp';
+      // Get device template for metadata (single source of truth)
+      const template = getDeviceTemplate(device.type);
       
-      // unit_id is required - use unit_id_override from context if available
+      // Normalize DevEUI to uppercase
+      const normalizedDevEui = normalizeEui(device.dev_eui) || device.dev_eui;
+      const normalizedJoinEui = normalizeEui(device.join_eui);
+      const normalizedAppKey = normalizeAppKey(device.app_key);
+      
+      // unit_id is required - use unit_id from context if available
       // Otherwise generate a placeholder UUID (FrostGuard requires this field)
       const unitId = context.unit_id || crypto.randomUUID();
       
+      const sensorRecord = {
+        id: device.id,
+        name: device.name,
+        dev_eui: normalizedDevEui,
+        join_eui: normalizedJoinEui,
+        app_key: normalizedAppKey,
+        sensor_kind: template.sensor_kind,
+        manufacturer: template.manufacturer,
+        model: template.model,
+        firmware_version: template.firmware_version,
+        description: template.description,
+        org_id: context.org_id,
+        site_id: context.site_id || null,
+        unit_id: unitId,
+        status: 'pending',
+        ttn_device_id: `sensor-${normalizedDevEui.toLowerCase()}`,
+        ttn_application_id: context.ttn_application_id || null,
+        ttn_region: context.ttn_region || 'nam1',
+        updated_at: new Date().toISOString(),
+      };
+
+      console.log(`Syncing device ${device.id}: type=${device.type} → sensor_kind=${template.sensor_kind}`);
+      
       const { error } = await supabase.from('lora_sensors').upsert(
-        {
-          id: device.id,
-          name: device.name,
-          dev_eui: device.dev_eui,
-          join_eui: device.join_eui,
-          app_key: device.app_key,
-          sensor_kind: sensorKind,           // Correct column name
-          org_id: context.org_id,            // Correct column name
-          site_id: context.site_id || null,
-          unit_id: unitId,                   // Required field
-          status: 'pending',
-          ttn_device_id: `sensor-${device.dev_eui.toLowerCase().replace(/[:\s-]/g, '')}`,
-          updated_at: new Date().toISOString(),
-        },
-        { onConflict: 'org_id,dev_eui' }     // Stable conflict key
+        sensorRecord,
+        { onConflict: 'org_id,dev_eui' }
       );
 
       if (error) {
         console.error(`Device ${device.id} upsert failed:`, error);
-        console.error(`Device details: dev_eui=${device.dev_eui}, unit_id=${unitId}, error_code=${error.code}`);
+        console.error(`Device details: dev_eui=${normalizedDevEui}, unit_id=${unitId}, sensor_kind=${template.sensor_kind}, error_code=${error.code}`);
         results.devices.failed++;
       } else {
+        console.log(`Device ${device.id} synced successfully: sensor_kind=${template.sensor_kind}`);
         results.devices.updated++;
       }
     } catch (err) {

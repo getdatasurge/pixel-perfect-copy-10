@@ -48,9 +48,13 @@ export type Database = {
         Row: {
           app_key: string | null
           created_at: string | null
+          description: string | null
           dev_eui: string
+          firmware_version: string | null
           id: string
           join_eui: string | null
+          manufacturer: string | null
+          model: string | null
           name: string | null
           org_id: string
           sensor_kind: Database["public"]["Enums"]["sensor_kind"]
@@ -65,9 +69,13 @@ export type Database = {
         Insert: {
           app_key?: string | null
           created_at?: string | null
+          description?: string | null
           dev_eui: string
+          firmware_version?: string | null
           id?: string
           join_eui?: string | null
+          manufacturer?: string | null
+          model?: string | null
           name?: string | null
           org_id: string
           sensor_kind?: Database["public"]["Enums"]["sensor_kind"]
@@ -82,9 +90,13 @@ export type Database = {
         Update: {
           app_key?: string | null
           created_at?: string | null
+          description?: string | null
           dev_eui?: string
+          firmware_version?: string | null
           id?: string
           join_eui?: string | null
+          manufacturer?: string | null
+          model?: string | null
           name?: string | null
           org_id?: string
           sensor_kind?: Database["public"]["Enums"]["sensor_kind"]
