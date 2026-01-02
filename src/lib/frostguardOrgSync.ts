@@ -101,6 +101,13 @@ function getErrorHint(status?: number, code?: string, message?: string): string 
   if (message?.includes('Failed after') || message?.includes('timeout')) {
     return 'Network connection issues. Check your internet connection and try again.';
   }
+  // Handle generic FrostGuard rejection without details
+  if (message === 'FrostGuard returned failure status' || message?.includes('rejected the request for org')) {
+    return 'FrostGuard rejected the request without details. The organization may not exist in FrostGuard, or there may be a permissions issue. Try selecting a different user or contact support.';
+  }
+  if (code === 'UPSTREAM_FAILURE') {
+    return 'FrostGuard processed the request but returned an error. The organization may not be properly configured in FrostGuard.';
+  }
   return 'Try again or export a support snapshot for diagnosis.';
 }
 

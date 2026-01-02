@@ -136,21 +136,35 @@ serve(async (req) => {
         error: data.error,
         error_code: data.error_code,
         request_id: data.request_id,
+        response_keys: Object.keys(data),
       });
-      
+
+      // Build a more descriptive error message when FrostGuard doesn't provide one
+      const hasNoErrorMessage = !data.error && !data.message;
+      const fallbackError = hasNoErrorMessage
+        ? `FrostGuard rejected the request for org ${org_id.slice(0, 8)}... (no error message provided)`
+        : 'FrostGuard returned failure in response body';
+
+      // Build a more helpful hint when the error is vague
+      const fallbackHint = hasNoErrorMessage
+        ? 'The organization may not exist in FrostGuard, or the API key may lack permissions for this org. Try selecting a different user or contact support.'
+        : 'FrostGuard processed the request but returned an error.';
+
       return new Response(
         JSON.stringify({
           ok: false,
           status_code: data.status_code || 200,
-          error: data.error || data.message || 'FrostGuard returned failure in response body',
+          error: data.error || data.message || fallbackError,
           error_code: data.error_code || data.code || 'UPSTREAM_FAILURE',
           request_id: data.request_id || localRequestId,
-          hint: data.hint || 'FrostGuard processed the request but returned an error.',
+          hint: data.hint || fallbackHint,
           details: {
             sync_version: data.sync_version,
             has_sites: Array.isArray(data.sites),
             has_sensors: Array.isArray(data.sensors),
             has_gateways: Array.isArray(data.gateways),
+            org_id_requested: org_id,
+            response_keys: Object.keys(data),
           },
         }),
         { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
