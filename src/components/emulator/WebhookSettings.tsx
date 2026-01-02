@@ -423,86 +423,59 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         frostguard_skipped: pushResult.frostguard_skipped,
       });
 
-      // Update local state from push result
-      if (pushResult.api_key_last4) {
-        setTtnApiKeyPreview(`****${pushResult.api_key_last4}`);
-        setTtnApiKeySet(true);
-      }
-
-      // Step 2: Re-pull org state from FrostGuard to get canonical values (optional, for sync)
-      debug.ttnSync('TTN_PULL_AFTER_SAVE_START', { org_id: orgId });
+      // IMPORTANT: Use the LOCAL save result as canonical truth, NOT FrostGuard
+      // FrostGuard may have stale data since we're doing local-only saves
+      const savedApiKeyLast4 = pushResult.api_key_last4;
+      const savedUpdatedAt = pushResult.updated_at || new Date().toISOString();
       
-      const { fetchOrgState } = await import('@/lib/frostguardOrgSync');
-      const pullResult = await fetchOrgState(orgId);
-
-      if (!pullResult.ok) {
-        debug.ttnSync('TTN_PULL_AFTER_SAVE_FAILED', { 
-          error: pullResult.error,
-          errorDetails: pullResult.errorDetails,
-        });
-        // Still show success for save
-        toast({ 
-          title: 'Settings Saved', 
-          description: pushResult.frostguard_skipped 
-            ? 'Saved locally (FrostGuard sync skipped)' 
-            : 'Saved but could not refresh from FrostGuard.',
-        });
-      } else {
-        debug.ttnSync('TTN_PULL_AFTER_SAVE_SUCCESS', {
-          sync_version: pullResult.data?.sync_version,
-          ttn_enabled: pullResult.data?.ttn?.enabled,
-          api_key_last4: pullResult.data?.ttn?.api_key_last4 
-            ? `****${pullResult.data.ttn.api_key_last4}` 
-            : null,
-        });
-
-        // Step 3: Update local state from FrostGuard's canonical response (if available)
-        if (pullResult.data?.ttn) {
-          const fgTtn = pullResult.data.ttn;
-          setTtnApiKeyPreview(fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null);
-          setTtnApiKeySet(!!fgTtn.api_key_last4);
-          setTtnWebhookSecretSet(!!fgTtn.webhook_secret_last4);
-          
-          // Update parent config with canonical values including updated_at
-          const updatedAt = new Date().toISOString();
-          updateTTN({ 
-            enabled: fgTtn.enabled, 
-            applicationId: fgTtn.application_id, 
-            cluster: fgTtn.cluster,
-            api_key_last4: fgTtn.api_key_last4,
-            updated_at: updatedAt,
-          });
-
-          // Update centralized TTN config store with canonical values
-          setCanonicalConfig({
-            enabled: fgTtn.enabled,
-            cluster: fgTtn.cluster,
-            applicationId: fgTtn.application_id,
-            apiKeyLast4: fgTtn.api_key_last4 || null,
-            webhookSecretLast4: fgTtn.webhook_secret_last4 || null,
-            updatedAt,
-            source: 'FROSTGUARD_CANONICAL',
-            orgId,
-            userId: config.selectedUserId || null,
-          });
-
-          debug.ttnSync('TTN_CONFIG_SOURCE', {
-            source: 'FROSTGUARD_CANONICAL',
-            api_key_last4: fgTtn.api_key_last4 ? `****${fgTtn.api_key_last4}` : null,
-            cluster: fgTtn.cluster,
-            application_id: fgTtn.application_id,
-          });
-        }
-
-        toast({ 
-          title: 'Settings Saved', 
-          description: pushResult.api_key_last4 
-            ? `Saved (****${pushResult.api_key_last4})`
-            : 'TTN configuration saved',
+      // Update local state immediately from push result
+      if (savedApiKeyLast4) {
+        setTtnApiKeyPreview(`****${savedApiKeyLast4}`);
+        setTtnApiKeySet(true);
+        debug.ttnSync('TTN_KEY_UPDATED_FROM_SAVE', {
+          api_key_last4: `****${savedApiKeyLast4}`,
+          source: 'LOCAL_SAVE_RESULT',
         });
       }
 
-      // Step 4: Clear sensitive input fields after successful save
+      // Update parent config with saved values (NOT from FrostGuard pull)
+      updateTTN({ 
+        enabled: ttnEnabled, 
+        applicationId: ttnApplicationId, 
+        cluster: ttnCluster,
+        api_key_last4: savedApiKeyLast4 || undefined,
+        updated_at: savedUpdatedAt,
+      });
+
+      // Update centralized TTN config store with LOCAL saved values
+      setCanonicalConfig({
+        enabled: ttnEnabled,
+        cluster: ttnCluster,
+        applicationId: ttnApplicationId,
+        apiKeyLast4: savedApiKeyLast4 || null,
+        webhookSecretLast4: null, // We don't track webhook secret last4 from local save
+        updatedAt: savedUpdatedAt,
+        source: 'LOCAL_CACHE', // Mark as local since FrostGuard sync is skipped
+        orgId,
+        userId: config.selectedUserId || null,
+      });
+
+      debug.ttnSync('TTN_CONFIG_SOURCE', {
+        source: 'LOCAL_SAVE_RESULT',
+        api_key_last4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
+        cluster: ttnCluster,
+        application_id: ttnApplicationId,
+      });
+
+      // Show success toast with the NEW key
+      toast({ 
+        title: 'Settings Saved', 
+        description: savedApiKeyLast4 
+          ? `Saved (****${savedApiKeyLast4})`
+          : 'TTN configuration saved',
+      });
+
+      // Clear sensitive input fields after successful save
       setTtnApiKey('');
       setTtnWebhookSecret('');
       
