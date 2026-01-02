@@ -293,6 +293,7 @@ export function getConfigSummary(): {
   configVersion: number;
   localDirty: boolean;
   localSavedAt: string | null;
+  updatedAt: string | null;
 } {
   return {
     source: canonicalConfig.source,
@@ -305,5 +306,6 @@ export function getConfigSummary(): {
     configVersion,
     localDirty: canonicalConfig.localDirty,
     localSavedAt: canonicalConfig.localSavedAt,
+    updatedAt: canonicalConfig.updatedAt,
   };
 }
