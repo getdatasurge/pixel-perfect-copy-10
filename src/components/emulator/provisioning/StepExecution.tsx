@@ -7,6 +7,8 @@ import { Loader2, CheckCircle2, XCircle, AlertCircle, Play, RefreshCw } from 'lu
 import { supabase } from '@/integrations/supabase/client';
 import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
 import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
+import { debug, log } from '@/lib/debugLogger';
+import { logProvisioningEvent } from '@/lib/supportSnapshot';
 
 interface StepExecutionProps {
   devices: LoRaWANDevice[];
@@ -157,13 +159,39 @@ export default function StepExecution({
       total: gateways.length,
     };
 
+    // Log provisioning start to debug panel
+    debug.provisioning('Starting gateway provisioning', {
+      gateway_count: gateways.length,
+      org_id: orgId,
+      cluster: ttnConfig?.cluster,
+      application_id: ttnConfig?.applicationId,
+    });
+
+    const allErrors: string[] = [];
+
     // Process gateways one by one for granular progress
     for (let i = 0; i < gateways.length; i++) {
       const gateway = gateways[i];
       setCurrentItem(gateway.name);
       setProgress(Math.round((i / gateways.length) * 100));
 
+      let ttnGatewayId: string;
       try {
+        ttnGatewayId = generateTTNGatewayId(gateway.eui);
+      } catch {
+        ttnGatewayId = 'invalid';
+      }
+
+      // Log individual gateway attempt
+      debug.provisioning(`Provisioning gateway: ${gateway.name}`, {
+        eui: gateway.eui,
+        ttn_gateway_id: ttnGatewayId,
+        cluster: ttnConfig?.cluster,
+      });
+
+      try {
+        const startTime = performance.now();
+        
         // Call batch endpoint with single gateway for better error handling
         const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
           body: {
@@ -176,7 +204,16 @@ export default function StepExecution({
           },
         });
 
-        if (error) throw error;
+        const durationMs = Math.round(performance.now() - startTime);
+
+        if (error) {
+          log('provisioning', 'error', `Gateway ${gateway.name} failed: ${error.message}`, {
+            eui: gateway.eui,
+            error: error.message,
+            duration_ms: durationMs,
+          });
+          throw error;
+        }
 
         if (data?.results?.[0]) {
           const resultItem = data.results[0];
@@ -192,25 +229,43 @@ export default function StepExecution({
           };
           setResults(prev => [...prev, result]);
 
+          // Log result to debug panel
+          log('provisioning', resultItem.status === 'failed' ? 'error' : 'info',
+            `Gateway ${gateway.name}: ${resultItem.status}`, {
+              eui: gateway.eui,
+              ttn_gateway_id: resultItem.ttn_gateway_id,
+              status: resultItem.status,
+              error: resultItem.error,
+              attempts: resultItem.attempts,
+              duration_ms: durationMs,
+              request_id: data.requestId,
+            }
+          );
+
           if (resultItem.status === 'created') summary.created++;
           else if (resultItem.status === 'already_exists') summary.already_exists++;
-          else summary.failed++;
+          else {
+            summary.failed++;
+            if (resultItem.error) allErrors.push(resultItem.error);
+          }
         } else {
           throw new Error('Unexpected response format');
         }
       } catch (err: any) {
-        let ttnGatewayId: string;
-        try {
-          ttnGatewayId = generateTTNGatewayId(gateway.eui);
-        } catch {
-          ttnGatewayId = 'invalid';
-        }
+        const errorMsg = err.message || 'Network error';
+        allErrors.push(errorMsg);
+        
+        log('provisioning', 'error', `Gateway ${gateway.name} exception: ${errorMsg}`, {
+          eui: gateway.eui,
+          error: errorMsg,
+        });
+
         const result: ProvisionResult = {
           eui: gateway.eui,
           name: gateway.name,
           ttn_gateway_id: ttnGatewayId,
           status: 'failed',
-          error: err.message || 'Network error',
+          error: errorMsg,
           error_code: 'NETWORK_ERROR',
           retryable: true,
         };
@@ -228,6 +283,24 @@ export default function StepExecution({
     setCurrentItem(null);
     setIsExecuting(false);
     setSummary(summary);
+
+    // Log final summary to debug panel and history
+    debug.provisioning('Gateway provisioning complete', {
+      created: summary.created,
+      already_exists: summary.already_exists,
+      failed: summary.failed,
+      total: summary.total,
+    });
+
+    logProvisioningEvent({
+      timestamp: new Date().toISOString(),
+      entity_type: 'gateway',
+      attempted: summary.total,
+      created: summary.created,
+      exists: summary.already_exists,
+      failed: summary.failed,
+      errors: allErrors,
+    });
   };
 
   const retryGateway = async (failedResult: ProvisionResult) => {

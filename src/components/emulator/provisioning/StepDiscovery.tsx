@@ -2,8 +2,10 @@ import { useState, useEffect } from 'react';
 import { Button } from '@/components/ui/button';
 import { Checkbox } from '@/components/ui/checkbox';
 import { Badge } from '@/components/ui/badge';
+import { Switch } from '@/components/ui/switch';
+import { Label } from '@/components/ui/label';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
-import { Loader2, RefreshCw, CheckCircle2, AlertCircle, Clock } from 'lucide-react';
+import { Loader2, RefreshCw, CheckCircle2, AlertCircle, Clock, RotateCcw } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
 import { ProvisioningMode } from '../TTNProvisioningWizard';
@@ -17,6 +19,8 @@ interface StepDiscoveryProps {
   selectedDevices: string[];
   setSelectedDevices: React.Dispatch<React.SetStateAction<string[]>>;
   mode?: ProvisioningMode;
+  reprovisionMode?: boolean;
+  setReprovisionMode?: React.Dispatch<React.SetStateAction<boolean>>;
 }
 
 export default function StepDiscovery({
@@ -28,6 +32,8 @@ export default function StepDiscovery({
   selectedDevices,
   setSelectedDevices,
   mode = 'devices',
+  reprovisionMode = false,
+  setReprovisionMode,
 }: StepDiscoveryProps) {
   const [isChecking, setIsChecking] = useState(false);
   const isGatewayMode = mode === 'gateways';
@@ -179,8 +185,41 @@ export default function StepDiscovery({
   const entityLabel = isGatewayMode ? 'Gateway' : 'Device';
   const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
 
+  // Determine if an item can be selected based on reprovision mode
+  const canSelectItem = (status: string | undefined) => {
+    if (reprovisionMode) {
+      // In reprovision mode, can select both registered and unregistered
+      return status !== 'checking';
+    }
+    // Normal mode: only unregistered items
+    return status === 'not_registered';
+  };
+
   return (
     <div className="space-y-4">
+      {/* Re-provision mode toggle */}
+      {setReprovisionMode && (
+        <div className="flex items-center justify-between p-3 rounded-lg border bg-muted/50">
+          <div className="flex items-center gap-2">
+            <RotateCcw className="h-4 w-4 text-muted-foreground" />
+            <div>
+              <Label htmlFor="reprovision-mode" className="text-sm font-medium cursor-pointer">
+                Re-provision Mode
+              </Label>
+              <p className="text-xs text-muted-foreground">
+                Allow selecting already-registered {entityLabelPlural} to update their TTN configuration
+              </p>
+            </div>
+          </div>
+          <Switch
+            id="reprovision-mode"
+            checked={reprovisionMode}
+            onCheckedChange={setReprovisionMode}
+            disabled={isChecking}
+          />
+        </div>
+      )}
+
       {/* Summary and actions */}
       <div className="flex items-center justify-between">
         <div className="space-y-1">
@@ -239,7 +278,7 @@ export default function StepDiscovery({
               gateways.map(gateway => {
                 const status = deviceStatuses[gateway.id];
                 const isSelected = selectedDevices.includes(gateway.id);
-                const isDisabled = status === 'registered' || status === 'checking';
+                const isDisabled = !canSelectItem(status);
                 let ttnGatewayId: string;
                 try {
                   ttnGatewayId = generateTTNGatewayId(gateway.eui);
@@ -280,7 +319,7 @@ export default function StepDiscovery({
               devices.map(device => {
                 const status = deviceStatuses[device.id];
                 const isSelected = selectedDevices.includes(device.id);
-                const isDisabled = status === 'registered' || status === 'checking';
+                const isDisabled = !canSelectItem(status);
                 let ttnDeviceId: string;
                 try {
                   ttnDeviceId = generateTTNDeviceId(device.devEui);

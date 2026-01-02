@@ -34,6 +34,11 @@ export interface GatewayConfig {
     longitude: number;
   };
   isOnline: boolean;
+  // Provisioning status fields
+  provisioningStatus?: 'not_started' | 'pending' | 'completed' | 'failed';
+  lastProvisionedAt?: string;
+  lastProvisionError?: string;
+  ttnGatewayId?: string;
 }
 
 export interface LoRaWANDevice {
@@ -195,6 +200,31 @@ export function normalizeDevEui(devEui: string): string | null {
 // Normalize Gateway EUI (alias for normalizeDevEui - same format)
 export function normalizeGatewayEui(eui: string): string | null {
   return normalizeDevEui(eui);
+}
+
+// Validate Gateway EUI format and return detailed error
+export function validateGatewayEui(eui: string): { valid: boolean; error?: string; normalized?: string } {
+  if (!eui || eui.trim().length === 0) {
+    return { valid: false, error: 'Gateway EUI is required' };
+  }
+  
+  const cleaned = eui.replace(/[:\s-]/g, '').toLowerCase();
+  
+  if (cleaned.length !== 16) {
+    return { 
+      valid: false, 
+      error: `Gateway EUI must be 16 hex characters (8 bytes). Got ${cleaned.length} characters.` 
+    };
+  }
+  
+  if (!/^[a-f0-9]{16}$/.test(cleaned)) {
+    return { 
+      valid: false, 
+      error: 'Gateway EUI contains invalid characters. Must be hexadecimal (0-9, A-F).' 
+    };
+  }
+  
+  return { valid: true, normalized: cleaned };
 }
 
 // Generate canonical TTN device_id from DevEUI
