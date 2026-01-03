@@ -199,6 +199,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [ttnWebhookSecret, setTtnWebhookSecret] = useState('');
   const [ttnApiKeyPreview, setTtnApiKeyPreview] = useState<string | null>(null);
   const [ttnApiKeySet, setTtnApiKeySet] = useState(false);
+  // Gateway-specific API key (Personal/Organization key with gateway rights)
+  const [gatewayApiKey, setGatewayApiKey] = useState('');
+  const [gatewayApiKeyPreview, setGatewayApiKeyPreview] = useState<string | null>(null);
+  const [gatewayApiKeySet, setGatewayApiKeySet] = useState(false);
   // Gateway owner config
   const [gatewayOwnerType, setGatewayOwnerType] = useState<'user' | 'organization'>('user');
   const [gatewayOwnerId, setGatewayOwnerId] = useState('');
@@ -341,9 +345,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
       setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
       setTtnWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
+      // Load gateway API key if available
+      const gwKeyLast4 = (config.ttnConfig as any).gateway_api_key_last4;
+      setGatewayApiKeyPreview(gwKeyLast4 ? `****${gwKeyLast4}` : null);
+      setGatewayApiKeySet(!!gwKeyLast4);
       // Don't load actual secrets from config
       setTtnApiKey('');
       setTtnWebhookSecret('');
+      setGatewayApiKey('');
 
       // Update connection status if available
       if (config.ttnConfig.lastTestAt) {
@@ -404,9 +413,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
         setTtnApiKeySet(!!(ttn.api_key_last4));
         setTtnWebhookSecretSet(!!(ttn.webhook_secret_last4));
+        // Load gateway API key if available
+        setGatewayApiKeyPreview(ttn.gateway_api_key_last4 ? `****${ttn.gateway_api_key_last4}` : null);
+        setGatewayApiKeySet(!!(ttn.gateway_api_key_last4));
         // Don't load actual secrets, just show preview
         setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
+        setGatewayApiKey('');
 
         // Load connection status
         if (ttn.updated_at) {
@@ -475,16 +488,39 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       }
     }
 
+    // Validate gateway API key format if provided
+    if (gatewayApiKey) {
+      if (!gatewayApiKey.startsWith('NNSXS.') && !gatewayApiKey.startsWith('nnsxs.')) {
+        toast({
+          title: 'Invalid Gateway API Key Format',
+          description: 'TTN API keys should start with "NNSXS."',
+          variant: 'destructive',
+        });
+        return;
+      }
+      if (gatewayApiKey.length < 50) {
+        toast({
+          title: 'Gateway API Key Too Short',
+          description: 'TTN API keys are typically 100+ characters',
+          variant: 'destructive',
+        });
+        return;
+      }
+    }
+
     setIsSaving(true);
     
     // Debug logging - request
     const apiKeyLast4New = ttnApiKey ? ttnApiKey.slice(-4) : null;
+    const gatewayApiKeyLast4New = gatewayApiKey ? gatewayApiKey.slice(-4) : null;
     debug.ttnSync('TTN_SAVE_REQUEST', {
       orgId,
       cluster: ttnCluster,
       appId: ttnApplicationId,
       apiKeyLast4_new: apiKeyLast4New ? `****${apiKeyLast4New}` : null,
       hasNewKey: !!ttnApiKey,
+      gatewayApiKeyLast4_new: gatewayApiKeyLast4New ? `****${gatewayApiKeyLast4New}` : null,
+      hasNewGatewayKey: !!gatewayApiKey,
     });
 
     try {
@@ -495,6 +531,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         cluster: ttnCluster,
         application_id: ttnApplicationId,
         has_api_key: !!ttnApiKey,
+        has_gateway_api_key: !!gatewayApiKey,
       });
 
       const { data: pushResult, error: pushError } = await supabase.functions.invoke('push-ttn-settings', {
@@ -505,6 +542,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           cluster: ttnCluster,
           application_id: ttnApplicationId,
           api_key: ttnApiKey || undefined, // Only send if new value provided
+          gateway_api_key: gatewayApiKey || undefined, // Gateway-specific key for provisioning
           webhook_secret: ttnWebhookSecret || undefined,
           gateway_owner_type: gatewayOwnerType,
           gateway_owner_id: gatewayOwnerId || undefined,
@@ -531,6 +569,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       debug.ttnSync('TTN_PUSH_SUCCESS', {
         request_id: pushResult.request_id,
         api_key_last4: pushResult.api_key_last4 ? `****${pushResult.api_key_last4}` : null,
+        gateway_api_key_last4: pushResult.gateway_api_key_last4 ? `****${pushResult.gateway_api_key_last4}` : null,
         updated_at: pushResult.updated_at,
         local_updated: pushResult.local_updated,
         user_ttn_updated: pushResult.user_ttn_updated,
@@ -540,14 +579,25 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // IMPORTANT: Use the LOCAL save result as canonical truth, NOT FrostGuard
       // FrostGuard may have stale data since we're doing local-only saves
       const savedApiKeyLast4 = pushResult.api_key_last4;
+      const savedGatewayApiKeyLast4 = pushResult.gateway_api_key_last4;
       const savedUpdatedAt = pushResult.updated_at || new Date().toISOString();
-      
+
       // Update local state immediately from push result
       if (savedApiKeyLast4) {
         setTtnApiKeyPreview(`****${savedApiKeyLast4}`);
         setTtnApiKeySet(true);
         debug.ttnSync('TTN_KEY_UPDATED_FROM_SAVE', {
           api_key_last4: `****${savedApiKeyLast4}`,
+          source: 'LOCAL_SAVE_RESULT',
+        });
+      }
+
+      // Update gateway API key state
+      if (savedGatewayApiKeyLast4) {
+        setGatewayApiKeyPreview(`****${savedGatewayApiKeyLast4}`);
+        setGatewayApiKeySet(true);
+        debug.ttnSync('TTN_GATEWAY_KEY_UPDATED_FROM_SAVE', {
+          gateway_api_key_last4: `****${savedGatewayApiKeyLast4}`,
           source: 'LOCAL_SAVE_RESULT',
         });
       }
@@ -603,7 +653,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // Clear sensitive input fields after successful save
       setTtnApiKey('');
       setTtnWebhookSecret('');
-      
+      setGatewayApiKey('');
+
       // Also clear any stale localStorage TTN cache
       localStorage.removeItem('lorawan-emulator-ttn-cache');
 
@@ -1414,10 +1465,58 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       disabled={disabled || isLoading}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Required for gateway provisioning. Use a Personal API key for user scope.
+                      Required for gateway provisioning.
                     </p>
                   </div>
                 </div>
+
+                {/* Gateway API Key - separate from Application API Key */}
+                <div className="space-y-2 mt-4">
+                  <Label htmlFor="gatewayApiKey" className="flex items-center gap-2">
+                    Gateway API Key
+                    {gatewayApiKeySet && (
+                      <Badge variant="outline" className="text-green-600 border-green-600 text-xs">
+                        Saved
+                      </Badge>
+                    )}
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs">
+                          <p className="font-medium mb-1">Personal or Organization API Key</p>
+                          <p className="text-xs">Application API keys cannot have gateway permissions. You need a Personal or Organization API key with gateways:read and gateways:write rights.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </Label>
+                  <Input
+                    id="gatewayApiKey"
+                    type="password"
+                    placeholder={gatewayApiKeySet ? "Enter new key to replace..." : "NNSXS.XXXXXXX... (Personal/Org key with gateway rights)"}
+                    value={gatewayApiKey}
+                    onChange={e => setGatewayApiKey(e.target.value)}
+                    disabled={disabled || isLoading}
+                  />
+                  <p className="text-xs text-muted-foreground">
+                    {gatewayApiKeySet
+                      ? `Current: ${gatewayApiKeyPreview} (leave blank to keep, enter new to replace)`
+                      : 'Personal/Organization API key with gateways:read + gateways:write rights. NOT an Application API key.'}
+                  </p>
+                </div>
+
+                {/* Info box about API key types */}
+                {!gatewayApiKeySet && (
+                  <Alert className="bg-amber-500/10 border-amber-500/30">
+                    <AlertCircle className="h-4 w-4 text-amber-600" />
+                    <AlertTitle className="text-amber-700 text-sm">Gateway API Key Required</AlertTitle>
+                    <AlertDescription className="text-xs text-muted-foreground">
+                      To provision gateways, you need a <strong>Personal or Organization API key</strong> with gateway rights.
+                      Application API keys only work for devices. Create a new key in TTN Console under User Settings → API keys.
+                    </AlertDescription>
+                  </Alert>
+                )}
               </div>
 
               {/* TTN Connection Status Indicator */}

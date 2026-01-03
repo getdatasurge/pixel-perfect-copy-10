@@ -34,6 +34,7 @@ interface GatewayProvisionResult {
 
 interface TTNSettings {
   api_key: string | null;
+  gateway_api_key: string | null;  // Separate key for gateway operations
   cluster: string;
   gateway_owner_type: 'user' | 'organization';
   gateway_owner_id: string | null;
@@ -111,6 +112,50 @@ function getErrorCode(statusCode?: number, error?: string): string {
   if (error?.includes('timeout')) return 'TIMEOUT';
   if (error?.includes('network') || error?.includes('connection')) return 'NETWORK_ERROR';
   return 'UNKNOWN';
+}
+
+// Upsert gateway record in database
+async function upsertGatewayInDatabase(
+  supabase: any,
+  orgId: string,
+  gateway: GatewayToProvision,
+  ttnGatewayId: string,
+  cluster: string,
+  frequencyPlan: string,
+  status: 'pending' | 'active' | 'disabled',
+  provisionError: string | null,
+  requestId: string
+): Promise<void> {
+  const normalizedEui = normalizeGatewayEui(gateway.eui);
+  if (!normalizedEui) return;
+
+  const gatewayData = {
+    org_id: orgId,
+    eui: normalizedEui.toUpperCase(),
+    name: gateway.name,
+    ttn_gateway_id: ttnGatewayId,
+    status,
+    cluster,
+    frequency_plan: frequencyPlan,
+    gateway_server_address: `${cluster}.cloud.thethings.network`,
+    is_online: gateway.is_online ?? true,
+    provisioned_at: status === 'active' ? new Date().toISOString() : null,
+    provision_error: provisionError,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from('lora_gateways')
+    .upsert(gatewayData, {
+      onConflict: 'org_id,eui',
+      ignoreDuplicates: false
+    });
+
+  if (error) {
+    console.warn(`[${requestId}] Failed to upsert gateway ${ttnGatewayId} in database:`, error.message);
+  } else {
+    console.log(`[${requestId}] Gateway ${ttnGatewayId} saved to database with status=${status}`);
+  }
 }
 
 // Register a single gateway with retry logic
@@ -355,7 +400,7 @@ Deno.serve(async (req) => {
     if (org_id) {
       const { data, error } = await supabase
         .from('ttn_settings')
-        .select('api_key, cluster, gateway_owner_type, gateway_owner_id')
+        .select('api_key, gateway_api_key, cluster, gateway_owner_type, gateway_owner_id')
         .eq('org_id', org_id)
         .maybeSingle();
 
@@ -366,11 +411,18 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Get API key from settings or environment
-    const apiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
+    // For gateway operations, prefer gateway_api_key (Personal/Org key with gateway rights)
+    // Fall back to api_key (Application key) only if gateway_api_key not set
+    const gatewayApiKey = ttnSettings?.gateway_api_key;
+    const appApiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
+    const apiKey = gatewayApiKey || appApiKey;
     const cluster = ttnSettings?.cluster || 'eu1';
     const gatewayOwnerType = ttnSettings?.gateway_owner_type || 'user';
     const gatewayOwnerId = ttnSettings?.gateway_owner_id;
+
+    // Check if we have a gateway-specific API key
+    const usingGatewayKey = !!gatewayApiKey;
+    console.log(`[${requestId}] Using ${usingGatewayKey ? 'gateway-specific' : 'application'} API key`);
 
     if (!apiKey) {
       return new Response(
@@ -378,11 +430,17 @@ Deno.serve(async (req) => {
           ok: false,
           requestId,
           error: 'TTN API key not configured. Configure TTN settings first.',
+          hint: 'For gateway provisioning, you need a Personal or Organization API key with gateways:read and gateways:write permissions.',
           results: [],
           summary: { created: 0, already_exists: 0, failed: 0, total: 0 },
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Warn if using application key for gateway operations (likely to fail)
+    if (!usingGatewayKey) {
+      console.warn(`[${requestId}] WARNING: Using application API key for gateway operations. This may fail if the key lacks gateway permissions. Consider configuring a separate Gateway API Key.`);
     }
 
     // Check gateway owner is configured
@@ -412,19 +470,35 @@ Deno.serve(async (req) => {
     // Process each gateway with retry logic
     for (const gateway of gateways) {
       const result = await registerGatewayWithRetry(
-        gateway, 
-        apiKey, 
-        cluster, 
-        frequencyPlan, 
+        gateway,
+        apiKey,
+        cluster,
+        frequencyPlan,
         gatewayOwnerType,
         gatewayOwnerId,
         requestId
       );
       results.push(result);
-      
+
       if (result.status === 'created') summary.created++;
       else if (result.status === 'already_exists') summary.already_exists++;
       else summary.failed++;
+
+      // Persist gateway to database if org_id is provided
+      if (org_id) {
+        const dbStatus = result.status === 'failed' ? 'pending' : 'active';
+        await upsertGatewayInDatabase(
+          supabase,
+          org_id,
+          gateway,
+          result.ttn_gateway_id,
+          cluster,
+          frequencyPlan,
+          dbStatus,
+          result.error || null,
+          requestId
+        );
+      }
 
       // Small delay between gateways to avoid rate limiting
       if (gateways.indexOf(gateway) < gateways.length - 1) {

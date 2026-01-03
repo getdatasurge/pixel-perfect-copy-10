@@ -40,7 +40,7 @@ import {
   createDevice,
   buildTTNPayload 
 } from '@/lib/ttn-payload';
-import { assignDeviceToUnit, fetchOrgState } from '@/lib/frostguardOrgSync';
+import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
 import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
@@ -219,14 +219,124 @@ export default function LoRaWANEmulator() {
     localStorage.setItem(STORAGE_KEY_TTN_PROVISIONED_GATEWAYS, JSON.stringify([...ttnProvisionedGateways]));
   }, [ttnProvisionedGateways]);
 
+  // Load gateways from database when org context changes
+  useEffect(() => {
+    const loadGatewaysFromDatabase = async () => {
+      if (!webhookConfig.testOrgId) return;
+
+      log('ui', 'info', 'LOAD_GATEWAYS_ON_ORG_CHANGE', { org_id: webhookConfig.testOrgId });
+
+      const result = await fetchOrgGateways(webhookConfig.testOrgId);
+      if (result.ok && result.gateways.length > 0) {
+        // Convert LocalGateway to GatewayConfigType
+        const dbGateways: GatewayConfigType[] = result.gateways.map(g => ({
+          id: g.id,
+          eui: g.eui,
+          name: g.name || `Gateway ${g.eui.slice(-4)}`,
+          isOnline: g.is_online,
+          provisioningStatus: g.status === 'active' ? 'completed' : g.status === 'pending' ? 'pending' : 'failed',
+          lastProvisionedAt: g.provisioned_at || undefined,
+          lastProvisionError: g.provision_error || undefined,
+          ttnGatewayId: g.ttn_gateway_id || undefined,
+        }));
+
+        // Merge: use database gateways as base, keep any local-only gateways not in DB
+        setGateways(prev => {
+          const dbEuis = new Set(dbGateways.map(g => g.eui.toUpperCase()));
+          const localOnly = prev.filter(g => !dbEuis.has(g.eui.toUpperCase()));
+          return [...dbGateways, ...localOnly];
+        });
+
+        // Update provisioned set
+        const provisionedEuis = new Set(
+          result.gateways
+            .filter(g => g.status === 'active')
+            .map(g => g.eui.toUpperCase())
+        );
+        setTtnProvisionedGateways(provisionedEuis);
+
+        log('ui', 'info', 'GATEWAYS_LOADED_FROM_DB', {
+          total: result.gateways.length,
+          active: provisionedEuis.size,
+        });
+      }
+    };
+
+    loadGatewaysFromDatabase();
+  }, [webhookConfig.testOrgId]);
+
   // Check if TTN is configured and ready
   const isTTNConfigured = !!(
     webhookConfig?.ttnConfig?.applicationId &&
     webhookConfig?.ttnConfig?.enabled
   );
 
+  // Refresh gateways from database - called after provisioning
+  const refreshGatewaysFromDatabase = useCallback(async () => {
+    if (!webhookConfig.testOrgId) return;
+
+    log('ui', 'info', 'REFRESH_GATEWAYS_FROM_DB', { org_id: webhookConfig.testOrgId });
+
+    const result = await fetchOrgGateways(webhookConfig.testOrgId);
+    if (result.ok && result.gateways.length > 0) {
+      // Convert LocalGateway to GatewayConfigType
+      const dbGateways: GatewayConfigType[] = result.gateways.map(g => ({
+        id: g.id,
+        eui: g.eui,
+        name: g.name || `Gateway ${g.eui.slice(-4)}`,
+        isOnline: g.is_online,
+        provisioningStatus: g.status === 'active' ? 'completed' : g.status === 'pending' ? 'pending' : 'failed',
+        lastProvisionedAt: g.provisioned_at || undefined,
+        lastProvisionError: g.provision_error || undefined,
+        ttnGatewayId: g.ttn_gateway_id || undefined,
+      }));
+
+      // Merge with existing gateways (prefer database version for provisioned ones)
+      setGateways(prev => {
+        const mergedMap = new Map<string, GatewayConfigType>();
+
+        // Add existing local gateways first
+        prev.forEach(g => mergedMap.set(g.eui.toUpperCase(), g));
+
+        // Override with database gateways (authoritative source for provisioned ones)
+        dbGateways.forEach(g => {
+          const normalizedEui = g.eui.toUpperCase();
+          const existing = mergedMap.get(normalizedEui);
+          if (existing) {
+            // Merge: keep local-only fields, update provisioning status from DB
+            mergedMap.set(normalizedEui, {
+              ...existing,
+              provisioningStatus: g.provisioningStatus,
+              lastProvisionedAt: g.lastProvisionedAt,
+              lastProvisionError: g.lastProvisionError,
+              ttnGatewayId: g.ttnGatewayId,
+            });
+          } else {
+            // New gateway from database
+            mergedMap.set(normalizedEui, g);
+          }
+        });
+
+        return Array.from(mergedMap.values());
+      });
+
+      // Update provisioned set based on database status
+      const provisionedEuis = new Set(
+        result.gateways
+          .filter(g => g.status === 'active')
+          .map(g => g.eui.toUpperCase())
+      );
+      setTtnProvisionedGateways(provisionedEuis);
+
+      log('ui', 'info', 'GATEWAYS_REFRESHED_FROM_DB', {
+        total: result.gateways.length,
+        active: provisionedEuis.size,
+      });
+    }
+  }, [webhookConfig.testOrgId]);
+
   // Handle provisioning wizard completion
-  const handleProvisioningComplete = useCallback((results?: Array<{ dev_eui?: string; eui?: string; status: string; error?: string; ttn_gateway_id?: string }>) => {
+  const handleProvisioningComplete = useCallback(async (results?: Array<{ dev_eui?: string; eui?: string; status: string; error?: string; ttn_gateway_id?: string }>) => {
     if (results) {
       if (provisioningMode === 'devices') {
         const newProvisioned = new Set(ttnProvisionedDevices);
@@ -238,34 +348,13 @@ export default function LoRaWANEmulator() {
         setTtnProvisionedDevices(newProvisioned);
         toast({ title: 'Provisioning Complete', description: 'Devices registered in TTN' });
       } else {
-        // Update gateway provisioning state with results
-        setGateways(prev => prev.map(g => {
-          const result = results.find(r => r.eui === g.eui);
-          if (result) {
-            return {
-              ...g,
-              provisioningStatus: result.status === 'failed' ? 'failed' : 'completed',
-              lastProvisionedAt: new Date().toISOString(),
-              lastProvisionError: result.error,
-              ttnGatewayId: result.ttn_gateway_id,
-            } as typeof g;
-          }
-          return g;
-        }));
-        
-        // Also update the provisioned set
-        const newProvisioned = new Set(ttnProvisionedGateways);
-        results.forEach(r => {
-          if ((r.status === 'created' || r.status === 'already_exists') && r.eui) {
-            newProvisioned.add(r.eui);
-          }
-        });
-        setTtnProvisionedGateways(newProvisioned);
-        toast({ title: 'Provisioning Complete', description: 'Gateways registered in TTN' });
+        // Refresh gateway state from database (authoritative source after provisioning)
+        await refreshGatewaysFromDatabase();
+        toast({ title: 'Provisioning Complete', description: 'Gateways registered in TTN and synced' });
       }
     }
     setShowProvisioningWizard(false);
-  }, [provisioningMode, ttnProvisionedDevices, ttnProvisionedGateways]);
+  }, [provisioningMode, ttnProvisionedDevices, refreshGatewaysFromDatabase]);
 
   const [tempState, setTempState] = useState<TempSensorState>({
     minTemp: 35,
