@@ -1019,6 +1019,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
           body: JSON.stringify(payload),
         });
 
