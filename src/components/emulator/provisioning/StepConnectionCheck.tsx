@@ -2,9 +2,10 @@ import { useState, useEffect } from 'react';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { Loader2, CheckCircle2, XCircle, AlertTriangle, Settings } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, AlertTriangle, Settings, ExternalLink, RefreshCw, KeyRound } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { TTNConfig } from '@/lib/ttn-payload';
+import { getGatewayApiKeyUrl, getKeyTypeLabel, GATEWAY_PERMISSIONS } from '@/lib/ttnConsoleLinks';
 
 interface StepConnectionCheckProps {
   ttnConfig?: TTNConfig;
@@ -49,6 +50,11 @@ export default function StepConnectionCheck({
   const [checks, setChecks] = useState<CheckResult[]>(getInitialChecks);
   const [isValidating, setIsValidating] = useState(false);
   const [overallStatus, setOverallStatus] = useState<'pending' | 'success' | 'failed'>('pending');
+  const [gatewayKeyConfigured, setGatewayKeyConfigured] = useState(false);
+  const [usingGatewayKey, setUsingGatewayKey] = useState(false);
+  const [gatewayOwnerType, setGatewayOwnerType] = useState<'user' | 'organization'>('user');
+  const [gatewayOwnerId, setGatewayOwnerId] = useState<string | null>(null);
+  const [pollCount, setPollCount] = useState(0);
 
   const runValidation = async () => {
     setIsValidating(true);
@@ -190,6 +196,16 @@ export default function StepConnectionCheck({
       const perms = data?.permissions || {};
       const diagnostics = data?.diagnostics || {};
 
+      // Track diagnostic info for better UX
+      setUsingGatewayKey(data?.using_gateway_key || false);
+      setGatewayKeyConfigured(data?.using_gateway_key || false);
+      if (diagnostics.gateway_owner_type) {
+        setGatewayOwnerType(diagnostics.gateway_owner_type);
+      }
+      if (diagnostics.gateway_owner_id) {
+        setGatewayOwnerId(diagnostics.gateway_owner_id);
+      }
+
       currentChecks[gatewayReadIdx] = {
         name: 'Gateway Read Permission',
         status: perms.gateway_read ? 'passed' : 'failed',
@@ -285,41 +301,80 @@ export default function StepConnectionCheck({
         (c.name.includes('Gateway') && c.status === 'failed')
       ) && (
         <Alert variant="destructive">
-          <AlertTriangle className="h-4 w-4" />
+          <KeyRound className="h-4 w-4" />
           <AlertDescription>
             <div className="space-y-3">
-              <p className="font-medium">Your TTN API key is missing gateway permissions.</p>
+              <p className="font-medium">
+                {!usingGatewayKey 
+                  ? 'No Gateway API Key configured' 
+                  : 'Gateway API Key missing required permissions'}
+              </p>
               <div className="text-sm bg-background/50 p-3 rounded-lg space-y-2">
                 <p><strong>Why this happens:</strong></p>
                 <p className="text-muted-foreground">
-                  Application API keys (from TTN Console → Applications) cannot have gateway permissions. 
-                  Gateway provisioning requires a <strong>Personal API Key</strong> or <strong>Organization API Key</strong>.
+                  {!usingGatewayKey 
+                    ? 'You are using an Application API key which cannot have gateway permissions. Gateway provisioning requires a separate Personal or Organization API key.'
+                    : 'The configured Gateway API Key is missing gateways:read and/or gateways:write permissions.'}
                 </p>
               </div>
-              <div className="text-sm">
-                <strong>How to fix:</strong>
-                <ol className="list-decimal ml-4 mt-1 space-y-1 text-muted-foreground">
-                  <li>Open TTN Console → <strong>User Settings → API Keys</strong> (or Organization → API Keys)</li>
-                  <li>Create a new API key with: <code className="bg-muted px-1 rounded">gateways:read</code>, <code className="bg-muted px-1 rounded">gateways:write</code></li>
-                  <li>Go to <strong>Webhook Settings → Gateway Configuration</strong></li>
-                  <li>Paste the new key in the "Gateway API Key" field and save</li>
-                </ol>
+              
+              {/* Required permissions badges */}
+              <div className="flex items-center gap-2 flex-wrap">
+                <span className="text-xs text-muted-foreground">Required:</span>
+                {GATEWAY_PERMISSIONS.map(perm => (
+                  <Badge key={perm} variant="outline" className="text-xs font-mono">
+                    {perm}
+                  </Badge>
+                ))}
               </div>
-              <Button 
-                variant="outline" 
-                size="sm" 
-                className="mt-2"
-                onClick={() => {
-                  // Scroll to webhook settings section
-                  const webhookSection = document.getElementById('webhook');
-                  if (webhookSection) {
-                    webhookSection.scrollIntoView({ behavior: 'smooth' });
-                  }
-                }}
-              >
-                <Settings className="h-3 w-3 mr-2" />
-                Configure Gateway Key
-              </Button>
+              
+              <div className="flex flex-col sm:flex-row gap-2">
+                {/* Create in TTN Console button */}
+                <Button 
+                  variant="secondary" 
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => {
+                    const url = getGatewayApiKeyUrl(
+                      ttnConfig?.cluster || 'eu1', 
+                      gatewayOwnerType, 
+                      gatewayOwnerId || undefined
+                    );
+                    window.open(url, '_blank', 'noopener,noreferrer');
+                  }}
+                >
+                  <ExternalLink className="h-3 w-3" />
+                  Create {getKeyTypeLabel(gatewayOwnerType)} in TTN
+                </Button>
+                
+                {/* Configure in Settings button */}
+                <Button 
+                  variant="outline" 
+                  size="sm"
+                  className="gap-2"
+                  onClick={() => {
+                    const webhookSection = document.getElementById('webhook');
+                    if (webhookSection) {
+                      webhookSection.scrollIntoView({ behavior: 'smooth' });
+                    }
+                  }}
+                >
+                  <Settings className="h-3 w-3" />
+                  Configure Gateway Key
+                </Button>
+                
+                {/* Re-check button */}
+                <Button 
+                  variant="ghost" 
+                  size="sm"
+                  className="gap-2"
+                  onClick={runValidation}
+                  disabled={isValidating}
+                >
+                  <RefreshCw className={`h-3 w-3 ${isValidating ? 'animate-spin' : ''}`} />
+                  Re-check
+                </Button>
+              </div>
             </div>
           </AlertDescription>
         </Alert>

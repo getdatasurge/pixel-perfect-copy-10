@@ -40,6 +40,13 @@ interface TTNSettings {
   gateway_owner_id: string | null;
 }
 
+// Generate a cryptographically random Gateway EUI (8 bytes = 16 hex chars)
+function generateRandomGatewayEui(): string {
+  const bytes = new Uint8Array(8);
+  crypto.getRandomValues(bytes);
+  return Array.from(bytes).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
 // Normalize Gateway EUI: strip colons/spaces/dashes, lowercase, validate 16 hex chars
 function normalizeGatewayEui(eui: string): string | null {
   const cleaned = eui.replace(/[:\s-]/g, '').toLowerCase();
@@ -469,8 +476,21 @@ Deno.serve(async (req) => {
 
     // Process each gateway with retry logic
     for (const gateway of gateways) {
+      // Auto-generate EUI if missing or invalid
+      let gatewayEui = gateway.eui;
+      let euiWasGenerated = false;
+      
+      if (!gatewayEui || normalizeGatewayEui(gatewayEui) === null) {
+        gatewayEui = generateRandomGatewayEui();
+        euiWasGenerated = true;
+        console.log(`[${requestId}] Auto-generated EUI for gateway "${gateway.name}": ${gatewayEui.toUpperCase()}`);
+      }
+      
+      // Use the gateway with the (possibly auto-generated) EUI
+      const gatewayWithEui = { ...gateway, eui: gatewayEui };
+      
       const result = await registerGatewayWithRetry(
-        gateway,
+        gatewayWithEui,
         apiKey,
         cluster,
         frequencyPlan,
@@ -478,7 +498,14 @@ Deno.serve(async (req) => {
         gatewayOwnerId,
         requestId
       );
-      results.push(result);
+      
+      // Include the EUI in the result for client reference
+      const resultWithEui = {
+        ...result,
+        eui: gatewayEui, // Return the actual EUI used (original or generated)
+        eui_generated: euiWasGenerated,
+      };
+      results.push(resultWithEui);
 
       if (result.status === 'created') summary.created++;
       else if (result.status === 'already_exists') summary.already_exists++;
@@ -490,7 +517,7 @@ Deno.serve(async (req) => {
         await upsertGatewayInDatabase(
           supabase,
           org_id,
-          gateway,
+          gatewayWithEui,
           result.ttn_gateway_id,
           cluster,
           frequencyPlan,

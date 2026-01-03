@@ -9,8 +9,9 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft, HardDrive, Clock
+  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound
 } from 'lucide-react';
+import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS } from '@/lib/ttnConsoleLinks';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
@@ -1506,14 +1507,52 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   </p>
                 </div>
 
-                {/* Info box about API key types */}
+                {/* Info box about API key types with Create in TTN Console button */}
                 {!gatewayApiKeySet && (
                   <Alert className="bg-amber-500/10 border-amber-500/30">
-                    <AlertCircle className="h-4 w-4 text-amber-600" />
+                    <KeyRound className="h-4 w-4 text-amber-600" />
                     <AlertTitle className="text-amber-700 text-sm">Gateway API Key Required</AlertTitle>
-                    <AlertDescription className="text-xs text-muted-foreground">
-                      To provision gateways, you need a <strong>Personal or Organization API key</strong> with gateway rights.
-                      Application API keys only work for devices. Create a new key in TTN Console under User Settings → API keys.
+                    <AlertDescription className="text-xs space-y-3">
+                      <p className="text-muted-foreground">
+                        To provision gateways, you need a <strong>{getKeyTypeLabel(gatewayOwnerType)}</strong> with gateway rights.
+                        Application API keys only work for devices.
+                      </p>
+                      
+                      {/* Step-by-step instructions */}
+                      <div className="bg-background/50 rounded-lg p-3 space-y-2">
+                        <p className="font-medium text-foreground text-xs">Steps to create:</p>
+                        <ol className="list-decimal ml-4 space-y-1 text-muted-foreground">
+                          {getGatewayKeyInstructions(gatewayOwnerType).map((step, i) => (
+                            <li key={i} className="text-xs">{step}</li>
+                          ))}
+                        </ol>
+                        <div className="flex items-center gap-2 pt-2">
+                          <span className="text-xs text-muted-foreground">Required permissions:</span>
+                          {GATEWAY_PERMISSIONS.map(perm => (
+                            <Badge key={perm} variant="outline" className="text-xs font-mono">
+                              {perm}
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                      
+                      {/* Create in TTN Console button */}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="gap-2 w-full"
+                        onClick={() => {
+                          const url = getGatewayApiKeyUrl(ttnCluster, gatewayOwnerType, gatewayOwnerId || undefined);
+                          window.open(url, '_blank', 'noopener,noreferrer');
+                        }}
+                        disabled={gatewayOwnerType === 'organization' && !gatewayOwnerId}
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        Create {getKeyTypeLabel(gatewayOwnerType)} in TTN Console
+                      </Button>
+                      {gatewayOwnerType === 'organization' && !gatewayOwnerId && (
+                        <p className="text-xs text-amber-600">Enter Organization ID above to enable this button</p>
+                      )}
                     </AlertDescription>
                   </Alert>
                 )}
