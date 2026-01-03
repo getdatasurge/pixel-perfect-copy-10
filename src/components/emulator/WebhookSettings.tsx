@@ -400,6 +400,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         return;
       }
 
+      // Also load org-level settings from ttn_settings for gateway config
+      const { data: orgSettings } = await supabase
+        .from('ttn_settings')
+        .select('gateway_api_key_last4, gateway_owner_type, gateway_owner_id, api_key, cluster, application_id, enabled')
+        .eq('org_id', orgId)
+        .maybeSingle();
+
       if (syncedUser?.ttn) {
         const ttn = syncedUser.ttn as any;
         console.log('[WebhookSettings] Loaded TTN settings from synced_users:', { ttn, user: syncedUser.email });
@@ -410,9 +417,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
         setTtnApiKeySet(!!(ttn.api_key_last4));
         setTtnWebhookSecretSet(!!(ttn.webhook_secret_last4));
-        // Load gateway API key if available
-        setGatewayApiKeyPreview(ttn.gateway_api_key_last4 ? `****${ttn.gateway_api_key_last4}` : null);
-        setGatewayApiKeySet(!!(ttn.gateway_api_key_last4));
+        // Load gateway API key from org settings (not in synced_users)
+        setGatewayApiKeyPreview(orgSettings?.gateway_api_key_last4 ? `****${orgSettings.gateway_api_key_last4}` : null);
+        setGatewayApiKeySet(!!(orgSettings?.gateway_api_key_last4));
+        // Load gateway owner config from org settings
+        setGatewayOwnerType(orgSettings?.gateway_owner_type as 'user' | 'organization' || 'user');
+        setGatewayOwnerId(orgSettings?.gateway_owner_id || '');
         // Don't load actual secrets, just show preview
         setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
@@ -431,12 +441,34 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             cluster: ttn.cluster || 'eu1',
           });
         }
+      } else if (orgSettings) {
+        // Fallback: Use org-level ttn_settings if no synced_users.ttn
+        console.log('[WebhookSettings] Using org ttn_settings (no synced_users.ttn):', orgSettings);
+        setTtnEnabled(orgSettings.enabled || false);
+        setTtnCluster(orgSettings.cluster || 'eu1');
+        setTtnApplicationId(orgSettings.application_id || '');
+        setTtnApiKeyPreview(orgSettings.api_key ? `****${orgSettings.api_key.slice(-4)}` : null);
+        setTtnApiKeySet(!!(orgSettings.api_key));
+        setGatewayApiKeyPreview(orgSettings.gateway_api_key_last4 ? `****${orgSettings.gateway_api_key_last4}` : null);
+        setGatewayApiKeySet(!!(orgSettings.gateway_api_key_last4));
+        setGatewayOwnerType(orgSettings.gateway_owner_type as 'user' | 'organization' || 'user');
+        setGatewayOwnerId(orgSettings.gateway_owner_id || '');
+        setTtnApiKey('');
+        setTtnWebhookSecret('');
+        setGatewayApiKey('');
+
+        if (orgSettings.enabled) {
+          updateTTN({
+            enabled: orgSettings.enabled,
+            applicationId: orgSettings.application_id || '',
+            cluster: orgSettings.cluster || 'eu1',
+          });
+        }
       } else {
-        console.log('[WebhookSettings] No TTN settings found in synced_users for', userId ? `user ${userId}` : `org ${orgId}`);
+        console.log('[WebhookSettings] No TTN settings found in synced_users or ttn_settings for', userId ? `user ${userId}` : `org ${orgId}`);
         toast({
           title: 'No TTN Settings',
-          description: 'No TTN configuration found for selected user. Make sure user is synced from FrostGuard.',
-          variant: 'destructive',
+          description: 'No TTN configuration found. Configure TTN settings below.',
         });
       }
     } catch (err: any) {

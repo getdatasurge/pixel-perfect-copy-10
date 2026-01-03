@@ -873,23 +873,26 @@ async function handleCheckGateway(
     }, 200, requestId);
   }
 
-  // Load API key from settings
-  let apiKey: string | null = null;
+  // Load API key from settings - prefer gateway_api_key for gateway operations
+  let gatewayApiKey: string | null = null;
+  let appApiKey: string | null = null;
   if (org_id) {
     const { data } = await supabase
       .from('ttn_settings')
-      .select('api_key')
+      .select('api_key, gateway_api_key')
       .eq('org_id', org_id)
       .maybeSingle();
-    apiKey = data?.api_key || null;
+    gatewayApiKey = data?.gateway_api_key || null;
+    appApiKey = data?.api_key || null;
   }
-  apiKey = apiKey || Deno.env.get('TTN_API_KEY') || null;
+  const apiKey = gatewayApiKey || appApiKey || Deno.env.get('TTN_API_KEY') || null;
 
   if (!apiKey) {
     return buildResponse({
       ok: false,
       error: 'No API key configured',
       code: 'NO_API_KEY',
+      hint: 'Configure a Gateway API Key for gateway operations',
     }, 200, requestId);
   }
 
