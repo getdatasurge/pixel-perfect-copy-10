@@ -3,15 +3,6 @@ import { loadOrgSettings, loadTTNSettings } from "../_shared/settings.ts";
 import { processTTNUplink, TTNUplinkPayload } from "../_shared/ttnWebhookProcessor.ts";
 import { loadWebhookSecretForApplication, verifyWebhookSecret } from "../_shared/ttnWebhookAuth.ts";
 
-const buildCorsHeaders = (req: Request) => {
-  const origin = req.headers.get('origin') ?? 'null';
-
-  return {
-    'Access-Control-Allow-Origin': origin,
-    'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-ttn-webhook-secret',
-    'Access-Control-Allow-Methods': 'POST, OPTIONS',
-    'Access-Control-Allow-Credentials': 'true',
-  };
 const allowedOrigins = new Set([
   'https://pixel-perfect-emucopy-15.lovable.app',
 ]);
@@ -31,14 +22,6 @@ function getCorsHeaders(req: Request) {
   return { ...baseCorsHeaders };
 }
 
-interface EmulatorForwardRequest {
-  org_id?: string;
-  selected_user_id?: string;
-  applicationId: string;
-  deviceId: string;
-  devEui: string;
-  decodedPayload: Record<string, unknown>;
-  fPort: number;
 interface NormalizedEmulatorPayload {
   orgId?: string;
   selectedUserId?: string;
@@ -128,8 +111,6 @@ function normalizeEmulatorPayload(raw: unknown): NormalizedEmulatorPayload {
 }
 
 Deno.serve(async (req) => {
-  const corsHeaders = buildCorsHeaders(req);
-
   const corsHeaders = getCorsHeaders(req);
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
