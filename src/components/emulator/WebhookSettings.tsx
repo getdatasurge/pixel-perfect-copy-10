@@ -11,7 +11,7 @@ import {
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
   Globe, ArrowRightLeft, HardDrive, Clock, KeyRound
 } from 'lucide-react';
-import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS } from '@/lib/ttnConsoleLinks';
+import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS, parseOrgFromUrl } from '@/lib/ttnConsoleLinks';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
@@ -226,6 +226,18 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [consoleUrlInput, setConsoleUrlInput] = useState('');
   const [showClusterDetect, setShowClusterDetect] = useState(false);
   
+  // Org URL paste helper state
+  const [orgUrlInput, setOrgUrlInput] = useState('');
+  const [showOrgUrlInput, setShowOrgUrlInput] = useState(false);
+  
+  // Gateway key testing state
+  const [isTestingGatewayKey, setIsTestingGatewayKey] = useState(false);
+  const [gatewayKeyTestResult, setGatewayKeyTestResult] = useState<{
+    ok: boolean;
+    message: string;
+    permissions?: { gateway_read: boolean; gateway_write: boolean };
+  } | null>(null);
+  
   // Config source tracking for badge display
   const [configSource, setConfigSource] = useState(() => getConfigSummary());
   
@@ -284,6 +296,125 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   };
 
   const clusterMismatch = detectedCluster && detectedCluster !== ttnCluster;
+
+  // Parse org ID from TTN Console URL
+  const handleParseOrgUrl = () => {
+    if (!orgUrlInput) return;
+    const parsed = parseOrgFromUrl(orgUrlInput);
+    if (parsed) {
+      setGatewayOwnerId(parsed.orgId);
+      setGatewayOwnerType('organization');
+      if (parsed.cluster !== ttnCluster) {
+        setTtnCluster(parsed.cluster);
+      }
+      toast({
+        title: 'Organization ID Detected',
+        description: `Set to "${parsed.orgId}" on ${parsed.cluster} cluster`,
+      });
+    } else {
+      toast({
+        title: 'Could not parse URL',
+        description: 'Paste a valid TTN Console URL like https://nam1.cloud.thethings.network/console/organizations/my-org/...',
+        variant: 'destructive',
+      });
+    }
+    setShowOrgUrlInput(false);
+    setOrgUrlInput('');
+  };
+
+  // Test gateway API key immediately
+  const testGatewayKey = async () => {
+    if (!orgId) {
+      toast({
+        title: 'No Organization',
+        description: 'Select an organization first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    // Validate key format if a new one is being entered
+    const keyToTest = gatewayApiKey || (gatewayApiKeySet ? 'stored' : '');
+    if (!keyToTest) {
+      toast({
+        title: 'No Gateway Key',
+        description: 'Enter a Gateway API Key first',
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    if (gatewayApiKey && !gatewayApiKey.startsWith('NNSXS.') && !gatewayApiKey.startsWith('nnsxs.')) {
+      setGatewayKeyTestResult({
+        ok: false,
+        message: 'Invalid key format - TTN API keys start with "NNSXS."',
+      });
+      return;
+    }
+
+    setIsTestingGatewayKey(true);
+    setGatewayKeyTestResult(null);
+
+    try {
+      // If we have a new key, save it first
+      if (gatewayApiKey) {
+        await supabase.functions.invoke('manage-ttn-settings', {
+          body: {
+            action: 'save',
+            org_id: orgId,
+            gateway_api_key: gatewayApiKey,
+            gateway_owner_type: gatewayOwnerType,
+            gateway_owner_id: gatewayOwnerId,
+          },
+        });
+        setGatewayApiKeyPreview(`****${gatewayApiKey.slice(-4)}`);
+        setGatewayApiKeySet(true);
+        setGatewayApiKey('');
+      }
+
+      // Now test the stored key
+      const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
+        body: {
+          action: 'check_gateway_permissions',
+          org_id: orgId,
+          cluster: ttnCluster,
+        },
+      });
+
+      if (error) {
+        setGatewayKeyTestResult({
+          ok: false,
+          message: `Test failed: ${error.message}`,
+        });
+        return;
+      }
+
+      if (data?.ok) {
+        setGatewayKeyTestResult({
+          ok: true,
+          message: 'Gateway permissions verified ✓',
+          permissions: data.permissions,
+        });
+        toast({
+          title: 'Gateway Key Valid',
+          description: 'Key has gateways:read and gateways:write permissions',
+        });
+      } else {
+        setGatewayKeyTestResult({
+          ok: false,
+          message: data?.hint || data?.error || 'Permission check failed',
+          permissions: data?.permissions,
+        });
+      }
+    } catch (err: any) {
+      setGatewayKeyTestResult({
+        ok: false,
+        message: `Error: ${err.message}`,
+      });
+    } finally {
+      setIsTestingGatewayKey(false);
+    }
+  };
 
   // Handle wizard completion
   const handleWizardComplete = async (wizardConfig: WizardConfig) => {
@@ -1424,19 +1555,50 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
               {/* Gateway Owner Configuration */}
               <div className="pt-4 border-t space-y-3">
-                <div className="flex items-center gap-2">
-                  <Label className="text-sm font-medium">Gateway Owner (for provisioning)</Label>
-                  <TooltipProvider>
-                    <Tooltip>
-                      <TooltipTrigger asChild>
-                        <Info className="h-4 w-4 text-muted-foreground cursor-help" />
-                      </TooltipTrigger>
-                      <TooltipContent className="max-w-xs">
-                        <p>Gateways in TTN are owned by users or organizations. Set your TTN username or org ID to provision gateways.</p>
-                      </TooltipContent>
-                    </Tooltip>
-                  </TooltipProvider>
+                <div className="flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Label className="text-sm font-medium">Gateway Owner (for provisioning)</Label>
+                    <TooltipProvider>
+                      <Tooltip>
+                        <TooltipTrigger asChild>
+                          <Info className="h-4 w-4 text-muted-foreground cursor-help" />
+                        </TooltipTrigger>
+                        <TooltipContent className="max-w-xs">
+                          <p>Gateways in TTN are owned by users or organizations. Set your TTN username or org ID to provision gateways.</p>
+                        </TooltipContent>
+                      </Tooltip>
+                    </TooltipProvider>
+                  </div>
+                  {gatewayOwnerType === 'organization' && (
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      className="h-6 text-xs"
+                      onClick={() => setShowOrgUrlInput(!showOrgUrlInput)}
+                    >
+                      Paste TTN URL
+                    </Button>
+                  )}
                 </div>
+                
+                {/* URL paste helper for auto-parsing org ID */}
+                {showOrgUrlInput && (
+                  <div className="flex gap-2 p-3 bg-muted/50 rounded-lg">
+                    <Input
+                      placeholder="Paste TTN Console URL (e.g., https://nam1.cloud.thethings.network/console/organizations/my-org/...)"
+                      value={orgUrlInput}
+                      onChange={(e) => setOrgUrlInput(e.target.value)}
+                      className="text-xs"
+                    />
+                    <Button size="sm" onClick={handleParseOrgUrl} disabled={!orgUrlInput}>
+                      Parse
+                    </Button>
+                    <Button size="sm" variant="ghost" onClick={() => setShowOrgUrlInput(false)}>
+                      Cancel
+                    </Button>
+                  </div>
+                )}
+                
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div className="space-y-2">
                     <Label htmlFor="gatewayOwnerType">Owner Type</Label>
@@ -1492,19 +1654,65 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       </Tooltip>
                     </TooltipProvider>
                   </Label>
-                  <Input
-                    id="gatewayApiKey"
-                    type="password"
-                    placeholder={gatewayApiKeySet ? "Enter new key to replace..." : "NNSXS.XXXXXXX... (Personal/Org key with gateway rights)"}
-                    value={gatewayApiKey}
-                    onChange={e => setGatewayApiKey(e.target.value)}
-                    disabled={disabled || isLoading}
-                  />
+                  <div className="flex gap-2">
+                    <Input
+                      id="gatewayApiKey"
+                      type="password"
+                      placeholder={gatewayApiKeySet ? "Enter new key to replace..." : "NNSXS.XXXXXXX... (Personal/Org key with gateway rights)"}
+                      value={gatewayApiKey}
+                      onChange={e => {
+                        setGatewayApiKey(e.target.value);
+                        setGatewayKeyTestResult(null); // Clear previous result when typing
+                      }}
+                      disabled={disabled || isLoading}
+                      className="flex-1"
+                    />
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={testGatewayKey}
+                      disabled={disabled || isLoading || isTestingGatewayKey || (!gatewayApiKey && !gatewayApiKeySet) || !gatewayOwnerId}
+                      className="shrink-0"
+                    >
+                      {isTestingGatewayKey ? (
+                        <Loader2 className="h-4 w-4 animate-spin" />
+                      ) : (
+                        <ShieldCheck className="h-4 w-4" />
+                      )}
+                      Test
+                    </Button>
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     {gatewayApiKeySet
                       ? `Current: ${gatewayApiKeyPreview} (leave blank to keep, enter new to replace)`
                       : 'Personal/Organization API key with gateways:read + gateways:write rights. NOT an Application API key.'}
                   </p>
+                  
+                  {/* Gateway Key Test Result */}
+                  {gatewayKeyTestResult && (
+                    <div className={`flex items-center gap-2 p-2 rounded-lg text-xs ${
+                      gatewayKeyTestResult.ok 
+                        ? 'bg-green-500/10 text-green-700 border border-green-500/30' 
+                        : 'bg-red-500/10 text-red-700 border border-red-500/30'
+                    }`}>
+                      {gatewayKeyTestResult.ok ? (
+                        <Check className="h-4 w-4 shrink-0" />
+                      ) : (
+                        <X className="h-4 w-4 shrink-0" />
+                      )}
+                      <span className="flex-1">{gatewayKeyTestResult.message}</span>
+                      {gatewayKeyTestResult.permissions && (
+                        <div className="flex gap-1">
+                          <Badge variant="outline" className={gatewayKeyTestResult.permissions.gateway_read ? 'border-green-500 text-green-600' : 'border-red-500 text-red-600'}>
+                            read
+                          </Badge>
+                          <Badge variant="outline" className={gatewayKeyTestResult.permissions.gateway_write ? 'border-green-500 text-green-600' : 'border-red-500 text-red-600'}>
+                            write
+                          </Badge>
+                        </div>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 {/* Info box about API key types with Create in TTN Console button */}

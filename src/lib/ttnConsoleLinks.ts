@@ -75,3 +75,61 @@ export function getGatewayKeyInstructions(ownerType: 'user' | 'organization'): s
     'Paste the key in the Gateway API Key field above',
   ];
 }
+
+/**
+ * Parse TTN Organization ID from a TTN Console URL
+ * 
+ * Examples:
+ * - https://nam1.cloud.thethings.network/console/organizations/frostguard/overview
+ * - https://eu1.cloud.thethings.network/console/organizations/my-org/api-keys
+ * 
+ * Returns: { cluster: string, orgId: string } | null
+ */
+export function parseOrgFromUrl(url: string): { cluster: string; orgId: string } | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    
+    // Extract cluster from hostname (e.g., nam1.cloud.thethings.network)
+    const clusterMatch = host.match(/^(?:console\.)?(nam1|eu1|au1)\.cloud\.thethings\.network$/);
+    if (!clusterMatch) return null;
+    
+    const cluster = clusterMatch[1];
+    
+    // Extract org ID from path (e.g., /console/organizations/frostguard/...)
+    const pathMatch = parsed.pathname.match(/\/console\/organizations\/([^\/]+)/);
+    if (!pathMatch) return null;
+    
+    const orgId = pathMatch[1];
+    
+    return { cluster, orgId };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Parse TTN username from a TTN Console URL
+ * 
+ * Examples:
+ * - https://nam1.cloud.thethings.network/console/user/api-keys
+ * 
+ * Returns: { cluster: string } | null (username is implicit - it's the logged in user)
+ */
+export function parseUserFromUrl(url: string): { cluster: string } | null {
+  try {
+    const parsed = new URL(url);
+    const host = parsed.hostname;
+    
+    // Extract cluster from hostname
+    const clusterMatch = host.match(/^(?:console\.)?(nam1|eu1|au1)\.cloud\.thethings\.network$/);
+    if (!clusterMatch) return null;
+    
+    // Check if it's a user path
+    if (!parsed.pathname.includes('/console/user')) return null;
+    
+    return { cluster: clusterMatch[1] };
+  } catch {
+    return null;
+  }
+}
