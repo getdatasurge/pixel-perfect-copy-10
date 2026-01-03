@@ -185,6 +185,11 @@ curl -i -X OPTIONS https://jyxzaagcirhbdzvofkom.supabase.co/functions/v1/<name>
 ✅ **No Client Access**: Frontend never sees full API keys
 ✅ **User-Level Only**: TTN simulation uses ONLY user-specific credentials (no org fallback)
 
+## Webhook Secret Behavior (Emulator vs TTN)
+
+- **TTN webhooks**: TTN sends `x-ttn-webhook-secret` when configured in the console. The `ttn-webhook` and `ttn-webhook-forward` functions validate it against `ttn_settings.webhook_secret` for the matching `application_id`.
+- **Emulator forwarded uplinks**: When the emulator has a webhook secret stored (from synced user TTN settings or when saving settings in the UI), it includes `x-ttn-webhook-secret` on `ttn-webhook-forward` requests. This mirrors TTN behavior so emulator-forwarded requests validate against the same `ttn_settings.webhook_secret` value.
+
 ## Troubleshooting
 
 ### 403 Errors when simulating uplinks

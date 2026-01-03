@@ -310,6 +310,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnApiKeySet(true);
         setTtnApiKey('');
         updateTTN({ enabled: true, applicationId: wizardConfig.applicationId, cluster: wizardConfig.cluster });
+        if (wizardConfig.webhookSecret) {
+          update({ ttnWebhookSecret: wizardConfig.webhookSecret });
+        }
         
         // Mark wizard complete
         localStorage.setItem(`ttn-wizard-complete-${orgId}`, 'true');
@@ -417,6 +420,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             applicationId: ttn.application_id || '',
             cluster: ttn.cluster || 'eu1',
           });
+        }
+
+        if (ttn.webhook_secret) {
+          update({ ttnWebhookSecret: ttn.webhook_secret });
         }
       } else {
         console.log('[WebhookSettings] No TTN settings found in synced_users for', userId ? `user ${userId}` : `org ${orgId}`);
@@ -553,6 +560,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         api_key_last4: savedApiKeyLast4 || undefined,
         updated_at: savedUpdatedAt,
       });
+      if (ttnWebhookSecret) {
+        update({ ttnWebhookSecret });
+      }
 
       // Update centralized TTN config store with LOCAL saved values
       setCanonicalConfig({
