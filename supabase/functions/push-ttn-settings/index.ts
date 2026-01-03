@@ -14,7 +14,8 @@ interface PushTTNSettingsRequest {
   enabled?: boolean;
   cluster?: string;
   application_id?: string;
-  api_key?: string;
+  api_key?: string;  // Application API key for device operations
+  gateway_api_key?: string;  // Personal/Organization API key for gateway operations
   webhook_secret?: string;
   gateway_owner_type?: 'user' | 'organization';
   gateway_owner_id?: string;
@@ -26,6 +27,7 @@ interface PushResult {
   local_updated?: boolean;
   user_ttn_updated?: boolean;
   api_key_last4?: string | null;
+  gateway_api_key_last4?: string | null;
   updated_at?: string;
   error?: string;
   error_code?: string;
@@ -47,7 +49,7 @@ Deno.serve(async (req) => {
 
   try {
     const body: PushTTNSettingsRequest = await req.json();
-    const { org_id, user_id, enabled, cluster, application_id, api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
+    const { org_id, user_id, enabled, cluster, application_id, api_key, gateway_api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
 
     // Validate required fields
     if (!org_id) {
@@ -62,6 +64,7 @@ Deno.serve(async (req) => {
 
     // Log the push request (redacted)
     const apiKeyLast4 = api_key ? api_key.slice(-4) : null;
+    const gatewayApiKeyLast4 = gateway_api_key ? gateway_api_key.slice(-4) : null;
     console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_REQUEST`, {
       org_id,
       user_id: user_id || null,
@@ -70,6 +73,8 @@ Deno.serve(async (req) => {
       application_id,
       has_api_key: !!api_key,
       api_key_last4: apiKeyLast4 ? `****${apiKeyLast4}` : null,
+      has_gateway_api_key: !!gateway_api_key,
+      gateway_api_key_last4: gatewayApiKeyLast4 ? `****${gatewayApiKeyLast4}` : null,
       has_webhook_secret: !!webhook_secret,
     });
 
@@ -83,6 +88,7 @@ Deno.serve(async (req) => {
     let localUpdated = false;
     let userTtnUpdated = false;
     let savedApiKeyLast4: string | null = null;
+    let savedGatewayApiKeyLast4: string | null = null;
     const updatedAt = new Date().toISOString();
 
     try {
@@ -117,6 +123,12 @@ Deno.serve(async (req) => {
       if (api_key) {
         updateData.api_key = api_key;
         savedApiKeyLast4 = api_key.slice(-4);
+      }
+      // Gateway API key (Personal/Organization key for gateway operations)
+      if (gateway_api_key) {
+        updateData.gateway_api_key = gateway_api_key;
+        updateData.gateway_api_key_last4 = gateway_api_key.slice(-4);
+        savedGatewayApiKeyLast4 = gateway_api_key.slice(-4);
       }
       if (webhook_secret) {
         updateData.webhook_secret = webhook_secret;
@@ -208,6 +220,7 @@ Deno.serve(async (req) => {
     // Success response
     console.log(`[push-ttn-settings][${requestId}] TTN_PUSH_SUCCESS`, {
       api_key_last4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
+      gateway_api_key_last4: savedGatewayApiKeyLast4 ? `****${savedGatewayApiKeyLast4}` : null,
       updated_at: updatedAt,
       local_updated: localUpdated,
       user_ttn_updated: userTtnUpdated,
@@ -220,6 +233,7 @@ Deno.serve(async (req) => {
       local_updated: localUpdated,
       user_ttn_updated: userTtnUpdated,
       api_key_last4: savedApiKeyLast4,
+      gateway_api_key_last4: savedGatewayApiKeyLast4,
       updated_at: updatedAt,
       frostguard_skipped: true,
       frostguard_skip_reason: 'FrostGuard requires JWT auth, incompatible with cross-project sync',

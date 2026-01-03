@@ -33,6 +33,7 @@ interface GatewayProvisionResult {
 
 interface TTNSettings {
   api_key: string | null;
+  gateway_api_key: string | null;  // Separate key for gateway operations
   cluster: string;
   gateway_owner_type: 'user' | 'organization';
   gateway_owner_id: string | null;
@@ -398,7 +399,7 @@ Deno.serve(async (req) => {
     if (org_id) {
       const { data, error } = await supabase
         .from('ttn_settings')
-        .select('api_key, cluster, gateway_owner_type, gateway_owner_id')
+        .select('api_key, gateway_api_key, cluster, gateway_owner_type, gateway_owner_id')
         .eq('org_id', org_id)
         .maybeSingle();
 
@@ -409,11 +410,18 @@ Deno.serve(async (req) => {
       }
     }
 
-    // Get API key from settings or environment
-    const apiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
+    // For gateway operations, prefer gateway_api_key (Personal/Org key with gateway rights)
+    // Fall back to api_key (Application key) only if gateway_api_key not set
+    const gatewayApiKey = ttnSettings?.gateway_api_key;
+    const appApiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
+    const apiKey = gatewayApiKey || appApiKey;
     const cluster = ttnSettings?.cluster || 'eu1';
     const gatewayOwnerType = ttnSettings?.gateway_owner_type || 'user';
     const gatewayOwnerId = ttnSettings?.gateway_owner_id;
+
+    // Check if we have a gateway-specific API key
+    const usingGatewayKey = !!gatewayApiKey;
+    console.log(`[${requestId}] Using ${usingGatewayKey ? 'gateway-specific' : 'application'} API key`);
 
     if (!apiKey) {
       return new Response(
@@ -421,11 +429,17 @@ Deno.serve(async (req) => {
           ok: false,
           requestId,
           error: 'TTN API key not configured. Configure TTN settings first.',
+          hint: 'For gateway provisioning, you need a Personal or Organization API key with gateways:read and gateways:write permissions.',
           results: [],
           summary: { created: 0, already_exists: 0, failed: 0, total: 0 },
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Warn if using application key for gateway operations (likely to fail)
+    if (!usingGatewayKey) {
+      console.warn(`[${requestId}] WARNING: Using application API key for gateway operations. This may fail if the key lacks gateway permissions. Consider configuring a separate Gateway API Key.`);
     }
 
     // Check gateway owner is configured

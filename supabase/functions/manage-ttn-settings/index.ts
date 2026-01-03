@@ -938,8 +938,9 @@ async function handleCheckGatewayPermissions(
 
   console.log(`[${requestId}] Checking gateway permissions for org ${org_id || 'none'}`);
 
-  // Load settings including gateway owner config
-  let apiKey: string | null = null;
+  // Load settings including gateway owner config AND gateway-specific API key
+  let gatewayApiKey: string | null = null;
+  let appApiKey: string | null = null;
   let ttnCluster = cluster || 'eu1';
   let gatewayOwnerType: 'user' | 'organization' = 'user';
   let gatewayOwnerId: string | null = null;
@@ -947,23 +948,34 @@ async function handleCheckGatewayPermissions(
   if (org_id) {
     const { data } = await supabase
       .from('ttn_settings')
-      .select('api_key, cluster, gateway_owner_type, gateway_owner_id')
+      .select('api_key, gateway_api_key, cluster, gateway_owner_type, gateway_owner_id')
       .eq('org_id', org_id)
       .maybeSingle();
 
-    apiKey = data?.api_key || null;
+    gatewayApiKey = data?.gateway_api_key || null;
+    appApiKey = data?.api_key || null;
     ttnCluster = cluster || data?.cluster || 'eu1';
     gatewayOwnerType = data?.gateway_owner_type || 'user';
     gatewayOwnerId = data?.gateway_owner_id || null;
   }
+
+  // Prefer gateway-specific API key over application API key
+  const apiKey = gatewayApiKey || appApiKey;
+  const usingGatewayKey = !!gatewayApiKey;
 
   if (!apiKey) {
     return buildResponse({
       ok: false,
       error: 'No API key configured',
       code: 'NO_API_KEY',
+      hint: 'Configure a Gateway API Key (Personal or Organization API key) with gateways:read and gateways:write permissions.',
       permissions: { gateway_read: false, gateway_write: false },
     }, 200, requestId);
+  }
+
+  // If no gateway-specific key is configured, warn the user
+  if (!usingGatewayKey) {
+    console.log(`[${requestId}] No gateway-specific API key configured, using application API key`);
   }
 
   // Check if gateway owner is configured
@@ -1089,17 +1101,20 @@ async function handleCheckGatewayPermissions(
 
   const allPermissionsOk = canReadGateways && canWriteGateways;
 
-  console.log(`[${requestId}] Gateway permissions: read=${canReadGateways}, write=${canWriteGateways}, overall=${allPermissionsOk}`);
+  console.log(`[${requestId}] Gateway permissions: read=${canReadGateways}, write=${canWriteGateways}, overall=${allPermissionsOk}, using_gateway_key=${usingGatewayKey}`);
 
   // Build hint based on failure type
   let hint = undefined;
   if (!allPermissionsOk) {
-    if (readError.includes('Application API key') || writeError.includes('Application API key')) {
-      hint = 'Application API keys cannot manage gateways. Create a Personal API Key in TTN Console → User Settings → API Keys with gateways:read and gateways:write permissions.';
+    if (!usingGatewayKey) {
+      // No gateway-specific key configured - this is the most likely cause
+      hint = 'You are using an Application API key which cannot have gateway permissions. Configure a separate Gateway API Key in Webhook Settings → Gateway Configuration. Use a Personal or Organization API key from TTN Console with gateways:read and gateways:write rights.';
+    } else if (readError.includes('Application API key') || writeError.includes('Application API key')) {
+      hint = 'The Gateway API Key appears to be an Application key. Use a Personal API Key (TTN Console → User Settings → API Keys) or Organization API Key with gateways:read and gateways:write permissions.';
     } else if (readError.includes('not found') || writeError.includes('not found')) {
       hint = `The Gateway Owner ID "${gatewayOwnerId}" was not found. Verify your TTN username or organization ID in Webhook Settings.`;
     } else {
-      hint = 'Create a Personal or Organization API key in TTN Console with gateways:read and gateways:write permissions.';
+      hint = 'The Gateway API Key is missing gateways:read and gateways:write permissions. Update the key in TTN Console or create a new one with these rights.';
     }
   }
 
@@ -1112,6 +1127,7 @@ async function handleCheckGatewayPermissions(
     },
     error: allPermissionsOk ? undefined : 'Missing gateway permissions',
     hint,
+    using_gateway_key: usingGatewayKey,
     diagnostics: {
       cluster: ttnCluster,
       gateway_owner_type: gatewayOwnerType,
@@ -1122,6 +1138,7 @@ async function handleCheckGatewayPermissions(
       gateway_write_status: writeStatus,
       gateway_write_passed: canWriteGateways,
       gateway_write_error: writeError || undefined,
+      api_key_type: usingGatewayKey ? 'gateway_api_key' : 'application_api_key',
       api_key_last4: apiKey.slice(-4),
     },
   }, 200, requestId);

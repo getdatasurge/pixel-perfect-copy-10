@@ -318,6 +318,9 @@ export type Database = {
           cluster: string
           created_at: string
           enabled: boolean
+          gateway_api_key: string | null
+          gateway_api_key_last4: string | null
+          gateway_key_validated_at: string | null
           gateway_owner_id: string | null
           gateway_owner_type: string | null
           id: string
@@ -334,6 +337,9 @@ export type Database = {
           cluster?: string
           created_at?: string
           enabled?: boolean
+          gateway_api_key?: string | null
+          gateway_api_key_last4?: string | null
+          gateway_key_validated_at?: string | null
           gateway_owner_id?: string | null
           gateway_owner_type?: string | null
           id?: string
@@ -350,6 +356,9 @@ export type Database = {
           cluster?: string
           created_at?: string
           enabled?: boolean
+          gateway_api_key?: string | null
+          gateway_api_key_last4?: string | null
+          gateway_key_validated_at?: string | null
           gateway_owner_id?: string | null
           gateway_owner_type?: string | null
           id?: string
