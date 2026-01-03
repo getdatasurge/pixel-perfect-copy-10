@@ -656,6 +656,7 @@ export default function LoRaWANEmulator() {
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
           body: JSON.stringify(ttnPayload),
         });
         
@@ -866,6 +867,7 @@ export default function LoRaWANEmulator() {
         const response = await fetch(webhookConfig.targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
           body: JSON.stringify(ttnPayload),
         });
         
