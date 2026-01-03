@@ -27,6 +27,7 @@ const CATEGORY_ICONS: Record<DebugCategory, React.ReactNode> = {
   'ttn-preflight': <Radio className="h-3 w-3" />,
   'ttn-sync': <RefreshCw className="h-3 w-3" />,
   'provisioning': <Cpu className="h-3 w-3" />,
+  'ui': <Bug className="h-3 w-3" />,
   'error': <AlertTriangle className="h-3 w-3" />,
 };
 
@@ -45,6 +46,7 @@ const CATEGORY_LABELS: Record<DebugCategory, string> = {
   'ttn-preflight': 'Preflight',
   'ttn-sync': 'TTN Sync',
   'provisioning': 'Provisioning',
+  'ui': 'UI',
   'error': 'Errors',
 };
 

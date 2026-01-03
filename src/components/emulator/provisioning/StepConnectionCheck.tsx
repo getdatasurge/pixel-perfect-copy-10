@@ -287,17 +287,39 @@ export default function StepConnectionCheck({
         <Alert variant="destructive">
           <AlertTriangle className="h-4 w-4" />
           <AlertDescription>
-            <div className="space-y-2">
-              <p>Your TTN API key is missing gateway permissions.</p>
+            <div className="space-y-3">
+              <p className="font-medium">Your TTN API key is missing gateway permissions.</p>
+              <div className="text-sm bg-background/50 p-3 rounded-lg space-y-2">
+                <p><strong>Why this happens:</strong></p>
+                <p className="text-muted-foreground">
+                  Application API keys (from TTN Console → Applications) cannot have gateway permissions. 
+                  Gateway provisioning requires a <strong>Personal API Key</strong> or <strong>Organization API Key</strong>.
+                </p>
+              </div>
               <div className="text-sm">
                 <strong>How to fix:</strong>
-                <ol className="list-decimal ml-4 mt-1 space-y-1">
-                  <li>Open TTN Console → API Keys</li>
-                  <li>Edit your API key or create a new one</li>
-                  <li>Add permissions: <code className="bg-muted px-1 rounded">gateways:read</code>, <code className="bg-muted px-1 rounded">gateways:write</code></li>
-                  <li>Save and update the key in Webhook Settings</li>
+                <ol className="list-decimal ml-4 mt-1 space-y-1 text-muted-foreground">
+                  <li>Open TTN Console → <strong>User Settings → API Keys</strong> (or Organization → API Keys)</li>
+                  <li>Create a new API key with: <code className="bg-muted px-1 rounded">gateways:read</code>, <code className="bg-muted px-1 rounded">gateways:write</code></li>
+                  <li>Go to <strong>Webhook Settings → Gateway Configuration</strong></li>
+                  <li>Paste the new key in the "Gateway API Key" field and save</li>
                 </ol>
               </div>
+              <Button 
+                variant="outline" 
+                size="sm" 
+                className="mt-2"
+                onClick={() => {
+                  // Scroll to webhook settings section
+                  const webhookSection = document.getElementById('webhook');
+                  if (webhookSection) {
+                    webhookSection.scrollIntoView({ behavior: 'smooth' });
+                  }
+                }}
+              >
+                <Settings className="h-3 w-3 mr-2" />
+                Configure Gateway Key
+              </Button>
             </div>
           </AlertDescription>
         </Alert>

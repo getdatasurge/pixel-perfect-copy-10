@@ -9,6 +9,7 @@ export type DebugCategory =
   | 'ttn-preflight' // TTN preflight checks
   | 'ttn-sync'     // TTN settings push/pull to FrostGuard
   | 'provisioning' // Device/gateway provisioning
+  | 'ui'           // UI state changes, tab switches
   | 'error';       // Errors and exceptions
 
 export type DebugLevel = 'debug' | 'info' | 'warn' | 'error';

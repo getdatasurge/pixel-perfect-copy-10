@@ -46,57 +46,57 @@ export type Database = {
       }
       lora_gateways: {
         Row: {
-          id: string
-          org_id: string
-          site_id: string | null
-          eui: string
-          name: string | null
-          ttn_gateway_id: string | null
-          status: Database["public"]["Enums"]["gateway_status"] | null
           cluster: string | null
+          created_at: string | null
+          eui: string
           frequency_plan: string | null
           gateway_server_address: string | null
+          id: string
           is_online: boolean | null
           last_seen_at: string | null
-          provisioned_at: string | null
+          name: string | null
+          org_id: string
           provision_error: string | null
-          created_at: string | null
+          provisioned_at: string | null
+          site_id: string | null
+          status: string | null
+          ttn_gateway_id: string | null
           updated_at: string | null
         }
         Insert: {
-          id?: string
-          org_id: string
-          site_id?: string | null
-          eui: string
-          name?: string | null
-          ttn_gateway_id?: string | null
-          status?: Database["public"]["Enums"]["gateway_status"] | null
           cluster?: string | null
+          created_at?: string | null
+          eui: string
           frequency_plan?: string | null
           gateway_server_address?: string | null
+          id?: string
           is_online?: boolean | null
           last_seen_at?: string | null
-          provisioned_at?: string | null
+          name?: string | null
+          org_id: string
           provision_error?: string | null
-          created_at?: string | null
+          provisioned_at?: string | null
+          site_id?: string | null
+          status?: string | null
+          ttn_gateway_id?: string | null
           updated_at?: string | null
         }
         Update: {
-          id?: string
-          org_id?: string
-          site_id?: string | null
-          eui?: string
-          name?: string | null
-          ttn_gateway_id?: string | null
-          status?: Database["public"]["Enums"]["gateway_status"] | null
           cluster?: string | null
+          created_at?: string | null
+          eui?: string
           frequency_plan?: string | null
           gateway_server_address?: string | null
+          id?: string
           is_online?: boolean | null
           last_seen_at?: string | null
-          provisioned_at?: string | null
+          name?: string | null
+          org_id?: string
           provision_error?: string | null
-          created_at?: string | null
+          provisioned_at?: string | null
+          site_id?: string | null
+          status?: string | null
+          ttn_gateway_id?: string | null
           updated_at?: string | null
         }
         Relationships: []
@@ -319,8 +319,6 @@ export type Database = {
           created_at: string
           enabled: boolean
           gateway_api_key: string | null
-          gateway_api_key_last4: string | null
-          gateway_key_validated_at: string | null
           gateway_owner_id: string | null
           gateway_owner_type: string | null
           id: string
@@ -338,8 +336,6 @@ export type Database = {
           created_at?: string
           enabled?: boolean
           gateway_api_key?: string | null
-          gateway_api_key_last4?: string | null
-          gateway_key_validated_at?: string | null
           gateway_owner_id?: string | null
           gateway_owner_type?: string | null
           id?: string
@@ -357,8 +353,6 @@ export type Database = {
           created_at?: string
           enabled?: boolean
           gateway_api_key?: string | null
-          gateway_api_key_last4?: string | null
-          gateway_key_validated_at?: string | null
           gateway_owner_id?: string | null
           gateway_owner_type?: string | null
           id?: string
@@ -476,7 +470,6 @@ export type Database = {
     Enums: {
       app_role: "owner" | "admin" | "member"
       door_state: "open" | "closed" | "unknown"
-      gateway_status: "pending" | "active" | "disabled"
       sensor_kind: "temp" | "door" | "combo"
       sensor_status: "pending" | "active" | "disabled"
     }
@@ -608,7 +601,6 @@ export const Constants = {
     Enums: {
       app_role: ["owner", "admin", "member"],
       door_state: ["open", "closed", "unknown"],
-      gateway_status: ["pending", "active", "disabled"],
       sensor_kind: ["temp", "door", "combo"],
       sensor_status: ["pending", "active", "disabled"],
     },

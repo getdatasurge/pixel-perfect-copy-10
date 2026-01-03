@@ -128,7 +128,6 @@ Deno.serve(async (req) => {
       // Gateway API key (Personal/Organization key for gateway operations)
       if (gateway_api_key) {
         updateData.gateway_api_key = gateway_api_key;
-        updateData.gateway_api_key_last4 = gateway_api_key.slice(-4);
         savedGatewayApiKeyLast4 = gateway_api_key.slice(-4);
       }
       if (webhook_secret) {
