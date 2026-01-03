@@ -314,7 +314,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setTtnApiKeySet(true);
         setTtnApiKey('');
         updateTTN({ enabled: true, applicationId: wizardConfig.applicationId, cluster: wizardConfig.cluster });
-        
+        if (wizardConfig.webhookSecret) {
+          update({ ttnWebhookSecret: wizardConfig.webhookSecret });
+        }
+
         // Mark wizard complete
         localStorage.setItem(`ttn-wizard-complete-${orgId}`, 'true');
       }
@@ -440,6 +443,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             applicationId: ttn.application_id || '',
             cluster: ttn.cluster || 'eu1',
           });
+        }
+
+        if (ttn.webhook_secret) {
+          update({ ttnWebhookSecret: ttn.webhook_secret });
         }
       } else if (orgSettings) {
         // Fallback: Use org-level ttn_settings if no synced_users.ttn
@@ -1102,6 +1109,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         const response = await fetch(targetUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
           body: JSON.stringify(payload),
         });
 
