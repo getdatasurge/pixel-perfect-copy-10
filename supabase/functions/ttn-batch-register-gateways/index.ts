@@ -112,6 +112,50 @@ function getErrorCode(statusCode?: number, error?: string): string {
   return 'UNKNOWN';
 }
 
+// Upsert gateway record in database
+async function upsertGatewayInDatabase(
+  supabase: any,
+  orgId: string,
+  gateway: GatewayToProvision,
+  ttnGatewayId: string,
+  cluster: string,
+  frequencyPlan: string,
+  status: 'pending' | 'active' | 'disabled',
+  provisionError: string | null,
+  requestId: string
+): Promise<void> {
+  const normalizedEui = normalizeGatewayEui(gateway.eui);
+  if (!normalizedEui) return;
+
+  const gatewayData = {
+    org_id: orgId,
+    eui: normalizedEui.toUpperCase(),
+    name: gateway.name,
+    ttn_gateway_id: ttnGatewayId,
+    status,
+    cluster,
+    frequency_plan: frequencyPlan,
+    gateway_server_address: `${cluster}.cloud.thethings.network`,
+    is_online: gateway.is_online ?? true,
+    provisioned_at: status === 'active' ? new Date().toISOString() : null,
+    provision_error: provisionError,
+    updated_at: new Date().toISOString(),
+  };
+
+  const { error } = await supabase
+    .from('lora_gateways')
+    .upsert(gatewayData, {
+      onConflict: 'org_id,eui',
+      ignoreDuplicates: false
+    });
+
+  if (error) {
+    console.warn(`[${requestId}] Failed to upsert gateway ${ttnGatewayId} in database:`, error.message);
+  } else {
+    console.log(`[${requestId}] Gateway ${ttnGatewayId} saved to database with status=${status}`);
+  }
+}
+
 // Register a single gateway with retry logic
 async function registerGatewayWithRetry(
   gateway: GatewayToProvision,
@@ -411,19 +455,35 @@ Deno.serve(async (req) => {
     // Process each gateway with retry logic
     for (const gateway of gateways) {
       const result = await registerGatewayWithRetry(
-        gateway, 
-        apiKey, 
-        cluster, 
-        frequencyPlan, 
+        gateway,
+        apiKey,
+        cluster,
+        frequencyPlan,
         gatewayOwnerType,
         gatewayOwnerId,
         requestId
       );
       results.push(result);
-      
+
       if (result.status === 'created') summary.created++;
       else if (result.status === 'already_exists') summary.already_exists++;
       else summary.failed++;
+
+      // Persist gateway to database if org_id is provided
+      if (org_id) {
+        const dbStatus = result.status === 'failed' ? 'pending' : 'active';
+        await upsertGatewayInDatabase(
+          supabase,
+          org_id,
+          gateway,
+          result.ttn_gateway_id,
+          cluster,
+          frequencyPlan,
+          dbStatus,
+          result.error || null,
+          requestId
+        );
+      }
 
       // Small delay between gateways to avoid rate limiting
       if (gateways.indexOf(gateway) < gateways.length - 1) {

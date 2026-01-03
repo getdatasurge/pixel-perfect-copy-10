@@ -909,3 +909,266 @@ export async function assignDeviceToUnit(
     };
   }
 }
+
+// ============================================================================
+// Gateway Sync Functions - Local Database Operations
+// ============================================================================
+
+export interface LocalGateway {
+  id: string;
+  org_id: string;
+  site_id: string | null;
+  eui: string;
+  name: string | null;
+  ttn_gateway_id: string | null;
+  status: 'pending' | 'active' | 'disabled';
+  cluster: string | null;
+  frequency_plan: string | null;
+  gateway_server_address: string | null;
+  is_online: boolean;
+  last_seen_at: string | null;
+  provisioned_at: string | null;
+  provision_error: string | null;
+  created_at: string | null;
+  updated_at: string | null;
+}
+
+export interface FetchGatewaysResult {
+  ok: boolean;
+  gateways: LocalGateway[];
+  error?: string;
+}
+
+/**
+ * Fetch gateways from local Supabase database for an organization.
+ * This provides the emulator with provisioned gateway data.
+ */
+export async function fetchOrgGateways(orgId: string): Promise<FetchGatewaysResult> {
+  const startTime = performance.now();
+
+  log('network', 'info', 'FETCH_ORG_GATEWAYS_START', { org_id: orgId });
+
+  try {
+    const { data, error } = await supabase
+      .from('lora_gateways')
+      .select('*')
+      .eq('org_id', orgId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      log('network', 'error', 'FETCH_ORG_GATEWAYS_ERROR', {
+        org_id: orgId,
+        error: error.message,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+
+      return {
+        ok: false,
+        gateways: [],
+        error: error.message,
+      };
+    }
+
+    const gateways: LocalGateway[] = (data || []).map(row => ({
+      id: row.id,
+      org_id: row.org_id,
+      site_id: row.site_id,
+      eui: row.eui,
+      name: row.name,
+      ttn_gateway_id: row.ttn_gateway_id,
+      status: row.status || 'pending',
+      cluster: row.cluster,
+      frequency_plan: row.frequency_plan,
+      gateway_server_address: row.gateway_server_address,
+      is_online: row.is_online ?? true,
+      last_seen_at: row.last_seen_at,
+      provisioned_at: row.provisioned_at,
+      provision_error: row.provision_error,
+      created_at: row.created_at,
+      updated_at: row.updated_at,
+    }));
+
+    log('network', 'info', 'FETCH_ORG_GATEWAYS_SUCCESS', {
+      org_id: orgId,
+      gateway_count: gateways.length,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return { ok: true, gateways };
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    log('network', 'error', 'FETCH_ORG_GATEWAYS_ERROR', {
+      org_id: orgId,
+      error: message,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return {
+      ok: false,
+      gateways: [],
+      error: message,
+    };
+  }
+}
+
+export interface SaveGatewayResult {
+  ok: boolean;
+  gateway?: LocalGateway;
+  error?: string;
+}
+
+/**
+ * Save or update a gateway in the local database.
+ * Used when creating gateways in the emulator UI before provisioning.
+ */
+export async function saveGatewayToDatabase(
+  orgId: string,
+  gateway: {
+    eui: string;
+    name: string;
+    is_online?: boolean;
+    site_id?: string;
+  }
+): Promise<SaveGatewayResult> {
+  const startTime = performance.now();
+
+  log('network', 'info', 'SAVE_GATEWAY_START', {
+    org_id: orgId,
+    eui: gateway.eui,
+    name: gateway.name,
+  });
+
+  try {
+    const gatewayData = {
+      org_id: orgId,
+      eui: gateway.eui.toUpperCase().replace(/[:\s-]/g, ''),
+      name: gateway.name,
+      is_online: gateway.is_online ?? true,
+      site_id: gateway.site_id || null,
+      status: 'pending' as const,
+      updated_at: new Date().toISOString(),
+    };
+
+    const { data, error } = await supabase
+      .from('lora_gateways')
+      .upsert(gatewayData, {
+        onConflict: 'org_id,eui',
+        ignoreDuplicates: false,
+      })
+      .select()
+      .single();
+
+    if (error) {
+      log('network', 'error', 'SAVE_GATEWAY_ERROR', {
+        org_id: orgId,
+        eui: gateway.eui,
+        error: error.message,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+
+      return {
+        ok: false,
+        error: error.message,
+      };
+    }
+
+    const savedGateway: LocalGateway = {
+      id: data.id,
+      org_id: data.org_id,
+      site_id: data.site_id,
+      eui: data.eui,
+      name: data.name,
+      ttn_gateway_id: data.ttn_gateway_id,
+      status: data.status || 'pending',
+      cluster: data.cluster,
+      frequency_plan: data.frequency_plan,
+      gateway_server_address: data.gateway_server_address,
+      is_online: data.is_online ?? true,
+      last_seen_at: data.last_seen_at,
+      provisioned_at: data.provisioned_at,
+      provision_error: data.provision_error,
+      created_at: data.created_at,
+      updated_at: data.updated_at,
+    };
+
+    log('network', 'info', 'SAVE_GATEWAY_SUCCESS', {
+      org_id: orgId,
+      gateway_id: savedGateway.id,
+      eui: savedGateway.eui,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return { ok: true, gateway: savedGateway };
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    log('network', 'error', 'SAVE_GATEWAY_ERROR', {
+      org_id: orgId,
+      eui: gateway.eui,
+      error: message,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return {
+      ok: false,
+      error: message,
+    };
+  }
+}
+
+/**
+ * Delete a gateway from the local database.
+ */
+export async function deleteGatewayFromDatabase(
+  orgId: string,
+  gatewayId: string
+): Promise<{ ok: boolean; error?: string }> {
+  const startTime = performance.now();
+
+  log('network', 'info', 'DELETE_GATEWAY_START', {
+    org_id: orgId,
+    gateway_id: gatewayId,
+  });
+
+  try {
+    const { error } = await supabase
+      .from('lora_gateways')
+      .delete()
+      .eq('id', gatewayId)
+      .eq('org_id', orgId);
+
+    if (error) {
+      log('network', 'error', 'DELETE_GATEWAY_ERROR', {
+        org_id: orgId,
+        gateway_id: gatewayId,
+        error: error.message,
+        duration_ms: Math.round(performance.now() - startTime),
+      });
+
+      return { ok: false, error: error.message };
+    }
+
+    log('network', 'info', 'DELETE_GATEWAY_SUCCESS', {
+      org_id: orgId,
+      gateway_id: gatewayId,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return { ok: true };
+
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+
+    log('network', 'error', 'DELETE_GATEWAY_ERROR', {
+      org_id: orgId,
+      gateway_id: gatewayId,
+      error: message,
+      duration_ms: Math.round(performance.now() - startTime),
+    });
+
+    return { ok: false, error: message };
+  }
+}
