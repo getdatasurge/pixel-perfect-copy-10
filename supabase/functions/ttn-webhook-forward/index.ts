@@ -3,29 +3,11 @@ import { loadOrgSettings, loadTTNSettings } from "../_shared/settings.ts";
 import { processTTNUplink, TTNUplinkPayload } from "../_shared/ttnWebhookProcessor.ts";
 import { loadWebhookSecretForApplication, verifyWebhookSecret } from "../_shared/ttnWebhookAuth.ts";
 
-const allowedOrigins = new Set([
-  'https://pixel-perfect-emucopy-15.lovable.app',
-  'http://localhost:5173',
-]);
-
-const baseCorsHeaders = {
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-ttn-webhook-secret',
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
-  'Access-Control-Allow-Credentials': 'true',
 };
-
-function getCorsHeaders(req: Request) {
-  const origin = req.headers.get('Origin');
-  if (origin && allowedOrigins.has(origin)) {
-    return {
-      ...baseCorsHeaders,
-      'Access-Control-Allow-Origin': origin,
-      'Vary': 'Origin',
-    };
-  }
-
-  return { ...baseCorsHeaders };
-}
 
 interface EmulatorForwardRequest {
   org_id?: string;
@@ -38,6 +20,7 @@ interface EmulatorForwardRequest {
 }
 
 interface NormalizedEmulatorPayload {
+  source?: string;
   orgId?: string;
   selectedUserId?: string;
   applicationId?: string;
@@ -94,6 +77,7 @@ function normalizeEmulatorPayload(raw: unknown): NormalizedEmulatorPayload {
   const applicationIds = endDeviceIds ? toRecord(endDeviceIds.application_ids) : null;
   const uplinkMessage = toRecord(data.uplink_message);
 
+  const source = readString(data.source);
   const applicationId = readString(
     data.applicationId ?? data.application_id ?? applicationIds?.application_id
   );
@@ -114,6 +98,7 @@ function normalizeEmulatorPayload(raw: unknown): NormalizedEmulatorPayload {
   const receivedAt = readString(data.received_at);
 
   return {
+    source,
     orgId,
     selectedUserId,
     applicationId,
@@ -126,7 +111,6 @@ function normalizeEmulatorPayload(raw: unknown): NormalizedEmulatorPayload {
 }
 
 Deno.serve(async (req) => {
-  const corsHeaders = getCorsHeaders(req);
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -182,18 +166,22 @@ Deno.serve(async (req) => {
       ? await loadTTNSettings(payload.selectedUserId, payload.orgId)
       : { settings: payload.orgId ? await loadOrgSettings(payload.orgId) : null, source: payload.orgId ? 'org' : null };
 
-    const expectedSecret = await loadWebhookSecretForApplication(supabase, applicationId);
-    const providedSecret = req.headers.get('x-ttn-webhook-secret');
-    const secretCheck = verifyWebhookSecret(providedSecret, expectedSecret);
-    if (!secretCheck.ok) {
-      log('warn', 'Webhook secret validation failed', {
-        applicationId,
-        settingsSource: settingsResult.source,
-      });
-      return new Response(
-        JSON.stringify({ ok: false, error: secretCheck.error, errorType: 'auth_error' }),
-        { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
-      );
+    // Skip webhook secret check for emulator requests (identified by source or org context)
+    const isEmulatorRequest = payload.source === 'emulator' || (payload.orgId && payload.selectedUserId);
+    if (!isEmulatorRequest) {
+      const expectedSecret = await loadWebhookSecretForApplication(supabase, applicationId);
+      const providedSecret = req.headers.get('x-ttn-webhook-secret');
+      const secretCheck = verifyWebhookSecret(providedSecret, expectedSecret);
+      if (!secretCheck.ok) {
+        log('warn', 'Webhook secret validation failed', {
+          applicationId,
+          settingsSource: settingsResult.source,
+        });
+        return new Response(
+          JSON.stringify({ ok: false, error: secretCheck.error, errorType: 'auth_error', request_id: correlationId }),
+          { status: 401, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
+        );
+      }
     }
 
     const ttnPayload: TTNUplinkPayload = {
@@ -214,6 +202,7 @@ Deno.serve(async (req) => {
     };
 
     log('info', 'Forwarding emulator uplink', {
+      source: payload.source || 'external',
       device_id: deviceId,
       dev_eui: normalizedDevEui,
       application_id: applicationId,
@@ -226,6 +215,7 @@ Deno.serve(async (req) => {
       ...result.body,
       settingsSource: settingsResult.source,
       applicationId,
+      request_id: correlationId,
     };
 
     return new Response(
@@ -237,7 +227,7 @@ Deno.serve(async (req) => {
     log('error', 'Unexpected error', { error: errorMessage });
 
     return new Response(
-      JSON.stringify({ ok: false, error: 'Internal processing error', hint: 'Check server logs for details' }),
+      JSON.stringify({ ok: false, error: 'Internal processing error', hint: 'Check server logs for details', request_id: correlationId }),
       { status: 500, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
   }

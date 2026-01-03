@@ -580,6 +580,7 @@ export default function LoRaWANEmulator() {
 
         const { data, error } = await supabase.functions.invoke('ttn-webhook-forward', {
           body: {
+            source: 'emulator', // Identify request origin for auth bypass
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
             selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
             applicationId: ttnConfig.applicationId,
@@ -854,6 +855,7 @@ export default function LoRaWANEmulator() {
 
         const { data, error } = await supabase.functions.invoke('ttn-webhook-forward', {
           body: {
+            source: 'emulator', // Identify request origin for auth bypass
             org_id: webhookConfig.testOrgId, // Pass org for settings lookup
             selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
             applicationId: ttnConfig.applicationId,
