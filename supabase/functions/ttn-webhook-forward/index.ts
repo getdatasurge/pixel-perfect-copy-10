@@ -12,7 +12,24 @@ const buildCorsHeaders = (req: Request) => {
     'Access-Control-Allow-Methods': 'POST, OPTIONS',
     'Access-Control-Allow-Credentials': 'true',
   };
+const allowedOrigins = new Set([
+  'https://pixel-perfect-emucopy-15.lovable.app',
+]);
+
+const baseCorsHeaders = {
+  'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type, x-ttn-webhook-secret',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+  'Access-Control-Allow-Credentials': 'true',
 };
+
+function getCorsHeaders(req: Request) {
+  const origin = req.headers.get('Origin');
+  if (origin && allowedOrigins.has(origin)) {
+    return { ...baseCorsHeaders, 'Access-Control-Allow-Origin': origin };
+  }
+
+  return { ...baseCorsHeaders };
+}
 
 interface EmulatorForwardRequest {
   org_id?: string;
@@ -22,6 +39,15 @@ interface EmulatorForwardRequest {
   devEui: string;
   decodedPayload: Record<string, unknown>;
   fPort: number;
+interface NormalizedEmulatorPayload {
+  orgId?: string;
+  selectedUserId?: string;
+  applicationId?: string;
+  deviceId?: string;
+  devEui?: string;
+  decodedPayload?: Record<string, unknown>;
+  fPort?: number;
+  receivedAt?: string;
 }
 
 function normalizeDevEui(devEui: string): string | null {
@@ -32,9 +58,79 @@ function normalizeDevEui(devEui: string): string | null {
   return cleaned;
 }
 
+function toRecord(value: unknown): Record<string, unknown> | null {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) {
+    return null;
+  }
+  return value as Record<string, unknown>;
+}
+
+function readString(value: unknown): string | undefined {
+  if (typeof value !== 'string') {
+    return undefined;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function readNumber(value: unknown): number | undefined {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string' && value.trim() !== '') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+  return undefined;
+}
+
+function normalizeEmulatorPayload(raw: unknown): NormalizedEmulatorPayload {
+  const data = toRecord(raw);
+  if (!data) {
+    return {};
+  }
+
+  const endDeviceIds = toRecord(data.end_device_ids);
+  const applicationIds = endDeviceIds ? toRecord(endDeviceIds.application_ids) : null;
+  const uplinkMessage = toRecord(data.uplink_message);
+
+  const applicationId = readString(
+    data.applicationId ?? data.application_id ?? applicationIds?.application_id
+  );
+  const deviceId = readString(
+    data.deviceId ?? data.device_id ?? endDeviceIds?.device_id
+  );
+  const devEui = readString(
+    data.devEui ?? data.dev_eui ?? endDeviceIds?.dev_eui
+  );
+  const decodedPayload = toRecord(
+    data.decodedPayload ?? data.decoded_payload ?? uplinkMessage?.decoded_payload
+  ) ?? undefined;
+  const fPort = readNumber(
+    data.fPort ?? data.f_port ?? uplinkMessage?.f_port
+  );
+  const orgId = readString(data.org_id ?? data.orgId);
+  const selectedUserId = readString(data.selected_user_id ?? data.selectedUserId);
+  const receivedAt = readString(data.received_at);
+
+  return {
+    orgId,
+    selectedUserId,
+    applicationId,
+    deviceId,
+    devEui,
+    decodedPayload,
+    fPort,
+    receivedAt,
+  };
+}
+
 Deno.serve(async (req) => {
   const corsHeaders = buildCorsHeaders(req);
 
+  const corsHeaders = getCorsHeaders(req);
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: corsHeaders });
   }
@@ -49,11 +145,24 @@ Deno.serve(async (req) => {
     const supabaseKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
     const supabase = createClient(supabaseUrl, supabaseKey);
 
-    const payload: EmulatorForwardRequest = await req.json();
+    const rawPayload = await req.json();
+    const payload = normalizeEmulatorPayload(rawPayload);
 
-    if (!payload.applicationId || !payload.deviceId || !payload.devEui) {
+    const missingFields: string[] = [];
+    if (!payload.applicationId) missingFields.push('applicationId');
+    if (!payload.deviceId) missingFields.push('deviceId');
+    if (!payload.devEui) missingFields.push('devEui');
+    if (!payload.decodedPayload) missingFields.push('decodedPayload');
+    if (payload.fPort === undefined) missingFields.push('fPort');
+
+    if (missingFields.length > 0) {
       return new Response(
-        JSON.stringify({ ok: false, error: 'Missing required emulator payload fields', errorType: 'validation_error' }),
+        JSON.stringify({
+          ok: false,
+          error: 'Missing required emulator payload fields',
+          errorType: 'validation_error',
+          missingFields,
+        }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
     }
@@ -66,9 +175,9 @@ Deno.serve(async (req) => {
       );
     }
 
-    const settingsResult = payload.selected_user_id
-      ? await loadTTNSettings(payload.selected_user_id, payload.org_id)
-      : { settings: payload.org_id ? await loadOrgSettings(payload.org_id) : null, source: payload.org_id ? 'org' : null };
+    const settingsResult = payload.selectedUserId
+      ? await loadTTNSettings(payload.selectedUserId, payload.orgId)
+      : { settings: payload.orgId ? await loadOrgSettings(payload.orgId) : null, source: payload.orgId ? 'org' : null };
 
     const expectedSecret = await loadWebhookSecretForApplication(supabase, payload.applicationId);
     const providedSecret = req.headers.get('x-ttn-webhook-secret');
@@ -92,7 +201,7 @@ Deno.serve(async (req) => {
           application_id: payload.applicationId,
         },
       },
-      received_at: new Date().toISOString(),
+      received_at: payload.receivedAt ?? new Date().toISOString(),
       uplink_message: {
         decoded_payload: payload.decodedPayload,
         rx_metadata: [],
