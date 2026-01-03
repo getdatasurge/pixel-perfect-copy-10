@@ -21,6 +21,7 @@ interface TTNSettingsRequest {
   cluster?: TTNCluster;
   application_id?: string;
   api_key?: string;
+  gateway_api_key?: string; // Personal/Org API key with gateway permissions
   webhook_secret?: string;
   device_id?: string;
   gateway_id?: string;
@@ -177,7 +178,7 @@ async function handleLoad(
 
   const { data, error } = await supabase
     .from('ttn_settings')
-    .select('enabled, cluster, application_id, api_key, webhook_secret, updated_at, last_test_at, last_test_success, gateway_owner_type, gateway_owner_id')
+    .select('enabled, cluster, application_id, api_key, gateway_api_key, webhook_secret, updated_at, last_test_at, last_test_success, gateway_owner_type, gateway_owner_id')
     .eq('org_id', org_id)
     .maybeSingle();
 
@@ -195,6 +196,8 @@ async function handleLoad(
         application_id: null,
         api_key_preview: null,
         api_key_set: false,
+        gateway_api_key_preview: null,
+        gateway_api_key_set: false,
         webhook_secret_preview: null,
         webhook_secret_set: false,
         last_test_at: null,
@@ -206,6 +209,7 @@ async function handleLoad(
   }
 
   const hasApiKey = !!(data.api_key && data.api_key.length > 0);
+  const hasGatewayApiKey = !!(data.gateway_api_key && data.gateway_api_key.length > 0);
   const hasWebhookSecret = !!(data.webhook_secret && data.webhook_secret.length > 0);
 
   return buildResponse({
@@ -216,6 +220,8 @@ async function handleLoad(
       application_id: data.application_id,
       api_key_preview: maskSecret(data.api_key),
       api_key_set: hasApiKey,
+      gateway_api_key_preview: maskSecret(data.gateway_api_key),
+      gateway_api_key_set: hasGatewayApiKey,
       webhook_secret_preview: maskSecret(data.webhook_secret),
       webhook_secret_set: hasWebhookSecret,
       updated_at: data.updated_at,
@@ -233,7 +239,7 @@ async function handleSave(
   body: TTNSettingsRequest,
   requestId: string
 ): Promise<Response> {
-  const { org_id, enabled, cluster, application_id, api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
+  const { org_id, enabled, cluster, application_id, api_key, gateway_api_key, webhook_secret, gateway_owner_type, gateway_owner_id } = body;
 
   if (!org_id) {
     return errorResponse('org_id is required to save settings', 'VALIDATION_ERROR', 400, requestId);
@@ -244,7 +250,7 @@ async function handleSave(
   // Check if we have an existing API key stored
   const { data: existingSettings } = await supabase
     .from('ttn_settings')
-    .select('api_key')
+    .select('api_key, gateway_api_key')
     .eq('org_id', org_id)
     .maybeSingle();
 
@@ -276,6 +282,9 @@ async function handleSave(
   if (api_key) {
     upsertData.api_key = api_key;
   }
+  if (gateway_api_key) {
+    upsertData.gateway_api_key = gateway_api_key;
+  }
   if (webhook_secret) {
     upsertData.webhook_secret = webhook_secret;
   }
@@ -300,15 +309,17 @@ async function handleSave(
   // Reload settings to get the current state including updated_at
   const { data: savedSettings } = await supabase
     .from('ttn_settings')
-    .select('api_key, webhook_secret, updated_at, gateway_owner_type, gateway_owner_id')
+    .select('api_key, gateway_api_key, webhook_secret, updated_at, gateway_owner_type, gateway_owner_id')
     .eq('org_id', org_id)
     .maybeSingle();
 
   const apiKeySet = !!(savedSettings?.api_key && savedSettings.api_key.length > 0);
+  const gatewayApiKeySet = !!(savedSettings?.gateway_api_key && savedSettings.gateway_api_key.length > 0);
   const webhookSecretSet = !!(savedSettings?.webhook_secret && savedSettings.webhook_secret.length > 0);
   const apiKeyLast4 = savedSettings?.api_key?.slice(-4) || null;
+  const gatewayApiKeyLast4 = savedSettings?.gateway_api_key?.slice(-4) || null;
 
-  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}, api_key_last4=****${apiKeyLast4 || 'none'}, gateway_owner=${savedSettings?.gateway_owner_type}/${savedSettings?.gateway_owner_id}`);
+  console.log(`[${requestId}] Settings saved successfully, api_key_set=${apiKeySet}, api_key_last4=****${apiKeyLast4 || 'none'}, gateway_api_key_set=${gatewayApiKeySet}, gateway_owner=${savedSettings?.gateway_owner_type}/${savedSettings?.gateway_owner_id}`);
   
   return buildResponse({ 
     ok: true, 
@@ -316,6 +327,9 @@ async function handleSave(
     api_key_set: apiKeySet,
     api_key_preview: maskSecret(savedSettings?.api_key),
     api_key_last4: apiKeyLast4,
+    gateway_api_key_set: gatewayApiKeySet,
+    gateway_api_key_preview: maskSecret(savedSettings?.gateway_api_key),
+    gateway_api_key_last4: gatewayApiKeyLast4,
     webhook_secret_set: webhookSecretSet,
     webhook_secret_preview: maskSecret(savedSettings?.webhook_secret),
     updated_at: savedSettings?.updated_at,

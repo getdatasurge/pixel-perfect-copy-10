@@ -163,7 +163,14 @@ Deno.serve(async (req) => {
       );
     }
 
-    const normalizedDevEui = normalizeDevEui(payload.devEui);
+    // Type guard: All required fields are now guaranteed to be present
+    const applicationId = payload.applicationId!;
+    const deviceId = payload.deviceId!;
+    const devEui = payload.devEui!;
+    const decodedPayload = payload.decodedPayload!;
+    const fPort = payload.fPort!;
+
+    const normalizedDevEui = normalizeDevEui(devEui);
     if (!normalizedDevEui) {
       return new Response(
         JSON.stringify({ ok: false, error: 'Invalid DevEUI format', errorType: 'validation_error' }),
@@ -175,12 +182,12 @@ Deno.serve(async (req) => {
       ? await loadTTNSettings(payload.selectedUserId, payload.orgId)
       : { settings: payload.orgId ? await loadOrgSettings(payload.orgId) : null, source: payload.orgId ? 'org' : null };
 
-    const expectedSecret = await loadWebhookSecretForApplication(supabase, payload.applicationId);
+    const expectedSecret = await loadWebhookSecretForApplication(supabase, applicationId);
     const providedSecret = req.headers.get('x-ttn-webhook-secret');
     const secretCheck = verifyWebhookSecret(providedSecret, expectedSecret);
     if (!secretCheck.ok) {
       log('warn', 'Webhook secret validation failed', {
-        applicationId: payload.applicationId,
+        applicationId,
         settingsSource: settingsResult.source,
       });
       return new Response(
@@ -191,26 +198,26 @@ Deno.serve(async (req) => {
 
     const ttnPayload: TTNUplinkPayload = {
       end_device_ids: {
-        device_id: payload.deviceId,
+        device_id: deviceId,
         dev_eui: normalizedDevEui,
         application_ids: {
-          application_id: payload.applicationId,
+          application_id: applicationId,
         },
       },
       received_at: payload.receivedAt ?? new Date().toISOString(),
       uplink_message: {
-        decoded_payload: payload.decodedPayload,
+        decoded_payload: decodedPayload,
         rx_metadata: [],
-        f_port: payload.fPort,
+        f_port: fPort,
         frm_payload: '',
       },
     };
 
     log('info', 'Forwarding emulator uplink', {
-      device_id: payload.deviceId,
+      device_id: deviceId,
       dev_eui: normalizedDevEui,
-      application_id: payload.applicationId,
-      f_port: payload.fPort,
+      application_id: applicationId,
+      f_port: fPort,
       settings_source: settingsResult.source,
     });
 
@@ -218,7 +225,7 @@ Deno.serve(async (req) => {
     const responseBody = {
       ...result.body,
       settingsSource: settingsResult.source,
-      applicationId: payload.applicationId,
+      applicationId,
     };
 
     return new Response(
