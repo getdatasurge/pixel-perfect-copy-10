@@ -4,8 +4,6 @@ set -euo pipefail
 CONFIG_TOML="supabase/config.toml"
 FUNCTIONS_DIR="supabase/functions"
 
-FAILURES=0
-
 if [[ ! -f "$CONFIG_TOML" ]]; then
   echo "Missing $CONFIG_TOML."
   exit 1
@@ -17,53 +15,43 @@ import tomllib
 from pathlib import Path
 
 config_path = Path("supabase/config.toml")
+functions_dir = Path("supabase/functions")
+
+function_dirs = sorted(
+    path.name
+    for path in functions_dir.iterdir()
+    if path.is_dir() and path.name != "_shared"
+)
+
+if not function_dirs:
+    print(f"No function directories found under {functions_dir}.")
+    sys.exit(1)
+
 with config_path.open("rb") as handle:
     data = tomllib.load(handle)
 
-functions = data.get("functions", {})
-if not functions:
-    print(f"No functions found in {config_path}.")
-    sys.exit(1)
-
+functions_config = data.get("functions", {})
 errors = 0
-for name, config in functions.items():
+
+for function_name in function_dirs:
+    config = functions_config.get(function_name)
+    if config is None:
+        print(f"{config_path}: missing [functions.{function_name}] block.")
+        errors += 1
+        continue
     verify_jwt = config.get("verify_jwt")
     if verify_jwt is not False:
-        print(f"{config_path}: [functions.{name}] verify_jwt must be false (found {verify_jwt!r}).")
+        print(
+            f"{config_path}: [functions.{function_name}] verify_jwt must be false (found {verify_jwt!r})."
+        )
         errors += 1
 
 if errors:
     sys.exit(1)
 PY
 then
-  FAILURES=$((FAILURES + 1))
-fi
-
-mapfile -t CONFIG_JSONS < <(find "$FUNCTIONS_DIR" -name config.json -print)
-
-for CONFIG_JSON in "${CONFIG_JSONS[@]}"; do
-  if ! python - <<PY
-import json
-import sys
-from pathlib import Path
-
-config_path = Path("$CONFIG_JSON")
-with config_path.open("r", encoding="utf-8") as handle:
-    data = json.load(handle)
-
-verify_jwt = data.get("verify_jwt")
-if verify_jwt is not False:
-    print(f"{config_path}: verify_jwt must be false (found {verify_jwt!r}).")
-    sys.exit(1)
-PY
-  then
-    FAILURES=$((FAILURES + 1))
-  fi
-done
-
-if [[ $FAILURES -gt 0 ]]; then
-  echo "\nSupabase function config verification failed."
+  printf '\nSupabase function config verification failed.\n'
   exit 1
 fi
 
-echo "\nSupabase function config verification passed."
+printf '\nSupabase function config verification passed.\n'

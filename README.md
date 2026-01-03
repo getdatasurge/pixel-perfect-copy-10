@@ -36,6 +36,16 @@ npm i
 npm run dev
 ```
 
+## Function configuration validation
+
+Run the Supabase function config verification script to ensure every function under
+`supabase/functions` has a matching `[functions.<name>]` entry in `supabase/config.toml`
+with `verify_jwt = false`:
+
+```sh
+./scripts/verify-functions-local.sh
+```
+
 **Edit a file directly in GitHub**
 
 - Navigate to the desired file(s).
