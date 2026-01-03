@@ -5,6 +5,7 @@ import { loadWebhookSecretForApplication, verifyWebhookSecret } from "../_shared
 
 const allowedOrigins = new Set([
   'https://pixel-perfect-emucopy-15.lovable.app',
+  'http://localhost:5173',
 ]);
 
 const baseCorsHeaders = {
@@ -16,10 +17,24 @@ const baseCorsHeaders = {
 function getCorsHeaders(req: Request) {
   const origin = req.headers.get('Origin');
   if (origin && allowedOrigins.has(origin)) {
-    return { ...baseCorsHeaders, 'Access-Control-Allow-Origin': origin };
+    return {
+      ...baseCorsHeaders,
+      'Access-Control-Allow-Origin': origin,
+      'Vary': 'Origin',
+    };
   }
 
   return { ...baseCorsHeaders };
+}
+
+interface EmulatorForwardRequest {
+  org_id?: string;
+  selected_user_id?: string;
+  applicationId: string;
+  deviceId: string;
+  devEui: string;
+  decodedPayload: Record<string, unknown>;
+  fPort: number;
 }
 
 interface NormalizedEmulatorPayload {
