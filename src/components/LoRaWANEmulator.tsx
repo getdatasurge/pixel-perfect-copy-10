@@ -567,29 +567,23 @@ export default function LoRaWANEmulator() {
         const deviceId = `sensor-${normalizedDevEui}`;
         
         // Log request to debug terminal
-        log('ttn-preflight', 'info', 'TTN_WEBHOOK_FORWARD_REQUEST', {
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
           deviceId,
           devEui: device.devEui,
           applicationId: ttnConfig.applicationId,
           fPort: 1,
         });
 
-        const webhookHeaders = webhookConfig.ttnWebhookSecret
-          ? { 'x-ttn-webhook-secret': webhookConfig.ttnWebhookSecret }
-          : undefined;
-
-        const { data, error } = await supabase.functions.invoke('ttn-webhook-forward', {
+        // ttn-simulate loads credentials from database - no header needed
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
-            source: 'emulator', // Identify request origin for auth bypass
-            org_id: webhookConfig.testOrgId, // Pass org for settings lookup
-            selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
+            org_id: webhookConfig.testOrgId,
+            selected_user_id: webhookConfig.selectedUserId,
             applicationId: ttnConfig.applicationId,
             deviceId,
-            devEui: device.devEui,
             decodedPayload: payload,
-            fPort: 1, // Temperature readings on port 1
+            fPort: 1,
           },
-          headers: webhookHeaders,
         });
 
         // Handle Supabase invoke error (network, etc)
@@ -619,7 +613,7 @@ export default function LoRaWANEmulator() {
             }
           }
           
-          log('ttn-preflight', 'error', 'TTN_WEBHOOK_FORWARD_INVOKE_ERROR', {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_INVOKE_ERROR', {
             error: errorDetails.message,
             errorType: errorDetails.errorType,
             hint: errorDetails.hint,
@@ -628,7 +622,7 @@ export default function LoRaWANEmulator() {
           
           // Show actionable error message
           toast({
-            title: 'Webhook Forward Failed',
+            title: 'TTN Simulate Failed',
             description: `${errorDetails.message}${errorDetails.hint ? ` - ${errorDetails.hint}` : ''}`,
             variant: 'destructive',
           });
@@ -637,17 +631,17 @@ export default function LoRaWANEmulator() {
         }
 
         // Handle TTN-level error (API returned non-success)
-        if (data && !data.ok) {
+        if (data && !data.success) {
           const ttnError = {
-            message: data.error || 'Webhook forward error',
+            message: data.error || 'TTN simulate error',
             hint: data.hint,
             errorType: data.errorType,
-            status: data.status,
+            status: data.ttn_status,
             requiredRights: data.requiredRights,
             requestId: data.request_id,
           };
 
-          log('ttn-preflight', 'error', 'TTN_WEBHOOK_FORWARD_ERROR', {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
             error: ttnError.message,
             hint: ttnError.hint,
             errorType: ttnError.errorType,
@@ -716,7 +710,7 @@ export default function LoRaWANEmulator() {
         permissionErrorCountRef.current = 0;
 
         // Log success
-        log('ttn-preflight', 'info', 'TTN_WEBHOOK_FORWARD_SUCCESS', {
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
           deviceId,
           applicationId: data?.applicationId || ttnConfig.applicationId,
           settingsSource: data?.settingsSource,
@@ -733,10 +727,10 @@ export default function LoRaWANEmulator() {
         });
         
         testResult.ttnStatus = 'success';
-        testResult.webhookStatus = 'success';
-        testResult.dbStatus = 'inserted';
-        testResult.uplinkPath = 'webhook-forward';
-        addLog('webhook', `📤 Sent via webhook-forward → ${ttnConfig.applicationId}`);
+        testResult.webhookStatus = 'pending'; // Will be set by TTN webhook callback
+        testResult.dbStatus = 'pending'; // Will be set by TTN webhook callback
+        testResult.uplinkPath = 'ttn-simulate';
+        addLog('webhook', `📤 Simulated uplink via TTN API → ${ttnConfig.applicationId}`);
       } 
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
@@ -842,34 +836,28 @@ export default function LoRaWANEmulator() {
         const deviceId = `sensor-${normalizedDevEui}`;
         
         // Log request to debug terminal
-        log('ttn-preflight', 'info', 'TTN_WEBHOOK_FORWARD_REQUEST', {
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
           deviceId,
           devEui: device.devEui,
           applicationId: ttnConfig.applicationId,
           fPort: 2,
         });
 
-        const webhookHeaders = webhookConfig.ttnWebhookSecret
-          ? { 'x-ttn-webhook-secret': webhookConfig.ttnWebhookSecret }
-          : undefined;
-
-        const { data, error } = await supabase.functions.invoke('ttn-webhook-forward', {
+        // ttn-simulate loads credentials from database - no header needed
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
           body: {
-            source: 'emulator', // Identify request origin for auth bypass
-            org_id: webhookConfig.testOrgId, // Pass org for settings lookup
-            selected_user_id: webhookConfig.selectedUserId, // Pass user for TTN settings lookup
+            org_id: webhookConfig.testOrgId,
+            selected_user_id: webhookConfig.selectedUserId,
             applicationId: ttnConfig.applicationId,
             deviceId,
-            devEui: device.devEui,
             decodedPayload: payload,
             fPort: 2, // Door events on port 2
           },
-          headers: webhookHeaders,
         });
 
         // Handle Supabase invoke error (network, etc)
         if (error) {
-          log('ttn-preflight', 'error', 'TTN_WEBHOOK_FORWARD_INVOKE_ERROR', {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_INVOKE_ERROR', {
             error: error.message,
             errorType: 'invoke_error',
           });
@@ -877,17 +865,17 @@ export default function LoRaWANEmulator() {
         }
         
         // Handle TTN-level error (API returned non-success)
-        if (data && !data.ok) {
+        if (data && !data.success) {
           const ttnError = {
-            message: data.error || 'Webhook forward error',
+            message: data.error || 'TTN simulate error',
             hint: data.hint,
             errorType: data.errorType,
-            status: data.status,
+            status: data.ttn_status,
             requiredRights: data.requiredRights,
             requestId: data.request_id,
           };
           
-          log('ttn-preflight', 'error', 'TTN_WEBHOOK_FORWARD_ERROR', {
+          log('ttn-preflight', 'error', 'TTN_SIMULATE_ERROR', {
             error: ttnError.message,
             hint: ttnError.hint,
             errorType: ttnError.errorType,
@@ -928,7 +916,7 @@ export default function LoRaWANEmulator() {
         }
         
         // Log success
-        log('ttn-preflight', 'info', 'TTN_WEBHOOK_FORWARD_SUCCESS', {
+        log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
           deviceId,
           applicationId: data?.applicationId || ttnConfig.applicationId,
           settingsSource: data?.settingsSource,
@@ -945,10 +933,10 @@ export default function LoRaWANEmulator() {
         });
         
         testResult.ttnStatus = 'success';
-        testResult.webhookStatus = 'success';
-        testResult.dbStatus = 'inserted';
-        testResult.uplinkPath = 'webhook-forward';
-        addLog('webhook', `📤 Door event sent via webhook-forward → ${ttnConfig.applicationId}`);
+        testResult.webhookStatus = 'pending'; // Will be set by TTN webhook callback
+        testResult.dbStatus = 'pending'; // Will be set by TTN webhook callback
+        testResult.uplinkPath = 'ttn-simulate';
+        addLog('webhook', `📤 Simulated door event via TTN API → ${ttnConfig.applicationId}`);
       }
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
