@@ -1399,7 +1399,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             </div>
             <Switch
               checked={ttnEnabled}
-              onCheckedChange={setTtnEnabled}
+              onCheckedChange={(checked) => {
+                setTtnEnabled(checked);
+                updateTTN({ enabled: checked });
+              }}
               disabled={disabled || isLoading}
             />
           </div>

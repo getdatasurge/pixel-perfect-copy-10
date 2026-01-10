@@ -452,6 +452,13 @@ export default function LoRaWANEmulator() {
     try {
       const ttnConfig = webhookConfig.ttnConfig;
       
+      // Log route decision for debugging
+      log('ttn-preflight', 'info', 'ROUTE_DECISION', {
+        ttnEnabled: ttnConfig?.enabled,
+        applicationId: ttnConfig?.applicationId,
+        willUseTTNSimulate: !!(ttnConfig?.enabled && ttnConfig?.applicationId),
+      });
+      
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
         // Check centralized config store for canonical values
@@ -730,7 +737,7 @@ export default function LoRaWANEmulator() {
         testResult.webhookStatus = 'pending'; // Will be set by TTN webhook callback
         testResult.dbStatus = 'pending'; // Will be set by TTN webhook callback
         testResult.uplinkPath = 'ttn-simulate';
-        addLog('webhook', `📤 Simulated uplink via TTN API → ${ttnConfig.applicationId}`);
+        addLog('webhook', `📤 Sent via TTN Simulate API (ttn-simulate) → ${ttnConfig.applicationId}`);
       } 
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
@@ -763,7 +770,7 @@ export default function LoRaWANEmulator() {
         if (error) throw error;
         testResult.webhookStatus = 'success';
         testResult.dbStatus = 'inserted';
-        addLog('webhook', `📤 Sent via local ttn-webhook`);
+        addLog('webhook', `📤 Sent locally via ttn-webhook (direct DB ingest)`);
       }
 
       setReadingCount(prev => prev + 1);
@@ -828,6 +835,13 @@ export default function LoRaWANEmulator() {
 
     try {
       const ttnConfig = webhookConfig.ttnConfig;
+      
+      // Log route decision for debugging
+      log('ttn-preflight', 'info', 'ROUTE_DECISION', {
+        ttnEnabled: ttnConfig?.enabled,
+        applicationId: ttnConfig?.applicationId,
+        willUseTTNSimulate: !!(ttnConfig?.enabled && ttnConfig?.applicationId),
+      });
       
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
@@ -936,7 +950,7 @@ export default function LoRaWANEmulator() {
         testResult.webhookStatus = 'pending'; // Will be set by TTN webhook callback
         testResult.dbStatus = 'pending'; // Will be set by TTN webhook callback
         testResult.uplinkPath = 'ttn-simulate';
-        addLog('webhook', `📤 Simulated door event via TTN API → ${ttnConfig.applicationId}`);
+        addLog('webhook', `📤 Sent via TTN Simulate API (ttn-simulate) → ${ttnConfig.applicationId}`);
       }
       // Send to external webhook if configured
       else if (webhookConfig.enabled && webhookConfig.targetUrl) {
@@ -969,7 +983,7 @@ export default function LoRaWANEmulator() {
         if (error) throw error;
         testResult.webhookStatus = 'success';
         testResult.dbStatus = 'inserted';
-        addLog('webhook', `📤 Door event sent via local ttn-webhook`);
+        addLog('webhook', `📤 Sent locally via ttn-webhook (direct DB ingest)`);
       }
 
       addLog('door', `🚪 Door ${doorStatus === 'open' ? 'OPENED' : 'CLOSED'} - Battery: ${battery.toFixed(0)}%`);
