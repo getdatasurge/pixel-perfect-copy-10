@@ -524,8 +524,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
     setIsLoading(true);
     try {
-      // Load TTN settings from synced_users table (synced from FrostGuard)
-      // Query by user_id if available, otherwise by organization_id
+      // ====== STEP 1: Load from synced_users (FrostGuard sync) ======
       const userId = config.selectedUserId;
 
       let query = supabase
@@ -544,70 +543,102 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       if (fetchError) {
         console.error('[WebhookSettings] Failed to load TTN settings from synced_users:', fetchError);
-        toast({
-          title: 'Load Failed',
-          description: 'Could not load TTN settings from FrostGuard',
-          variant: 'destructive',
-        });
-        return;
       }
 
-      if (syncedUser?.ttn) {
-        const ttn = syncedUser.ttn as any;
-        console.log('[WebhookSettings] Loaded TTN settings from synced_users:', { ttn, user: syncedUser.email });
+      // ====== STEP 2: Load from ttn_settings (gateway owner config) ======
+      const { data: ttnSettings, error: ttnSettingsError } = await supabase
+        .from('ttn_settings')
+        .select('gateway_owner_type, gateway_owner_id, gateway_api_key, webhook_secret, cluster, enabled, application_id')
+        .eq('org_id', orgId)
+        .limit(1)
+        .maybeSingle();
 
-        setTtnEnabled(ttn.enabled || false);
-        setTtnCluster(ttn.cluster || 'eu1');
-        setTtnApplicationId(ttn.application_id || '');
-        setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
-        setTtnApiKeySet(!!(ttn.api_key_last4));
-        setTtnWebhookSecretSet(!!(ttn.webhook_secret_last4));
-        // Load gateway API key if available
-        setGatewayApiKeyPreview(ttn.gateway_api_key_last4 ? `****${ttn.gateway_api_key_last4}` : null);
-        setGatewayApiKeySet(!!(ttn.gateway_api_key_last4));
-        // Load gateway owner config
-        if (ttn.gateway_owner_type) setGatewayOwnerType(ttn.gateway_owner_type);
-        if (ttn.gateway_owner_id) setGatewayOwnerId(ttn.gateway_owner_id);
-        // Don't load actual secrets, just show preview
-        setTtnApiKey(''); // Reset to empty, user must enter new value to change
-        setTtnWebhookSecret('');
-        setGatewayApiKey('');
-        
-        // Set canonical values for "Current:" display
-        setCanonicalCluster(ttn.cluster || null);
-        setCanonicalOwnerType(ttn.gateway_owner_type || null);
-        setCanonicalOwnerId(ttn.gateway_owner_id || null);
-        setCanonicalWebhookSecretSet(!!(ttn.webhook_secret_last4));
-        
-        console.log('[WebhookSettings] Canonical values set from synced_users:', {
-          cluster: ttn.cluster,
-          ownerType: ttn.gateway_owner_type,
-          ownerId: ttn.gateway_owner_id,
-          webhookSecretSet: !!ttn.webhook_secret_last4,
+      if (ttnSettingsError) {
+        console.error('[WebhookSettings] Failed to load from ttn_settings:', ttnSettingsError);
+      }
+
+      console.log('[WebhookSettings] Data sources loaded:', {
+        synced_users_ttn: syncedUser?.ttn,
+        ttn_settings: ttnSettings ? {
+          gateway_owner_type: ttnSettings.gateway_owner_type,
+          gateway_owner_id: ttnSettings.gateway_owner_id,
+          gateway_api_key_set: !!ttnSettings.gateway_api_key,
+          webhook_secret_set: !!ttnSettings.webhook_secret,
+          cluster: ttnSettings.cluster,
+        } : null,
+      });
+
+      // ====== STEP 3: Merge and apply values ======
+      const ttn = (syncedUser?.ttn as any) || {};
+      
+      // Application config: prefer synced_users, fall back to ttn_settings
+      const effectiveCluster = ttn.cluster || ttnSettings?.cluster || 'eu1';
+      const effectiveAppId = ttn.application_id || ttnSettings?.application_id || '';
+      const effectiveEnabled = ttn.enabled || ttnSettings?.enabled || false;
+      
+      setTtnEnabled(effectiveEnabled);
+      setTtnCluster(effectiveCluster);
+      setTtnApplicationId(effectiveAppId);
+      setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
+      setTtnApiKeySet(!!(ttn.api_key_last4));
+      
+      // Gateway config: prefer ttn_settings (has full key), fall back to synced_users
+      const ownerType = ttnSettings?.gateway_owner_type || ttn.gateway_owner_type || null;
+      const ownerId = ttnSettings?.gateway_owner_id || ttn.gateway_owner_id || null;
+      const gatewayKeyLast4 = ttnSettings?.gateway_api_key 
+        ? ttnSettings.gateway_api_key.slice(-4) 
+        : ttn.gateway_api_key_last4 || null;
+      const webhookSecretSet = !!(ttnSettings?.webhook_secret || ttn.webhook_secret_last4);
+      
+      if (ownerType) setGatewayOwnerType(ownerType as 'user' | 'organization');
+      if (ownerId) setGatewayOwnerId(ownerId);
+      setGatewayApiKeyPreview(gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null);
+      setGatewayApiKeySet(!!gatewayKeyLast4);
+      setTtnWebhookSecretSet(webhookSecretSet);
+      
+      // Don't load actual secrets, just show preview
+      setTtnApiKey('');
+      setTtnWebhookSecret('');
+      setGatewayApiKey('');
+      
+      // ====== STEP 4: Set canonical values for "Current:" display ======
+      setCanonicalCluster(effectiveCluster);
+      setCanonicalOwnerType(ownerType as 'user' | 'organization' | null);
+      setCanonicalOwnerId(ownerId);
+      setCanonicalWebhookSecretSet(webhookSecretSet);
+      
+      console.log('[WebhookSettings] Canonical values merged from synced_users + ttn_settings:', {
+        cluster: effectiveCluster,
+        ownerType,
+        ownerId,
+        gatewayKeyLast4: gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null,
+        webhookSecretSet,
+      });
+
+      // Load connection status
+      if (ttn.updated_at) {
+        setLastTestAt(new Date(ttn.updated_at));
+      }
+
+      // Update parent config
+      if (effectiveEnabled) {
+        updateTTN({
+          enabled: effectiveEnabled,
+          applicationId: effectiveAppId,
+          cluster: effectiveCluster,
         });
+      }
 
-        // Load connection status
-        if (ttn.updated_at) {
-          setLastTestAt(new Date(ttn.updated_at));
-        }
-
-        // Update parent config
-        if (ttn.enabled) {
-          updateTTN({
-            enabled: ttn.enabled,
-            applicationId: ttn.application_id || '',
-            cluster: ttn.cluster || 'eu1',
-          });
-        }
-
-        if (ttn.webhook_secret) {
-          update({ ttnWebhookSecret: ttn.webhook_secret });
-        }
-      } else {
-        console.log('[WebhookSettings] No TTN settings found in synced_users for', userId ? `user ${userId}` : `org ${orgId}`);
+      if (ttn.webhook_secret) {
+        update({ ttnWebhookSecret: ttn.webhook_secret });
+      }
+      
+      // Show info if no data found at all
+      if (!syncedUser?.ttn && !ttnSettings) {
+        console.log('[WebhookSettings] No TTN settings found in either source for', userId ? `user ${userId}` : `org ${orgId}`);
         toast({
           title: 'No TTN Settings',
-          description: 'No TTN configuration found for selected user. Make sure user is synced from FrostGuard.',
+          description: 'No TTN configuration found. Make sure user is synced from FrostGuard.',
           variant: 'destructive',
         });
       }
