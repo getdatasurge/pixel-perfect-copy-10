@@ -10,6 +10,7 @@ import { getGatewayApiKeyUrl, getKeyTypeLabel, GATEWAY_PERMISSIONS } from '@/lib
 interface StepConnectionCheckProps {
   ttnConfig?: TTNConfig;
   orgId?: string;
+  selectedUserId?: string;
   onValidationComplete: (success: boolean) => void;
   mode?: 'devices' | 'gateways';
 }
@@ -23,6 +24,7 @@ interface CheckResult {
 export default function StepConnectionCheck({
   ttnConfig,
   orgId,
+  selectedUserId,
   onValidationComplete,
   mode = 'devices',
 }: StepConnectionCheckProps) {
@@ -118,6 +120,10 @@ export default function StepConnectionCheck({
         body: {
           action: 'test_stored',
           org_id: orgId,
+          selected_user_id: selectedUserId,
+          // Pass user's TTN settings so edge function uses them
+          cluster: ttnConfig?.cluster,
+          application_id: ttnConfig?.applicationId,
         },
       });
 
@@ -188,6 +194,7 @@ export default function StepConnectionCheck({
         body: {
           action: 'check_gateway_permissions',
           org_id: orgId,
+          selected_user_id: selectedUserId,
         },
       });
 
