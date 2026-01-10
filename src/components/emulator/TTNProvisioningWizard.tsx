@@ -95,9 +95,10 @@ export default function TTNProvisioningWizard({
     total: 0,
   });
 
-  // Get TTN config
+  // Get TTN config and user context
   const ttnConfig = webhookConfig.ttnConfig;
   const orgId = webhookConfig.testOrgId;
+  const selectedUserId = webhookConfig.selectedUserId;
 
   const isGatewayMode = mode === 'gateways';
 
@@ -307,6 +308,7 @@ export default function TTNProvisioningWizard({
               gateways={gateways.filter(g => selectedDevices.includes(g.id))}
               ttnConfig={ttnConfig}
               orgId={orgId}
+              selectedUserId={selectedUserId}
               isExecuting={isExecuting}
               setIsExecuting={setIsExecuting}
               progress={executionProgress}

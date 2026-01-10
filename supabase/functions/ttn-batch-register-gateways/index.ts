@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { loadTTNSettings } from '../_shared/settings.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -18,6 +19,7 @@ interface GatewayToProvision {
 
 interface BatchGatewayProvisionRequest {
   org_id?: string;
+  selected_user_id?: string;
   gateways: GatewayToProvision[];
 }
 
@@ -385,9 +387,9 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     const body: BatchGatewayProvisionRequest = await req.json();
-    const { org_id, gateways } = body;
+    const { org_id, selected_user_id, gateways } = body;
 
-    console.log(`[${requestId}] Processing ${gateways?.length || 0} gateways for org ${org_id || 'none'}`);
+    console.log(`[${requestId}] Processing ${gateways?.length || 0} gateways for org ${org_id || 'none'}, user ${selected_user_id || 'none'}`);
 
     if (!gateways || gateways.length === 0) {
       return new Response(
@@ -402,8 +404,20 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Load TTN settings from database
-    let ttnSettings: TTNSettings | null = null;
+    // Load TTN settings using shared loader (user-first for cluster, then org for gateway config)
+    let userSettings = null;
+    let settingsSource = 'none';
+
+    if (selected_user_id) {
+      const result = await loadTTNSettings(selected_user_id, org_id);
+      if (result.settings) {
+        userSettings = result.settings;
+        settingsSource = result.source || 'unknown';
+      }
+    }
+
+    // Always get gateway-specific settings from ttn_settings (gateway keys, owner config)
+    let ttnSettings: any = null;
     if (org_id) {
       const { data, error } = await supabase
         .from('ttn_settings')
@@ -418,14 +432,26 @@ Deno.serve(async (req) => {
       }
     }
 
+    // Use user's cluster if available, otherwise org's
+    const cluster = userSettings?.cluster || ttnSettings?.cluster || 'eu1';
+    
     // For gateway operations, prefer gateway_api_key (Personal/Org key with gateway rights)
     // Fall back to api_key (Application key) only if gateway_api_key not set
     const gatewayApiKey = ttnSettings?.gateway_api_key;
     const appApiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
     const apiKey = gatewayApiKey || appApiKey;
-    const cluster = ttnSettings?.cluster || 'eu1';
     const gatewayOwnerType = ttnSettings?.gateway_owner_type || 'user';
     const gatewayOwnerId = ttnSettings?.gateway_owner_id;
+
+    console.log(`[${requestId}] PROVISIONING_TARGET`, {
+      cluster,
+      gateway_owner_type: gatewayOwnerType,
+      gateway_owner_id: gatewayOwnerId,
+      settings_source: settingsSource,
+      selected_user_id,
+      org_id,
+      using_gateway_key: !!gatewayApiKey,
+    });
 
     // Check if we have a gateway-specific API key
     const usingGatewayKey = !!gatewayApiKey;

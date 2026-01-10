@@ -25,6 +25,7 @@ interface StepExecutionProps {
   gateways?: GatewayConfig[];
   ttnConfig?: TTNConfig;
   orgId?: string;
+  selectedUserId?: string;
   isExecuting: boolean;
   setIsExecuting: React.Dispatch<React.SetStateAction<boolean>>;
   progress: number;
@@ -41,6 +42,7 @@ export default function StepExecution({
   gateways = [],
   ttnConfig,
   orgId,
+  selectedUserId,
   isExecuting,
   setIsExecuting,
   progress,
@@ -170,6 +172,7 @@ export default function StepExecution({
         const { data, error } = await supabase.functions.invoke('ttn-batch-provision', {
           body: {
             org_id: orgId,
+            selected_user_id: selectedUserId,
             devices: [{
               dev_eui: device.devEui,
               join_eui: device.joinEui,
@@ -283,6 +286,7 @@ export default function StepExecution({
         const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
           body: {
             org_id: orgId,
+            selected_user_id: selectedUserId,
             gateways: [{
               eui: gateway.eui,
               name: gateway.name,
@@ -416,6 +420,7 @@ export default function StepExecution({
       const { data, error } = await supabase.functions.invoke('ttn-batch-register-gateways', {
         body: {
           org_id: orgId,
+          selected_user_id: selectedUserId,
           gateways: [{
             eui: gateway.eui,
             name: gateway.name,
@@ -474,6 +479,7 @@ export default function StepExecution({
       const { data, error } = await supabase.functions.invoke('ttn-batch-provision', {
         body: {
           org_id: orgId,
+          selected_user_id: selectedUserId,
           devices: [{
             dev_eui: device.devEui,
             join_eui: device.joinEui,
