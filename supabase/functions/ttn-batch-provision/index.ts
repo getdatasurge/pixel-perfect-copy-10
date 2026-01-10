@@ -1,4 +1,5 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { loadTTNSettings } from '../_shared/settings.ts';
 
 const corsHeaders = {
   'Access-Control-Allow-Origin': '*',
@@ -15,6 +16,7 @@ interface DeviceToProvision {
 
 interface BatchProvisionRequest {
   org_id?: string;
+  selected_user_id?: string;
   devices: DeviceToProvision[];
 }
 
@@ -60,9 +62,9 @@ Deno.serve(async (req) => {
     const supabase = createClient(supabaseUrl, supabaseServiceKey);
 
     const body: BatchProvisionRequest = await req.json();
-    const { org_id, devices } = body;
+    const { org_id, selected_user_id, devices } = body;
 
-    console.log(`[${requestId}] Processing ${devices?.length || 0} devices for org ${org_id || 'none'}`);
+    console.log(`[${requestId}] Processing ${devices?.length || 0} devices for org ${org_id || 'none'}, user ${selected_user_id || 'none'}`);
 
     if (!devices || devices.length === 0) {
       return new Response(
@@ -77,19 +79,29 @@ Deno.serve(async (req) => {
       );
     }
 
-    // Load TTN settings from database
-    let ttnSettings: any = null;
-    if (org_id) {
+    // Load TTN settings using shared loader (user-first, org-fallback)
+    let ttnSettings = null;
+    let settingsSource = 'none';
+
+    if (selected_user_id) {
+      const result = await loadTTNSettings(selected_user_id, org_id);
+      if (result.settings) {
+        ttnSettings = result.settings;
+        settingsSource = result.source || 'unknown';
+      }
+    } else if (org_id) {
+      // Fallback to org-only if no user selected
       const { data, error } = await supabase
         .from('ttn_settings')
-        .select('*')
+        .select('api_key, application_id, cluster, enabled')
         .eq('org_id', org_id)
         .maybeSingle();
 
       if (error) {
         console.error(`[${requestId}] Error loading TTN settings:`, error);
-      } else {
+      } else if (data) {
         ttnSettings = data;
+        settingsSource = 'org';
       }
     }
 
@@ -97,6 +109,14 @@ Deno.serve(async (req) => {
     const apiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
     const cluster = ttnSettings?.cluster || 'eu1';
     const applicationId = ttnSettings?.application_id;
+
+    console.log(`[${requestId}] PROVISIONING_TARGET`, {
+      application_id: applicationId,
+      cluster,
+      settings_source: settingsSource,
+      selected_user_id,
+      org_id,
+    });
 
     if (!apiKey) {
       return new Response(
@@ -124,7 +144,7 @@ Deno.serve(async (req) => {
       );
     }
 
-    console.log(`[${requestId}] Using cluster=${cluster}, app=${applicationId}`);
+    console.log(`[${requestId}] Using cluster=${cluster}, app=${applicationId}, source=${settingsSource}`);
 
     const results: ProvisionResult[] = [];
     const summary = { created: 0, already_exists: 0, failed: 0, total: devices.length };
