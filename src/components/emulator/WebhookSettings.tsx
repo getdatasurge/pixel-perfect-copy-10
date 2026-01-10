@@ -209,6 +209,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [gatewayOwnerId, setGatewayOwnerId] = useState('');
   const [ttnWebhookSecretSet, setTtnWebhookSecretSet] = useState(false);
   
+  // Canonical values from FrostGuard (source of truth for "Current:" display)
+  const [canonicalCluster, setCanonicalCluster] = useState<string | null>(null);
+  const [canonicalOwnerType, setCanonicalOwnerType] = useState<'user' | 'organization' | null>(null);
+  const [canonicalOwnerId, setCanonicalOwnerId] = useState<string | null>(null);
+  const [canonicalWebhookSecretSet, setCanonicalWebhookSecretSet] = useState(false);
+  
   // Connection status tracking
   const [lastTestAt, setLastTestAt] = useState<Date | string | null>(null);
   const [lastTestSuccess, setLastTestSuccess] = useState<boolean | null>(null);
@@ -481,10 +487,21 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const gwKeyLast4 = (config.ttnConfig as any).gateway_api_key_last4;
       setGatewayApiKeyPreview(gwKeyLast4 ? `****${gwKeyLast4}` : null);
       setGatewayApiKeySet(!!gwKeyLast4);
+      // Load gateway owner config
+      const ownerType = (config.ttnConfig as any).gateway_owner_type;
+      const ownerId = (config.ttnConfig as any).gateway_owner_id;
+      if (ownerType) setGatewayOwnerType(ownerType);
+      if (ownerId) setGatewayOwnerId(ownerId);
       // Don't load actual secrets from config
       setTtnApiKey('');
       setTtnWebhookSecret('');
       setGatewayApiKey('');
+      
+      // Set canonical values for "Current:" display
+      setCanonicalCluster(config.ttnConfig.cluster || null);
+      setCanonicalOwnerType(ownerType || null);
+      setCanonicalOwnerId(ownerId || null);
+      setCanonicalWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
 
       // Update connection status if available
       if (config.ttnConfig.lastTestAt) {
@@ -548,10 +565,26 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         // Load gateway API key if available
         setGatewayApiKeyPreview(ttn.gateway_api_key_last4 ? `****${ttn.gateway_api_key_last4}` : null);
         setGatewayApiKeySet(!!(ttn.gateway_api_key_last4));
+        // Load gateway owner config
+        if (ttn.gateway_owner_type) setGatewayOwnerType(ttn.gateway_owner_type);
+        if (ttn.gateway_owner_id) setGatewayOwnerId(ttn.gateway_owner_id);
         // Don't load actual secrets, just show preview
         setTtnApiKey(''); // Reset to empty, user must enter new value to change
         setTtnWebhookSecret('');
         setGatewayApiKey('');
+        
+        // Set canonical values for "Current:" display
+        setCanonicalCluster(ttn.cluster || null);
+        setCanonicalOwnerType(ttn.gateway_owner_type || null);
+        setCanonicalOwnerId(ttn.gateway_owner_id || null);
+        setCanonicalWebhookSecretSet(!!(ttn.webhook_secret_last4));
+        
+        console.log('[WebhookSettings] Canonical values set from synced_users:', {
+          cluster: ttn.cluster,
+          ownerType: ttn.gateway_owner_type,
+          ownerId: ttn.gateway_owner_id,
+          webhookSecretSet: !!ttn.webhook_secret_last4,
+        });
 
         // Load connection status
         if (ttn.updated_at) {
@@ -786,6 +819,19 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       setTtnApiKey('');
       setTtnWebhookSecret('');
       setGatewayApiKey('');
+
+      // Update canonical values to reflect saved state (for "Current:" display)
+      setCanonicalCluster(ttnCluster);
+      if (gatewayOwnerType) setCanonicalOwnerType(gatewayOwnerType);
+      if (gatewayOwnerId) setCanonicalOwnerId(gatewayOwnerId);
+      if (ttnWebhookSecret) setCanonicalWebhookSecretSet(true);
+      
+      console.log('[WebhookSettings] Canonical values updated after save:', {
+        cluster: ttnCluster,
+        ownerType: gatewayOwnerType,
+        ownerId: gatewayOwnerId,
+        webhookSecretSet: !!ttnWebhookSecret,
+      });
 
       // Also clear any stale localStorage TTN cache
       localStorage.removeItem('lorawan-emulator-ttn-cache');
@@ -1478,6 +1524,11 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       ))}
                     </SelectContent>
                   </Select>
+                  <p className="text-xs text-muted-foreground">
+                    {canonicalCluster 
+                      ? `Current: ${canonicalCluster} (change to update)` 
+                      : 'Select your TTN Console region'}
+                  </p>
                   {showClusterDetect && (
                     <div className="flex gap-2">
                       <Input
@@ -1551,7 +1602,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     disabled={disabled || isLoading}
                   />
                   <p className="text-xs text-muted-foreground">
-                    For webhook signature verification
+                    {canonicalWebhookSecretSet 
+                      ? 'Current: set (leave blank to keep, enter new to replace)' 
+                      : 'For webhook signature verification. Leave blank if not set.'}
                   </p>
                 </div>
               </div>
@@ -1618,6 +1671,11 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                         <SelectItem value="organization">Organization</SelectItem>
                       </SelectContent>
                     </Select>
+                    <p className="text-xs text-muted-foreground">
+                      {canonicalOwnerType 
+                        ? `Current: ${canonicalOwnerType === 'organization' ? 'Organization' : 'Personal (User)'}` 
+                        : 'Select gateway owner type'}
+                    </p>
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="gatewayOwnerId">
@@ -1631,7 +1689,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       disabled={disabled || isLoading}
                     />
                     <p className="text-xs text-muted-foreground">
-                      Required for gateway provisioning.
+                      {canonicalOwnerId 
+                        ? `Current: ${canonicalOwnerId} (leave blank to keep)` 
+                        : 'Required for gateway provisioning. Leave blank to keep current.'}
                     </p>
                   </div>
                 </div>
