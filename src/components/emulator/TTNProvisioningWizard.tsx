@@ -263,6 +263,7 @@ export default function TTNProvisioningWizard({
             <StepConnectionCheck
               ttnConfig={ttnConfig}
               orgId={orgId}
+              selectedUserId={selectedUserId}
               mode={mode}
               onValidationComplete={(success) => {
                 if (success) {
