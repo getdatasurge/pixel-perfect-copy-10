@@ -23,6 +23,10 @@ interface TTNConnection {
   api_key_last4?: string | null;
   webhook_secret_last4?: string | null;
   updated_at?: string | null;
+  // Gateway config fields (for "Current:" display in Emulator)
+  gateway_owner_type?: 'user' | 'organization' | null;
+  gateway_owner_id?: string | null;
+  gateway_api_key_last4?: string | null;
 }
 
 interface SyncedUser {
