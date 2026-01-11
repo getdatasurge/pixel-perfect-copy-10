@@ -497,6 +497,69 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     cluster: 'eu1',
   };
 
+  // Load gateway-specific settings from ttn_settings (source of truth for gateway config)
+  const loadGatewaySettings = async () => {
+    if (!orgId) return;
+    
+    try {
+      const { data: ttnSettings, error } = await supabase
+        .from('ttn_settings')
+        .select('gateway_owner_type, gateway_owner_id, gateway_api_key, webhook_secret, updated_at, api_key, cluster, application_id')
+        .eq('org_id', orgId)
+        .maybeSingle();
+        
+      if (error) {
+        console.error('[WebhookSettings] Failed to load gateway settings from ttn_settings:', error);
+        return;
+      }
+      
+      if (ttnSettings) {
+        console.log('[WebhookSettings] Loaded gateway settings from ttn_settings:', {
+          gateway_owner_type: ttnSettings.gateway_owner_type,
+          gateway_owner_id: ttnSettings.gateway_owner_id,
+          gateway_api_key_set: !!ttnSettings.gateway_api_key,
+          webhook_secret_set: !!ttnSettings.webhook_secret,
+          api_key_set: !!ttnSettings.api_key,
+          updated_at: ttnSettings.updated_at,
+        });
+        
+        // Update gateway-specific canonical values
+        setCanonicalOwnerType(ttnSettings.gateway_owner_type as 'user' | 'organization' || null);
+        setCanonicalOwnerId(ttnSettings.gateway_owner_id || null);
+        setCanonicalGatewayApiKeyLast4(ttnSettings.gateway_api_key?.slice(-4) || null);
+        setCanonicalWebhookSecretLast4(ttnSettings.webhook_secret?.slice(-4) || null);
+        
+        // Also set API key last4 if not already set from props
+        if (ttnSettings.api_key && !canonicalApiKeyLast4) {
+          setCanonicalApiKeyLast4(ttnSettings.api_key.slice(-4));
+        }
+        
+        // Update form state if not already set
+        if (ttnSettings.gateway_owner_type && !gatewayOwnerType) {
+          setGatewayOwnerType(ttnSettings.gateway_owner_type as 'user' | 'organization');
+        }
+        if (ttnSettings.gateway_owner_id && !gatewayOwnerId) {
+          setGatewayOwnerId(ttnSettings.gateway_owner_id);
+        }
+        setGatewayApiKeySet(!!ttnSettings.gateway_api_key);
+        setGatewayApiKeyPreview(ttnSettings.gateway_api_key ? `****${ttnSettings.gateway_api_key.slice(-4)}` : null);
+        setTtnWebhookSecretSet(!!ttnSettings.webhook_secret);
+        
+        // Update cluster if available from ttn_settings
+        if (ttnSettings.cluster) {
+          setCanonicalCluster(ttnSettings.cluster);
+        }
+        
+        // Update last sync timestamp
+        if (ttnSettings.updated_at) {
+          setCanonicalLastSyncAt(ttnSettings.updated_at);
+        }
+      }
+    } catch (err: any) {
+      console.error('[WebhookSettings] Error loading gateway settings:', err);
+    }
+  };
+
   // Load settings from config or database on mount or org/user change
   useEffect(() => {
     // If TTN config is already in the config prop (from Testing page), use it directly
@@ -522,7 +585,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       setTtnWebhookSecret('');
       setGatewayApiKey('');
       
-      // Set canonical values for "Current:" display
+      // Set canonical values for "Current:" display from props first
       setCanonicalCluster(config.ttnConfig.cluster || null);
       setCanonicalApplicationId(config.ttnConfig.applicationId || null);
       setCanonicalApiKeyLast4(config.ttnConfig.api_key_last4 || null);
@@ -539,6 +602,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       }
 
       setIsLoading(false);
+      
+      // IMPORTANT: Always fetch gateway settings from ttn_settings (source of truth for gateway config)
+      // since props may not include gateway-specific fields that are stored in ttn_settings
+      if (orgId) {
+        loadGatewaySettings();
+      }
     } else if (orgId) {
       // Fallback to database query (for backward compatibility)
       loadSettings();
@@ -1507,7 +1576,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             onClick={async () => {
               setIsRefreshingCanonical(true);
               try {
+                // Load both sources: synced_users (app config) and ttn_settings (gateway config)
                 await loadSettings();
+                await loadGatewaySettings();
                 toast({
                   title: 'Refreshed',
                   description: 'TTN settings reloaded from database',
