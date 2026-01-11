@@ -71,16 +71,33 @@ function generateTTNDeviceId(devEui: string): string | null {
 }
 
 // Parse common TTN error codes and provide user-friendly messages
-function parseTTNError(status: number, responseText: string, applicationId: string, deviceId: string): {
+function parseTTNError(status: number, responseText: string, applicationId: string, deviceId: string, cluster?: string): {
   message: string;
   errorType: string;
   requiredRights?: string[];
   hint?: string;
+  correlation_id?: string;
 } {
   try {
     const errorData = JSON.parse(responseText);
     const errorName = errorData?.details?.[0]?.name || '';
     const errorMessage = errorData?.message || '';
+    const correlationId = errorData?.details?.[0]?.correlation_id || errorData?.correlation_id || undefined;
+
+    // Detect AS-specific "not found" errors (device registered but not on AS)
+    if (
+      errorMessage.includes('not_found') ||
+      errorMessage.includes('pkg/redis') ||
+      errorMessage.includes('as.up.data.drop') ||
+      errorName === 'end_device_not_found'
+    ) {
+      return {
+        message: `Device "${deviceId}" not visible on Application Server. The device may be registered in Identity Server but not on AS.`,
+        errorType: 'as_not_visible',
+        hint: `Device exists in TTN registry but was NOT registered on the Application Server. Re-provision the device using the Provisioning Wizard to register it on all required servers (IS, JS, NS, AS).`,
+        correlation_id: correlationId,
+      };
+    }
 
     if (status === 403) {
       // Check for specific permission errors
@@ -93,6 +110,7 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
             'Read application traffic (traffic:read)',
           ],
           hint: 'Go to TTN Console → Applications → [Your App] → API Keys → Edit your key, then add "Write downlink application traffic" permission.',
+          correlation_id: correlationId,
         };
       }
       // Generic 403 - most likely missing application-specific permissions
@@ -104,14 +122,16 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
           'Write downlink application traffic (traffic:down:write)',
         ],
         hint: 'Your API key needs permissions for this specific application. In TTN Console, edit the API key and ensure it has access to this application with "Read application traffic" and "Write downlink application traffic" permissions.',
+        correlation_id: correlationId,
       };
     }
     
-    if (status === 404 || errorName === 'end_device_not_found' || errorMessage.includes('not_found') || errorMessage.includes('entity not found')) {
+    if (status === 404 || errorName === 'end_device_not_found' || errorMessage.includes('entity not found')) {
       return {
         message: `Device "${deviceId}" not found in TTN application "${applicationId}". TTN will drop uplinks as "entity not found".`,
         errorType: 'device_not_found',
-        hint: `Register the device in TTN Console with device_id: ${deviceId}. Use the "Register in TTN" button or create it manually.`,
+        hint: `Register the device in TTN Console with device_id: ${deviceId}. Use the "Provision to TTN" button in the Devices tab to register it properly on all servers.`,
+        correlation_id: correlationId,
       };
     }
     
@@ -120,12 +140,14 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
         message: 'Invalid or expired TTN API key.',
         errorType: 'auth_error',
         hint: 'Generate a new key in TTN Console → API Keys.',
+        correlation_id: correlationId,
       };
     }
     
     return {
       message: errorData.message || errorData.error || `TTN API error (${status})`,
       errorType: 'ttn_error',
+      correlation_id: correlationId,
     };
   } catch {
     return {
@@ -512,12 +534,13 @@ serve(async (req) => {
     console.log(`[ttn-simulate][${requestId}] TTN API response:`, responseText);
 
     if (!response.ok) {
-      const parsedError = parseTTNError(response.status, responseText, applicationId!, deviceId);
+      const parsedError = parseTTNError(response.status, responseText, applicationId!, deviceId, cluster);
       
       console.log(`[ttn-simulate][${requestId}] TTN error parsed:`, {
         errorType: parsedError.errorType,
         status: response.status,
         message: parsedError.message,
+        correlation_id: parsedError.correlation_id,
       });
       
       // IMPORTANT: Return 200 with success:false so frontend can parse the response
@@ -538,7 +561,10 @@ serve(async (req) => {
           host_used: `${cluster}.cloud.thethings.network`,
           settingsSource,
           request_id: requestId,
-          cluster_hint: response.status === 404 
+          correlation_id: parsedError.correlation_id,
+          cluster_hint: parsedError.errorType === 'as_not_visible'
+            ? `Device registered but not visible on Application Server at ${cluster}.cloud.thethings.network. Re-provision the device.`
+            : response.status === 404 
             ? `Device not found on ${cluster}.cloud.thethings.network. Verify this is the correct cluster for your TTN Console.`
             : undefined,
         }),

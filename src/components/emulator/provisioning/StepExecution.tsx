@@ -5,12 +5,27 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
-import { Loader2, CheckCircle2, XCircle, AlertCircle, Play, RefreshCw, AlertTriangle, Settings, ExternalLink } from 'lucide-react';
+import { Loader2, CheckCircle2, XCircle, AlertCircle, Play, RefreshCw, AlertTriangle, Settings, ExternalLink, Info } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { LoRaWANDevice, GatewayConfig, TTNConfig, generateTTNDeviceId, generateTTNGatewayId } from '@/lib/ttn-payload';
 import { ProvisionResult, ProvisioningSummary, ProvisioningMode } from '../TTNProvisioningWizard';
 import { debug, log } from '@/lib/debugLogger';
 import { logProvisioningEvent } from '@/lib/supportSnapshot';
+
+// Extended result with debug info from backend
+interface ProvisionDebug {
+  cluster_used: string;
+  application_id: string;
+  endpoints?: {
+    is: string;
+    js: string;
+    ns: string;
+    as: string;
+  };
+  as_verified: boolean;
+  registration_steps?: string[];
+  correlation_ids?: string[];
+}
 
 interface PermissionError {
   type: string;
@@ -186,7 +201,7 @@ export default function StepExecution({
 
         if (data?.results?.[0]) {
           const resultItem = data.results[0];
-          const result: ProvisionResult = {
+          const result: ProvisionResult & { debug?: ProvisionDebug } = {
             dev_eui: device.devEui,
             name: device.name,
             ttn_device_id: resultItem.ttn_device_id || ttnDeviceId,
@@ -195,7 +210,19 @@ export default function StepExecution({
             error_code: resultItem.error_code,
             retryable: resultItem.retryable ?? true,
             attempts: resultItem.attempts,
+            debug: resultItem.debug,
           };
+          
+          // Log debug info for visibility
+          if (resultItem.debug) {
+            debug.provisioning(`Device ${device.name} provisioning debug`, {
+              cluster: resultItem.debug.cluster_used,
+              app_id: resultItem.debug.application_id,
+              as_verified: resultItem.debug.as_verified,
+              steps: resultItem.debug.registration_steps,
+            });
+          }
+          
           setResults(prev => [...prev, result]);
 
           if (resultItem.status === 'created') summary.created++;
@@ -723,45 +750,98 @@ export default function StepExecution({
                 const itemKey = getItemKey(result);
                 const isRetrying = retryingItem === itemKey;
                 
+                const resultDebug = (result as ProvisionResult & { debug?: ProvisionDebug }).debug;
+                
                 return (
                   <div
                     key={index}
-                    className="flex items-center justify-between p-2 rounded bg-muted/50"
+                    className="p-2 rounded bg-muted/50 space-y-2"
                   >
-                    <div className="flex items-center gap-3">
-                      {isRetrying ? (
-                        <Loader2 className="h-4 w-4 animate-spin text-primary" />
-                      ) : (
-                        getStatusIcon(result.status)
-                      )}
-                      <div>
-                        <p className="text-sm font-medium">{result.name}</p>
-                        <code className="text-xs text-muted-foreground">
-                          {getDisplayId(result)}
-                        </code>
-                      </div>
-                    </div>
-                    <div className="flex items-center gap-2">
-                      {result.status === 'failed' && result.retryable && !isExecuting && !isRetrying && (
-                        <Button
-                          variant="ghost"
-                          size="sm"
-                          onClick={() => handleRetryItem(result)}
-                          className="h-7 px-2 text-xs gap-1"
-                        >
-                          <RefreshCw className="h-3 w-3" />
-                          Retry
-                        </Button>
-                      )}
-                      <div className="text-right">
-                        {getStatusBadge(result.status)}
-                        {result.error && (
-                          <p className="text-xs text-destructive mt-1 max-w-[150px] truncate" title={result.error}>
-                            {result.error}
-                          </p>
+                    <div className="flex items-center justify-between">
+                      <div className="flex items-center gap-3">
+                        {isRetrying ? (
+                          <Loader2 className="h-4 w-4 animate-spin text-primary" />
+                        ) : (
+                          getStatusIcon(result.status)
                         )}
+                        <div>
+                          <p className="text-sm font-medium">{result.name}</p>
+                          <code className="text-xs text-muted-foreground">
+                            {getDisplayId(result)}
+                          </code>
+                        </div>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        {result.status === 'failed' && result.retryable && !isExecuting && !isRetrying && (
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={() => handleRetryItem(result)}
+                            className="h-7 px-2 text-xs gap-1"
+                          >
+                            <RefreshCw className="h-3 w-3" />
+                            Retry
+                          </Button>
+                        )}
+                        <div className="text-right">
+                          {getStatusBadge(result.status)}
+                          {result.error && (
+                            <p className="text-xs text-destructive mt-1 max-w-[150px] truncate" title={result.error}>
+                              {result.error}
+                            </p>
+                          )}
+                        </div>
                       </div>
                     </div>
+                    
+                    {/* Debug info collapsible */}
+                    {resultDebug && (
+                      <Collapsible>
+                        <CollapsibleTrigger className="text-xs text-muted-foreground flex items-center gap-1 hover:text-foreground">
+                          <Info className="h-3 w-3" /> Debug Info
+                        </CollapsibleTrigger>
+                        <CollapsibleContent className="text-xs font-mono bg-background/50 p-2 rounded mt-1 space-y-1">
+                          <div className="flex items-center gap-2">
+                            <span className="text-muted-foreground">Cluster:</span>
+                            <Badge variant="outline" className="text-xs h-5">{resultDebug.cluster_used}</Badge>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-muted-foreground">App ID:</span>
+                            <span>{resultDebug.application_id}</span>
+                          </div>
+                          <div className="flex items-center gap-2">
+                            <span className="text-muted-foreground">AS Verified:</span>
+                            <Badge 
+                              variant={resultDebug.as_verified ? 'outline' : 'destructive'} 
+                              className="text-xs h-5"
+                            >
+                              {resultDebug.as_verified ? '✓ Yes' : '✗ No'}
+                            </Badge>
+                          </div>
+                          {resultDebug.registration_steps && resultDebug.registration_steps.length > 0 && (
+                            <div>
+                              <span className="text-muted-foreground">Steps:</span>
+                              <div className="flex flex-wrap gap-1 mt-1">
+                                {resultDebug.registration_steps.map((step, i) => (
+                                  <Badge 
+                                    key={i} 
+                                    variant="secondary" 
+                                    className={`text-xs h-5 ${step.includes('failed') ? 'bg-destructive/20 text-destructive' : step.includes('created') || step.includes('passed') ? 'bg-green-500/20 text-green-700' : ''}`}
+                                  >
+                                    {step}
+                                  </Badge>
+                                ))}
+                              </div>
+                            </div>
+                          )}
+                          {resultDebug.correlation_ids && resultDebug.correlation_ids.length > 0 && (
+                            <div className="text-muted-foreground truncate" title={resultDebug.correlation_ids.join(', ')}>
+                              Correlation: {resultDebug.correlation_ids[0]}
+                            </div>
+                          )}
+                        </CollapsibleContent>
+                      </Collapsible>
+                    )}
                   </div>
                 );
               })}
