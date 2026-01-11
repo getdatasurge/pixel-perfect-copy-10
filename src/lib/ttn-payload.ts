@@ -166,7 +166,7 @@ export interface TestResult {
   webhookStatus: 'success' | 'failed' | 'pending';
   dbStatus: 'inserted' | 'failed' | 'pending';
   orgApplied: boolean;
-  uplinkPath?: 'webhook-forward' | 'ttn-simulate' | 'local-webhook' | 'external-webhook';
+  uplinkPath?: 'ttn-simulate' | 'local-webhook' | 'external-webhook';
   error?: string;
 }
 

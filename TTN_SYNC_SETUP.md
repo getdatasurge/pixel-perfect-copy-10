@@ -154,7 +154,7 @@ Supabase edge functions handling TTN webhooks and sync operations should respond
 - `Access-Control-Allow-Origin: *` (or your configured origin)
 - `Access-Control-Allow-Methods: POST, OPTIONS` (for `search-users`, expect `GET, POST, OPTIONS`)
 - `Access-Control-Allow-Headers: authorization, x-client-info, apikey, content-type`
-- `Access-Control-Allow-Headers` should also include `x-ttn-webhook-secret` for webhook endpoints (`ttn-webhook` and `ttn-webhook-forward`)
+- `Access-Control-Allow-Headers` should also include `x-ttn-webhook-secret` for the `ttn-webhook` endpoint
 
 Use the verification script to check all functions defined in `supabase/config.toml`:
 
@@ -187,8 +187,8 @@ curl -i -X OPTIONS https://jyxzaagcirhbdzvofkom.supabase.co/functions/v1/<name>
 
 ## Webhook Secret Behavior (Emulator vs TTN)
 
-- **TTN webhooks**: TTN sends `x-ttn-webhook-secret` when configured in the console. The `ttn-webhook` and `ttn-webhook-forward` functions validate it against `ttn_settings.webhook_secret` for the matching `application_id`.
-- **Emulator forwarded uplinks**: When the emulator has a webhook secret stored (from synced user TTN settings or when saving settings in the UI), it includes `x-ttn-webhook-secret` on `ttn-webhook-forward` requests. This mirrors TTN behavior so emulator-forwarded requests validate against the same `ttn_settings.webhook_secret` value.
+- **TTN webhooks**: TTN sends `x-ttn-webhook-secret` when configured in the console. The `ttn-webhook` function validates it against `ttn_settings.webhook_secret` for the matching `application_id`.
+- **Emulator uplinks**: The emulator uses `ttn-simulate` to send uplinks through the real TTN API, providing true end-to-end testing.
 
 ## Troubleshooting
 

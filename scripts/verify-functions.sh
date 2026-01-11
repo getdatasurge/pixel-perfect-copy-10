@@ -74,7 +74,7 @@ for FUNCTION_NAME in "${FUNCTIONS[@]}"; do
     FAILURES=$((FAILURES + 1))
   else
     REQUIRED_HEADERS=("authorization" "x-client-info" "apikey" "content-type")
-    if [[ "$FUNCTION_NAME" == "ttn-webhook" || "$FUNCTION_NAME" == "ttn-webhook-forward" ]]; then
+    if [[ "$FUNCTION_NAME" == "ttn-webhook" ]]; then
       REQUIRED_HEADERS+=("x-ttn-webhook-secret")
     fi
     for HEADER in "${REQUIRED_HEADERS[@]}"; do
