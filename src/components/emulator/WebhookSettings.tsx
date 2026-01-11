@@ -1007,15 +1007,17 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       const requestBody = {
         action: 'test_stored' as const,
         org_id: orgId,
-        // Note: Always test org's TTN settings, not user-specific
-        // User selector is for context (org/site/unit selection)
+        // Include user context so backend tests the correct user-specific app
+        selected_user_id: config.selectedUserId || undefined,
+        cluster: ttnCluster,
+        application_id: ttnApplicationId,
       };
 
       console.log('[WebhookSettings] Testing TTN connection with:', {
         ...requestBody,
-        ttnApplicationId: ttnApplicationId,
-        ttnCluster: ttnCluster,
-        configSelectedUserId: config.selectedUserId,
+        expected_app: ttnApplicationId,
+        expected_cluster: ttnCluster,
+        hasSelectedUser: !!config.selectedUserId,
       });
 
       const { data, error } = await supabase.functions.invoke('manage-ttn-settings', {
