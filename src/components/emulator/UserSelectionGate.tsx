@@ -27,6 +27,10 @@ interface StoredUserContext {
     cluster: string;
     api_key_last4?: string | null;
     webhook_secret_last4?: string | null;
+    // Gateway owner config
+    gateway_owner_type?: 'user' | 'organization' | null;
+    gateway_owner_id?: string | null;
+    gateway_api_key_last4?: string | null;
   };
   ttnWebhookSecret?: string | null;
   selectedUserSites: Array<{ site_id: string; site_name: string | null; is_default: boolean }>;
@@ -261,6 +265,10 @@ export default function UserSelectionGate({
         cluster: orgState.ttn.cluster || 'eu1',
         api_key_last4: orgState.ttn.api_key_last4 || null,
         webhook_secret_last4: orgState.ttn.webhook_secret_last4 || null,
+        // Gateway owner config (new fields)
+        gateway_owner_type: orgState.ttn.gateway_owner_type || null,
+        gateway_owner_id: orgState.ttn.gateway_owner_id || null,
+        gateway_api_key_last4: orgState.ttn.gateway_api_key_last4 || null,
       } : undefined;
 
       // Update centralized TTN config store with canonical values from FrostGuard
