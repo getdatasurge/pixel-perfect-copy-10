@@ -102,8 +102,6 @@ export default function TestDashboard({ results, syncResults = [], onClearResult
 
   const formatUplinkPath = (path: TestResult['uplinkPath']) => {
     switch (path) {
-      case 'webhook-forward':
-        return 'Webhook (forward)';
       case 'ttn-simulate':
         return 'TTN simulate';
       case 'local-webhook':
