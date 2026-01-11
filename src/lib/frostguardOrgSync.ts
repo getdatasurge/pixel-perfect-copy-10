@@ -40,6 +40,10 @@ export interface OrgStateTTN {
   api_key_last4?: string;
   webhook_secret_last4?: string;
   updated_at?: string;
+  // Gateway owner config (synced from ttn_settings)
+  gateway_owner_type?: 'user' | 'organization';
+  gateway_owner_id?: string;
+  gateway_api_key_last4?: string;
 }
 
 // Unit represents a storage unit, freezer, or monitored location within a site

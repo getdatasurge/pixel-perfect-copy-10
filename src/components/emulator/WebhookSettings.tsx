@@ -9,7 +9,7 @@ import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound
+  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2
 } from 'lucide-react';
 import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS, parseOrgFromUrl } from '@/lib/ttnConsoleLinks';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
@@ -123,6 +123,26 @@ function TTNConfigSourceBadge({ source, localDirty, updatedAt, apiKeyLast4 }: Co
   );
 }
 
+// CurrentValueBadge - Reusable component for showing "Current:" values consistently
+interface CurrentValueBadgeProps {
+  value: string | null | undefined;
+  isMasked?: boolean;
+  label?: string;
+}
+
+function CurrentValueBadge({ value, isMasked, label }: CurrentValueBadgeProps) {
+  if (!value) return null;
+  
+  const displayValue = isMasked ? `****${value.replace(/^\*+/, '')}` : value;
+  
+  return (
+    <span className="text-xs text-muted-foreground flex items-center gap-1">
+      <CheckCircle2 className="h-3 w-3 text-green-500" />
+      {label || 'Current:'} {displayValue}
+    </span>
+  );
+}
+
 interface WebhookSettingsProps {
   config: WebhookConfig;
   onConfigChange: (config: WebhookConfig) => void;
@@ -211,9 +231,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   
   // Canonical values from FrostGuard (source of truth for "Current:" display)
   const [canonicalCluster, setCanonicalCluster] = useState<string | null>(null);
+  const [canonicalApplicationId, setCanonicalApplicationId] = useState<string | null>(null);
+  const [canonicalApiKeyLast4, setCanonicalApiKeyLast4] = useState<string | null>(null);
   const [canonicalOwnerType, setCanonicalOwnerType] = useState<'user' | 'organization' | null>(null);
   const [canonicalOwnerId, setCanonicalOwnerId] = useState<string | null>(null);
-  const [canonicalWebhookSecretSet, setCanonicalWebhookSecretSet] = useState(false);
+  const [canonicalWebhookSecretLast4, setCanonicalWebhookSecretLast4] = useState<string | null>(null);
+  const [canonicalGatewayApiKeyLast4, setCanonicalGatewayApiKeyLast4] = useState<string | null>(null);
+  const [canonicalLastSyncAt, setCanonicalLastSyncAt] = useState<string | null>(null);
+  const [isRefreshingCanonical, setIsRefreshingCanonical] = useState(false);
   
   // Connection status tracking
   const [lastTestAt, setLastTestAt] = useState<Date | string | null>(null);
@@ -499,9 +524,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       
       // Set canonical values for "Current:" display
       setCanonicalCluster(config.ttnConfig.cluster || null);
+      setCanonicalApplicationId(config.ttnConfig.applicationId || null);
+      setCanonicalApiKeyLast4(config.ttnConfig.api_key_last4 || null);
       setCanonicalOwnerType(ownerType || null);
       setCanonicalOwnerId(ownerId || null);
-      setCanonicalWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
+      setCanonicalWebhookSecretLast4(config.ttnConfig.webhook_secret_last4 || null);
+      setCanonicalGatewayApiKeyLast4(gwKeyLast4 || null);
+      setCanonicalLastSyncAt(config.contextSetAt || config.lastSyncAt || null);
 
       // Update connection status if available
       if (config.ttnConfig.lastTestAt) {
@@ -603,16 +632,22 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       
       // ====== STEP 4: Set canonical values for "Current:" display ======
       setCanonicalCluster(effectiveCluster);
+      setCanonicalApplicationId(effectiveAppId || null);
+      setCanonicalApiKeyLast4(ttn.api_key_last4 || null);
       setCanonicalOwnerType(ownerType as 'user' | 'organization' | null);
       setCanonicalOwnerId(ownerId);
-      setCanonicalWebhookSecretSet(webhookSecretSet);
+      setCanonicalWebhookSecretLast4(ttnSettings?.webhook_secret?.slice(-4) || ttn.webhook_secret_last4 || null);
+      setCanonicalGatewayApiKeyLast4(gatewayKeyLast4 || null);
+      setCanonicalLastSyncAt(ttn.updated_at || null);
       
       console.log('[WebhookSettings] Canonical values merged from synced_users + ttn_settings:', {
         cluster: effectiveCluster,
+        appId: effectiveAppId,
+        apiKeyLast4: ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null,
         ownerType,
         ownerId,
         gatewayKeyLast4: gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null,
-        webhookSecretSet,
+        webhookSecretLast4: ttnSettings?.webhook_secret?.slice(-4) || ttn.webhook_secret_last4 ? 'set' : null,
       });
 
       // Load connection status
@@ -853,15 +888,22 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       // Update canonical values to reflect saved state (for "Current:" display)
       setCanonicalCluster(ttnCluster);
+      setCanonicalApplicationId(ttnApplicationId);
+      setCanonicalApiKeyLast4(savedApiKeyLast4 || null);
       if (gatewayOwnerType) setCanonicalOwnerType(gatewayOwnerType);
       if (gatewayOwnerId) setCanonicalOwnerId(gatewayOwnerId);
-      if (ttnWebhookSecret) setCanonicalWebhookSecretSet(true);
+      if (savedGatewayApiKeyLast4) setCanonicalGatewayApiKeyLast4(savedGatewayApiKeyLast4);
+      if (ttnWebhookSecret) setCanonicalWebhookSecretLast4(ttnWebhookSecret.slice(-4));
+      setCanonicalLastSyncAt(new Date().toISOString());
       
       console.log('[WebhookSettings] Canonical values updated after save:', {
         cluster: ttnCluster,
+        appId: ttnApplicationId,
+        apiKeyLast4: savedApiKeyLast4 ? `****${savedApiKeyLast4}` : null,
         ownerType: gatewayOwnerType,
         ownerId: gatewayOwnerId,
-        webhookSecretSet: !!ttnWebhookSecret,
+        gatewayApiKeyLast4: savedGatewayApiKeyLast4 ? `****${savedGatewayApiKeyLast4}` : null,
+        webhookSecretLast4: ttnWebhookSecret ? 'set' : null,
       });
 
       // Also clear any stale localStorage TTN cache
@@ -1446,19 +1488,50 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
               apiKeyLast4={configSource.apiKeyLast4}
             />
           </h3>
-          <p className="text-sm text-muted-foreground">
-            Route emulator data through The Things Network for production-ready testing
-          </p>
+          <div className="flex items-center gap-3">
+            <p className="text-sm text-muted-foreground">
+              Route emulator data through The Things Network for production-ready testing
+            </p>
+            {canonicalLastSyncAt && (
+              <span className="text-xs text-muted-foreground flex items-center gap-1">
+                <Clock className="h-3 w-3" />
+                Last synced: {formatRelativeTime(canonicalLastSyncAt)}
+              </span>
+            )}
+          </div>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          onClick={() => setShowWizard(true)}
-          className="gap-2"
-        >
-          <Wand2 className="h-4 w-4" />
-          Guided Setup
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            variant="ghost"
+            size="sm"
+            onClick={async () => {
+              setIsRefreshingCanonical(true);
+              try {
+                await loadSettings();
+                toast({
+                  title: 'Refreshed',
+                  description: 'TTN settings reloaded from database',
+                });
+              } finally {
+                setIsRefreshingCanonical(false);
+              }
+            }}
+            disabled={isRefreshingCanonical || !orgId || isLoading}
+            className="gap-1"
+          >
+            <RefreshCw className={`h-4 w-4 ${isRefreshingCanonical ? 'animate-spin' : ''}`} />
+            Refresh
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
+            onClick={() => setShowWizard(true)}
+            className="gap-2"
+          >
+            <Wand2 className="h-4 w-4" />
+            Guided Setup
+          </Button>
+        </div>
       </div>
 
       {/* TTN Settings - Primary */}
@@ -1555,11 +1628,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       ))}
                     </SelectContent>
                   </Select>
-                  <p className="text-xs text-muted-foreground">
-                    {canonicalCluster 
-                      ? `Current: ${canonicalCluster} (change to update)` 
-                      : 'Select your TTN Console region'}
-                  </p>
+                  {canonicalCluster 
+                    ? <CurrentValueBadge value={canonicalCluster} />
+                    : <p className="text-xs text-muted-foreground">Select your TTN Console region</p>
+                  }
                   {showClusterDetect && (
                     <div className="flex gap-2">
                       <Input
@@ -1584,9 +1656,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     onChange={e => setTtnApplicationId(e.target.value)}
                     disabled={disabled || isLoading}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    From your TTN Console application
-                  </p>
+                  {canonicalApplicationId 
+                    ? <CurrentValueBadge value={canonicalApplicationId} />
+                    : <p className="text-xs text-muted-foreground">From your TTN Console application</p>
+                  }
                 </div>
               </div>
 
@@ -1608,11 +1681,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     onChange={e => setTtnApiKey(e.target.value)}
                     disabled={disabled || isLoading}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    {ttnApiKeySet 
-                      ? `Current: ${ttnApiKeyPreview} (leave blank to keep, enter new to replace)` 
-                      : 'From TTN Console → API keys'}
-                  </p>
+                  {canonicalApiKeyLast4 
+                    ? <CurrentValueBadge value={canonicalApiKeyLast4} isMasked />
+                    : <p className="text-xs text-muted-foreground">From TTN Console → API keys</p>
+                  }
+                  {ttnApiKeySet && !canonicalApiKeyLast4 && (
+                    <p className="text-xs text-muted-foreground">Leave blank to keep, enter new to replace</p>
+                  )}
                 </div>
 
                 <div className="space-y-2">
@@ -1632,11 +1707,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     onChange={e => setTtnWebhookSecret(e.target.value)}
                     disabled={disabled || isLoading}
                   />
-                  <p className="text-xs text-muted-foreground">
-                    {canonicalWebhookSecretSet 
-                      ? 'Current: set (leave blank to keep, enter new to replace)' 
-                      : 'For webhook signature verification. Leave blank if not set.'}
-                  </p>
+                  {canonicalWebhookSecretLast4 
+                    ? <CurrentValueBadge value={canonicalWebhookSecretLast4} isMasked />
+                    : <p className="text-xs text-muted-foreground">For webhook signature verification. Leave blank if not set.</p>
+                  }
+                  {ttnWebhookSecretSet && !canonicalWebhookSecretLast4 && (
+                    <p className="text-xs text-muted-foreground">Leave blank to keep, enter new to replace</p>
+                  )}
                 </div>
               </div>
 
@@ -1702,11 +1779,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                         <SelectItem value="organization">Organization</SelectItem>
                       </SelectContent>
                     </Select>
-                    <p className="text-xs text-muted-foreground">
-                      {canonicalOwnerType 
-                        ? `Current: ${canonicalOwnerType === 'organization' ? 'Organization' : 'Personal (User)'}` 
-                        : 'Select gateway owner type'}
-                    </p>
+                    {canonicalOwnerType 
+                      ? <CurrentValueBadge value={canonicalOwnerType === 'organization' ? 'Organization' : 'Personal (User)'} />
+                      : <p className="text-xs text-muted-foreground">Select gateway owner type</p>
+                    }
                   </div>
                   <div className="space-y-2">
                     <Label htmlFor="gatewayOwnerId">
@@ -1719,11 +1795,10 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       onChange={e => setGatewayOwnerId(e.target.value)}
                       disabled={disabled || isLoading}
                     />
-                    <p className="text-xs text-muted-foreground">
-                      {canonicalOwnerId 
-                        ? `Current: ${canonicalOwnerId} (leave blank to keep)` 
-                        : 'Required for gateway provisioning. Leave blank to keep current.'}
-                    </p>
+                    {canonicalOwnerId 
+                      ? <CurrentValueBadge value={canonicalOwnerId} />
+                      : <p className="text-xs text-muted-foreground">Required for gateway provisioning</p>
+                    }
                   </div>
                 </div>
 
@@ -1776,11 +1851,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       Test
                     </Button>
                   </div>
-                  <p className="text-xs text-muted-foreground">
-                    {gatewayApiKeySet
-                      ? `Current: ${gatewayApiKeyPreview} (leave blank to keep, enter new to replace)`
-                      : 'Personal/Organization API key with gateways:read + gateways:write rights. NOT an Application API key.'}
-                  </p>
+                  {canonicalGatewayApiKeyLast4 
+                    ? <CurrentValueBadge value={canonicalGatewayApiKeyLast4} isMasked />
+                    : <p className="text-xs text-muted-foreground">Personal/Organization API key with gateways:read + gateways:write rights. NOT an Application API key.</p>
+                  }
+                  {gatewayApiKeySet && !canonicalGatewayApiKeyLast4 && (
+                    <p className="text-xs text-muted-foreground">Leave blank to keep, enter new to replace</p>
+                  )}
                   
                   {/* Gateway Key Test Result */}
                   {gatewayKeyTestResult && (
