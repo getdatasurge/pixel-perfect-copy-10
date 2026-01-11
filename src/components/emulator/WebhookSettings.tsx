@@ -6,11 +6,13 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Switch } from '@/components/ui/switch';
 import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2
+  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2, ChevronDown, Bug
 } from 'lucide-react';
+import { cn } from '@/lib/utils';
 import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS, parseOrgFromUrl } from '@/lib/ttnConsoleLinks';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { WebhookConfig, TTNConfig, buildTTNPayload, createDevice, createGateway, LoRaWANDevice } from '@/lib/ttn-payload';
@@ -123,22 +125,59 @@ function TTNConfigSourceBadge({ source, localDirty, updatedAt, apiKeyLast4 }: Co
   );
 }
 
+// Source tracking type for TTN configuration
+type TTNConfigSource = 'user' | 'org' | 'not_set';
+
+// Resolved TTN config with source tracking for each field
+interface ResolvedTTNConfig {
+  cluster: string;
+  cluster_source: TTNConfigSource;
+  application_id: string;
+  application_id_source: TTNConfigSource;
+  api_key_last4: string | null;
+  api_key_source: TTNConfigSource;
+  gateway_api_key_last4: string | null;
+  gateway_api_key_source: TTNConfigSource;
+  webhook_secret_last4: string | null;
+  webhook_secret_source: TTNConfigSource;
+  gateway_owner_type: 'user' | 'organization' | null;
+  gateway_owner_id: string | null;
+  gateway_owner_source: TTNConfigSource;
+  
+  // Raw data for diagnostics
+  raw_user_ttn: Record<string, unknown> | null;
+  raw_org_settings: Record<string, unknown> | null;
+  resolved_at: string;
+}
+
 // CurrentValueBadge - Reusable component for showing "Current:" values consistently
 interface CurrentValueBadgeProps {
   value: string | null | undefined;
   isMasked?: boolean;
   label?: string;
+  source?: TTNConfigSource;
 }
 
-function CurrentValueBadge({ value, isMasked, label }: CurrentValueBadgeProps) {
+function CurrentValueBadge({ value, isMasked, label, source }: CurrentValueBadgeProps) {
   if (!value) return null;
   
   const displayValue = isMasked ? `****${value.replace(/^\*+/, '')}` : value;
+  
+  // Source badge styling
+  const sourceBadge = source && source !== 'not_set' ? (
+    <span className={cn(
+      "text-[10px] px-1 py-0.5 rounded font-medium ml-1",
+      source === 'user' ? "bg-blue-100 text-blue-700" : "bg-amber-100 text-amber-700"
+    )}>
+      {source === 'user' ? 'User' : 'Org'}
+    </span>
+  ) : null;
   
   return (
     <span className="text-xs text-muted-foreground flex items-center gap-1">
       <CheckCircle2 className="h-3 w-3 text-green-500" />
       {label || 'Current:'} {displayValue}
+      {sourceBadge}
     </span>
   );
 }
@@ -240,6 +279,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [canonicalLastSyncAt, setCanonicalLastSyncAt] = useState<string | null>(null);
   const [isRefreshingCanonical, setIsRefreshingCanonical] = useState(false);
   
+  // Resolved config with source tracking (for diagnostics and "Current:" display)
+  const [resolvedConfig, setResolvedConfig] = useState<ResolvedTTNConfig | null>(null);
+  
   // Connection status tracking
   const [lastTestAt, setLastTestAt] = useState<Date | string | null>(null);
   const [lastTestSuccess, setLastTestSuccess] = useState<boolean | null>(null);
@@ -279,6 +321,24 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     });
     return unsubscribe;
   }, []);
+
+  // Clear local draft state when user changes to prevent stale data
+  useEffect(() => {
+    // Reset all form fields to empty
+    setTtnApiKey('');
+    setTtnWebhookSecret('');
+    setGatewayApiKey('');
+    
+    // Reset resolved config - it will be repopulated by loadSettings
+    setResolvedConfig(null);
+    
+    // Reset test results
+    setTestResult(null);
+    setPermissionResult(null);
+    setGatewayKeyTestResult(null);
+    
+    console.log('[WebhookSettings] User switched, cleared draft state:', config.selectedUserId);
+  }, [config.selectedUserId]);
 
   // Parse cluster from TTN Console URL
   const parseClusterFromUrl = (url: string): string | null => {
@@ -646,7 +706,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // ====== STEP 2: Load from ttn_settings (gateway owner config) ======
       const { data: ttnSettings, error: ttnSettingsError } = await supabase
         .from('ttn_settings')
-        .select('gateway_owner_type, gateway_owner_id, gateway_api_key, webhook_secret, cluster, enabled, application_id')
+        .select('gateway_owner_type, gateway_owner_id, gateway_api_key, webhook_secret, cluster, enabled, application_id, api_key')
         .eq('org_id', orgId)
         .limit(1)
         .maybeSingle();
@@ -666,62 +726,130 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         } : null,
       });
 
-      // ====== STEP 3: Merge and apply values ======
-      const ttn = (syncedUser?.ttn as any) || {};
+      // ====== STEP 3: Build resolved config with source tracking ======
+      const rawUserTTN = (syncedUser?.ttn as Record<string, unknown>) || null;
+      const rawOrgSettings = ttnSettings || null;
       
-      // Application config: prefer synced_users, fall back to ttn_settings
-      const effectiveCluster = ttn.cluster || ttnSettings?.cluster || 'eu1';
-      const effectiveAppId = ttn.application_id || ttnSettings?.application_id || '';
-      const effectiveEnabled = ttn.enabled || ttnSettings?.enabled || false;
+      // Determine API key source with deterministic precedence:
+      // If user TTN is enabled AND has api_key_last4 => use user config
+      // Else if org has api_key => use org config
+      // Else show Not set
+      const userHasValidApiKey = rawUserTTN?.enabled && rawUserTTN?.api_key_last4;
+      const orgHasValidApiKey = !!rawOrgSettings?.api_key;
       
+      let resolvedApiKeyLast4: string | null = null;
+      let apiKeySource: TTNConfigSource = 'not_set';
+      
+      if (userHasValidApiKey) {
+        resolvedApiKeyLast4 = rawUserTTN.api_key_last4 as string;
+        apiKeySource = 'user';
+      } else if (orgHasValidApiKey) {
+        resolvedApiKeyLast4 = rawOrgSettings.api_key.slice(-4);
+        apiKeySource = 'org';
+      }
+      
+      // Determine cluster source
+      const clusterSource: TTNConfigSource = rawUserTTN?.cluster ? 'user' : (rawOrgSettings?.cluster ? 'org' : 'not_set');
+      const effectiveCluster = (rawUserTTN?.cluster as string) || rawOrgSettings?.cluster || 'eu1';
+      
+      // Determine app ID source
+      const appIdSource: TTNConfigSource = rawUserTTN?.application_id ? 'user' : (rawOrgSettings?.application_id ? 'org' : 'not_set');
+      const effectiveAppId = (rawUserTTN?.application_id as string) || rawOrgSettings?.application_id || '';
+      
+      const effectiveEnabled = !!(rawUserTTN?.enabled || rawOrgSettings?.enabled);
+      
+      // Gateway config: prefer ttn_settings (has full key), fall back to synced_users
+      const ownerType = rawOrgSettings?.gateway_owner_type || rawUserTTN?.gateway_owner_type || null;
+      const ownerId = rawOrgSettings?.gateway_owner_id || rawUserTTN?.gateway_owner_id || null;
+      const gatewayKeyLast4 = rawOrgSettings?.gateway_api_key 
+        ? rawOrgSettings.gateway_api_key.slice(-4) 
+        : (rawUserTTN?.gateway_api_key_last4 as string) || null;
+      const webhookSecretLast4 = rawOrgSettings?.webhook_secret?.slice(-4) || (rawUserTTN?.webhook_secret_last4 as string) || null;
+      
+      // Build the resolved config for diagnostics
+      const resolved: ResolvedTTNConfig = {
+        cluster: effectiveCluster,
+        cluster_source: clusterSource,
+        application_id: effectiveAppId,
+        application_id_source: appIdSource,
+        api_key_last4: resolvedApiKeyLast4,
+        api_key_source: apiKeySource,
+        gateway_api_key_last4: gatewayKeyLast4,
+        gateway_api_key_source: rawOrgSettings?.gateway_api_key ? 'org' : (rawUserTTN?.gateway_api_key_last4 ? 'user' : 'not_set'),
+        webhook_secret_last4: webhookSecretLast4,
+        webhook_secret_source: rawOrgSettings?.webhook_secret ? 'org' : (rawUserTTN?.webhook_secret_last4 ? 'user' : 'not_set'),
+        gateway_owner_type: ownerType as 'user' | 'organization' | null,
+        gateway_owner_id: ownerId as string | null,
+        gateway_owner_source: rawOrgSettings?.gateway_owner_type ? 'org' : (rawUserTTN?.gateway_owner_type ? 'user' : 'not_set'),
+        raw_user_ttn: rawUserTTN,
+        raw_org_settings: rawOrgSettings ? {
+          cluster: rawOrgSettings.cluster,
+          application_id: rawOrgSettings.application_id,
+          api_key_set: !!rawOrgSettings.api_key,
+          api_key_last4: rawOrgSettings.api_key?.slice(-4) || null,
+          gateway_api_key_set: !!rawOrgSettings.gateway_api_key,
+          gateway_api_key_last4: rawOrgSettings.gateway_api_key?.slice(-4) || null,
+          webhook_secret_set: !!rawOrgSettings.webhook_secret,
+          webhook_secret_last4: rawOrgSettings.webhook_secret?.slice(-4) || null,
+          gateway_owner_type: rawOrgSettings.gateway_owner_type,
+          gateway_owner_id: rawOrgSettings.gateway_owner_id,
+        } : null,
+        resolved_at: new Date().toISOString(),
+      };
+      
+      setResolvedConfig(resolved);
+      
+      console.log('[WebhookSettings] Resolved config with sources:', {
+        api_key_source: apiKeySource,
+        api_key_last4: resolvedApiKeyLast4 ? `****${resolvedApiKeyLast4}` : null,
+        cluster_source: clusterSource,
+        app_id_source: appIdSource,
+        raw_user_api_key_last4: rawUserTTN?.api_key_last4 ? `****${rawUserTTN.api_key_last4}` : null,
+        raw_org_api_key_set: !!rawOrgSettings?.api_key,
+      });
+      
+      // ====== STEP 4: Apply values to form state ======
       setTtnEnabled(effectiveEnabled);
       setTtnCluster(effectiveCluster);
       setTtnApplicationId(effectiveAppId);
-      setTtnApiKeyPreview(ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null);
-      setTtnApiKeySet(!!(ttn.api_key_last4));
-      
-      // Gateway config: prefer ttn_settings (has full key), fall back to synced_users
-      const ownerType = ttnSettings?.gateway_owner_type || ttn.gateway_owner_type || null;
-      const ownerId = ttnSettings?.gateway_owner_id || ttn.gateway_owner_id || null;
-      const gatewayKeyLast4 = ttnSettings?.gateway_api_key 
-        ? ttnSettings.gateway_api_key.slice(-4) 
-        : ttn.gateway_api_key_last4 || null;
-      const webhookSecretSet = !!(ttnSettings?.webhook_secret || ttn.webhook_secret_last4);
+      setTtnApiKeyPreview(resolvedApiKeyLast4 ? `****${resolvedApiKeyLast4}` : null);
+      setTtnApiKeySet(!!resolvedApiKeyLast4);
       
       if (ownerType) setGatewayOwnerType(ownerType as 'user' | 'organization');
-      if (ownerId) setGatewayOwnerId(ownerId);
+      if (ownerId) setGatewayOwnerId(ownerId as string);
       setGatewayApiKeyPreview(gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null);
       setGatewayApiKeySet(!!gatewayKeyLast4);
-      setTtnWebhookSecretSet(webhookSecretSet);
+      setTtnWebhookSecretSet(!!webhookSecretLast4);
       
       // Don't load actual secrets, just show preview
       setTtnApiKey('');
       setTtnWebhookSecret('');
       setGatewayApiKey('');
       
-      // ====== STEP 4: Set canonical values for "Current:" display ======
+      // ====== STEP 5: Set canonical values for "Current:" display ======
       setCanonicalCluster(effectiveCluster);
       setCanonicalApplicationId(effectiveAppId || null);
-      setCanonicalApiKeyLast4(ttn.api_key_last4 || null);
+      setCanonicalApiKeyLast4(resolvedApiKeyLast4);
       setCanonicalOwnerType(ownerType as 'user' | 'organization' | null);
-      setCanonicalOwnerId(ownerId);
-      setCanonicalWebhookSecretLast4(ttnSettings?.webhook_secret?.slice(-4) || ttn.webhook_secret_last4 || null);
-      setCanonicalGatewayApiKeyLast4(gatewayKeyLast4 || null);
-      setCanonicalLastSyncAt(ttn.updated_at || null);
+      setCanonicalOwnerId(ownerId as string | null);
+      setCanonicalWebhookSecretLast4(webhookSecretLast4);
+      setCanonicalGatewayApiKeyLast4(gatewayKeyLast4);
+      setCanonicalLastSyncAt((rawUserTTN?.updated_at as string) || null);
       
       console.log('[WebhookSettings] Canonical values merged from synced_users + ttn_settings:', {
         cluster: effectiveCluster,
         appId: effectiveAppId,
-        apiKeyLast4: ttn.api_key_last4 ? `****${ttn.api_key_last4}` : null,
+        apiKeyLast4: resolvedApiKeyLast4 ? `****${resolvedApiKeyLast4}` : null,
+        apiKeySource,
         ownerType,
         ownerId,
         gatewayKeyLast4: gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null,
-        webhookSecretLast4: ttnSettings?.webhook_secret?.slice(-4) || ttn.webhook_secret_last4 ? 'set' : null,
+        webhookSecretLast4: webhookSecretLast4 ? 'set' : null,
       });
 
       // Load connection status
-      if (ttn.updated_at) {
-        setLastTestAt(new Date(ttn.updated_at));
+      if (rawUserTTN?.updated_at) {
+        setLastTestAt(new Date(rawUserTTN.updated_at as string));
       }
 
       // Update parent config
@@ -733,8 +861,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         });
       }
 
-      if (ttn.webhook_secret) {
-        update({ ttnWebhookSecret: ttn.webhook_secret });
+      if (rawUserTTN?.webhook_secret) {
+        update({ ttnWebhookSecret: rawUserTTN.webhook_secret as string });
       }
       
       // Show info if no data found at all
@@ -1577,6 +1705,13 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             size="sm"
             onClick={async () => {
               setIsRefreshingCanonical(true);
+              
+              // Clear existing state first to force fresh fetch
+              setResolvedConfig(null);
+              setCanonicalApiKeyLast4(null);
+              setCanonicalGatewayApiKeyLast4(null);
+              setCanonicalWebhookSecretLast4(null);
+              
               try {
                 // Load both sources: synced_users (app config) and ttn_settings (gateway config)
                 await loadSettings();
@@ -1702,7 +1837,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     </SelectContent>
                   </Select>
                   {canonicalCluster 
-                    ? <CurrentValueBadge value={canonicalCluster} />
+                    ? <CurrentValueBadge value={canonicalCluster} source={resolvedConfig?.cluster_source} />
                     : <p className="text-xs text-muted-foreground">Select your TTN Console region</p>
                   }
                   {showClusterDetect && (
@@ -1730,7 +1865,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     disabled={disabled || isLoading}
                   />
                   {canonicalApplicationId 
-                    ? <CurrentValueBadge value={canonicalApplicationId} />
+                    ? <CurrentValueBadge value={canonicalApplicationId} source={resolvedConfig?.application_id_source} />
                     : <p className="text-xs text-muted-foreground">From your TTN Console application</p>
                   }
                 </div>
@@ -1755,7 +1890,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     disabled={disabled || isLoading}
                   />
                   {canonicalApiKeyLast4 
-                    ? <CurrentValueBadge value={canonicalApiKeyLast4} isMasked />
+                    ? <CurrentValueBadge value={canonicalApiKeyLast4} isMasked source={resolvedConfig?.api_key_source} />
                     : <p className="text-xs text-muted-foreground">From TTN Console → API keys</p>
                   }
                   {ttnApiKeySet && !canonicalApiKeyLast4 && (
@@ -1781,7 +1916,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     disabled={disabled || isLoading}
                   />
                   {canonicalWebhookSecretLast4 
-                    ? <CurrentValueBadge value={canonicalWebhookSecretLast4} isMasked />
+                    ? <CurrentValueBadge value={canonicalWebhookSecretLast4} isMasked source={resolvedConfig?.webhook_secret_source} />
                     : <p className="text-xs text-muted-foreground">For webhook signature verification. Leave blank if not set.</p>
                   }
                   {ttnWebhookSecretSet && !canonicalWebhookSecretLast4 && (
@@ -1853,7 +1988,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       </SelectContent>
                     </Select>
                     {canonicalOwnerType 
-                      ? <CurrentValueBadge value={canonicalOwnerType === 'organization' ? 'Organization' : 'Personal (User)'} />
+                      ? <CurrentValueBadge value={canonicalOwnerType === 'organization' ? 'Organization' : 'Personal (User)'} source={resolvedConfig?.gateway_owner_source} />
                       : <p className="text-xs text-muted-foreground">Select gateway owner type</p>
                     }
                   </div>
@@ -1869,7 +2004,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       disabled={disabled || isLoading}
                     />
                     {canonicalOwnerId 
-                      ? <CurrentValueBadge value={canonicalOwnerId} />
+                      ? <CurrentValueBadge value={canonicalOwnerId} source={resolvedConfig?.gateway_owner_source} />
                       : <p className="text-xs text-muted-foreground">Required for gateway provisioning</p>
                     }
                   </div>
@@ -1925,7 +2060,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                     </Button>
                   </div>
                   {canonicalGatewayApiKeyLast4 
-                    ? <CurrentValueBadge value={canonicalGatewayApiKeyLast4} isMasked />
+                    ? <CurrentValueBadge value={canonicalGatewayApiKeyLast4} isMasked source={resolvedConfig?.gateway_api_key_source} />
                     : <p className="text-xs text-muted-foreground">Personal/Organization API key with gateways:read + gateways:write rights. NOT an Application API key.</p>
                   }
                   {gatewayApiKeySet && !canonicalGatewayApiKeyLast4 && (
@@ -2082,6 +2217,137 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
               {/* Permission Status */}
               {renderPermissionStatus()}
+
+              {/* Compare to FrostGuard Diagnostics */}
+              <Collapsible>
+                <CollapsibleTrigger asChild>
+                  <Button variant="ghost" size="sm" className="w-full justify-between text-muted-foreground hover:text-foreground">
+                    <span className="flex items-center gap-2">
+                      <Bug className="h-4 w-4" />
+                      Compare to FrostGuard
+                    </span>
+                    <ChevronDown className="h-4 w-4 transition-transform duration-200 [&[data-state=open]]:rotate-180" />
+                  </Button>
+                </CollapsibleTrigger>
+                <CollapsibleContent>
+                  <div className="rounded-md border bg-muted/30 p-3 mt-2 space-y-3">
+                    <div className="text-xs font-medium text-muted-foreground">Source Comparison</div>
+                    
+                    {/* Header Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs">
+                      <div className="font-medium">Field</div>
+                      <div className="font-medium text-blue-600">User (synced_users.ttn)</div>
+                      <div className="font-medium text-amber-600">Org (ttn_settings)</div>
+                    </div>
+                    
+                    {/* API Key Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs border-t pt-2">
+                      <div>API Key</div>
+                      <div className="font-mono">
+                        {resolvedConfig?.raw_user_ttn?.api_key_last4 
+                          ? <span className="text-green-600">****{String(resolvedConfig.raw_user_ttn.api_key_last4)}</span>
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                      <div className="font-mono">
+                        {(resolvedConfig?.raw_org_settings as any)?.api_key_last4
+                          ? <span className="text-green-600">****{(resolvedConfig.raw_org_settings as any).api_key_last4}</span>
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Application ID Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs border-t pt-2">
+                      <div>Application ID</div>
+                      <div className="font-mono truncate">
+                        {resolvedConfig?.raw_user_ttn?.application_id 
+                          ? String(resolvedConfig.raw_user_ttn.application_id)
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                      <div className="font-mono truncate">
+                        {(resolvedConfig?.raw_org_settings as any)?.application_id 
+                          ? (resolvedConfig.raw_org_settings as any).application_id
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Cluster Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs border-t pt-2">
+                      <div>Cluster</div>
+                      <div className="font-mono">
+                        {resolvedConfig?.raw_user_ttn?.cluster 
+                          ? String(resolvedConfig.raw_user_ttn.cluster)
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                      <div className="font-mono">
+                        {(resolvedConfig?.raw_org_settings as any)?.cluster 
+                          ? (resolvedConfig.raw_org_settings as any).cluster
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Gateway API Key Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs border-t pt-2">
+                      <div>Gateway API Key</div>
+                      <div className="font-mono">
+                        {resolvedConfig?.raw_user_ttn?.gateway_api_key_last4 
+                          ? <span className="text-green-600">****{String(resolvedConfig.raw_user_ttn.gateway_api_key_last4)}</span>
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                      <div className="font-mono">
+                        {(resolvedConfig?.raw_org_settings as any)?.gateway_api_key_last4
+                          ? <span className="text-green-600">****{(resolvedConfig.raw_org_settings as any).gateway_api_key_last4}</span>
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Gateway Owner Row */}
+                    <div className="grid grid-cols-3 gap-2 text-xs border-t pt-2">
+                      <div>Gateway Owner</div>
+                      <div className="font-mono truncate">
+                        {resolvedConfig?.raw_user_ttn?.gateway_owner_type 
+                          ? `${resolvedConfig.raw_user_ttn.gateway_owner_type}:${resolvedConfig.raw_user_ttn.gateway_owner_id || '?'}`
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                      <div className="font-mono truncate">
+                        {(resolvedConfig?.raw_org_settings as any)?.gateway_owner_type 
+                          ? `${(resolvedConfig.raw_org_settings as any).gateway_owner_type}:${(resolvedConfig.raw_org_settings as any).gateway_owner_id || '?'}`
+                          : <span className="text-muted-foreground">-</span>}
+                      </div>
+                    </div>
+                    
+                    {/* Resolved Value Summary */}
+                    <div className="border-t pt-2 mt-2">
+                      <div className="text-xs font-medium mb-1 flex items-center gap-2">
+                        Active Config: 
+                        <span className={cn(
+                          "px-1.5 py-0.5 rounded text-[10px] font-medium",
+                          resolvedConfig?.api_key_source === 'user' ? "bg-blue-100 text-blue-700" : 
+                          resolvedConfig?.api_key_source === 'org' ? "bg-amber-100 text-amber-700" : 
+                          "bg-gray-100 text-gray-600"
+                        )}>
+                          {resolvedConfig?.api_key_source === 'user' ? 'Using User Config' : 
+                           resolvedConfig?.api_key_source === 'org' ? 'Using Org Config' : 'Not Set'}
+                        </span>
+                      </div>
+                      <div className="text-[10px] text-muted-foreground">
+                        Resolved at: {resolvedConfig?.resolved_at ? formatRelativeTime(resolvedConfig.resolved_at) : 'Never'}
+                      </div>
+                    </div>
+                    
+                    {/* Mismatch Warning */}
+                    {resolvedConfig?.raw_user_ttn?.api_key_last4 && 
+                     (resolvedConfig?.raw_org_settings as any)?.api_key_last4 && 
+                     resolvedConfig.raw_user_ttn.api_key_last4 !== (resolvedConfig.raw_org_settings as any).api_key_last4 && (
+                      <Alert className="bg-amber-500/10 border-amber-500/30 py-2">
+                        <AlertCircle className="h-3 w-3 text-amber-600" />
+                        <AlertDescription className="text-xs text-amber-700">
+                          User and Org API keys differ. User key (****{String(resolvedConfig.raw_user_ttn.api_key_last4)}) takes precedence.
+                        </AlertDescription>
+                      </Alert>
+                    )}
+                  </div>
+                </CollapsibleContent>
+              </Collapsible>
 
               {/* TTN Device Registration Notice */}
               <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 space-y-3">
