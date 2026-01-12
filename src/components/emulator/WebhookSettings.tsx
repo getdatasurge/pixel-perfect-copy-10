@@ -495,7 +495,44 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           title: 'Gateway Key Valid',
           description: 'Key has gateways:read and gateways:write permissions',
         });
+        
+        // If owner was auto-discovered, update form fields and save
+        if (data.discovered && data.discovered_owner_id) {
+          console.log('[WebhookSettings] Auto-discovered gateway owner:', data.discovered_owner_type, data.discovered_owner_id);
+          setGatewayOwnerType(data.discovered_owner_type);
+          setGatewayOwnerId(data.discovered_owner_id);
+          
+          // Auto-save the discovered owner to ttn_settings
+          const { error: saveError } = await supabase.functions.invoke('manage-ttn-settings', {
+            body: {
+              action: 'save',
+              org_id: orgId,
+              gateway_owner_type: data.discovered_owner_type,
+              gateway_owner_id: data.discovered_owner_id,
+            },
+          });
+          
+          if (!saveError) {
+            toast({
+              title: 'Gateway Owner Discovered',
+              description: `Auto-detected TTN ${data.discovered_owner_type}: ${data.discovered_owner_id}`,
+            });
+          }
+        }
       } else {
+        // Check if discovery found something even if permissions failed
+        if (data?.discovered && data?.discovered_owner_id) {
+          console.log('[WebhookSettings] Discovered owner but permissions failed:', data.discovered_owner_type, data.discovered_owner_id);
+          setGatewayOwnerType(data.discovered_owner_type);
+          setGatewayOwnerId(data.discovered_owner_id);
+          
+          toast({
+            title: 'Gateway Owner Discovered',
+            description: `Found TTN ${data.discovered_owner_type}: ${data.discovered_owner_id}. Check API key permissions.`,
+            variant: 'default',
+          });
+        }
+        
         setGatewayKeyTestResult({
           ok: false,
           message: data?.hint || data?.error || 'Permission check failed',
