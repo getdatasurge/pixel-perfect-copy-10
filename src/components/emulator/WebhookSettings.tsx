@@ -145,6 +145,9 @@ interface ResolvedTTNConfig {
   gateway_owner_id: string | null;
   gateway_owner_source: TTNConfigSource;
   
+  // Flag for FrostGuard sync badge
+  gateway_api_key_from_frostguard: boolean;
+  
   // Raw data for diagnostics
   raw_user_ttn: Record<string, unknown> | null;
   raw_org_settings: Record<string, unknown> | null;
@@ -826,6 +829,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         gateway_owner_type: ownerType as 'user' | 'organization' | null,
         gateway_owner_id: ownerId as string | null,
         gateway_owner_source: rawUserTTN?.gateway_owner_type ? 'user' : (rawOrgSettings?.gateway_owner_type ? 'org' : 'not_set'),
+        gateway_api_key_from_frostguard: !!fullGatewayKeyFromSync,
         raw_user_ttn: rawUserTTN,
         raw_org_settings: rawOrgSettings ? {
           cluster: rawOrgSettings.cluster,
@@ -894,31 +898,80 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         fullGatewayKeyFromSync: fullGatewayKeyFromSync ? 'present' : 'none',
       });
 
-      // ====== STEP 6: Auto-save gateway key from FrostGuard sync to ttn_settings ======
-      // This ensures provisioning functions can use the key immediately
-      if (fullGatewayKeyFromSync && orgId) {
-        console.log('[WebhookSettings] Auto-saving gateway key from FrostGuard sync to ttn_settings');
+      // ====== STEP 6: Auto-sync FrostGuard data to ttn_settings ======
+      // This ensures ttn_settings stays in sync with FrostGuard-pushed values
+      if (orgId && rawUserTTN) {
+        const updatePayload: Record<string, unknown> = {
+          action: 'save',
+          org_id: orgId,
+        };
         
-        try {
-          const { error: saveError } = await supabase.functions.invoke('manage-ttn-settings', {
-            body: {
-              action: 'save',
-              org_id: orgId,
-              gateway_api_key: fullGatewayKeyFromSync,
-              gateway_owner_type: ownerType || 'organization',
-              gateway_owner_id: ownerId || '',
-            },
-          });
+        let needsUpdate = false;
+        const changes: string[] = [];
+        
+        // Check if gateway key needs sync
+        if (fullGatewayKeyFromSync) {
+          updatePayload.gateway_api_key = fullGatewayKeyFromSync;
+          updatePayload.gateway_owner_type = ownerType || 'organization';
+          updatePayload.gateway_owner_id = ownerId || '';
+          needsUpdate = true;
+          changes.push('gateway_api_key');
+        }
+        
+        // Check if application_id needs sync (user value differs from org)
+        const userAppId = rawUserTTN?.application_id as string;
+        const orgAppId = rawOrgSettings?.application_id as string | undefined;
+        if (userAppId && orgAppId && userAppId !== orgAppId) {
+          updatePayload.application_id = userAppId;
+          needsUpdate = true;
+          changes.push(`application_id: ${orgAppId} → ${userAppId}`);
+        } else if (userAppId && !orgAppId) {
+          // No org value yet, set it from user
+          updatePayload.application_id = userAppId;
+          needsUpdate = true;
+          changes.push(`application_id: (empty) → ${userAppId}`);
+        }
+        
+        // Check if cluster needs sync
+        const userCluster = rawUserTTN?.cluster as string;
+        const orgCluster = rawOrgSettings?.cluster as string | undefined;
+        if (userCluster && orgCluster && userCluster !== orgCluster) {
+          updatePayload.cluster = userCluster;
+          needsUpdate = true;
+          changes.push(`cluster: ${orgCluster} → ${userCluster}`);
+        } else if (userCluster && !orgCluster) {
+          updatePayload.cluster = userCluster;
+          needsUpdate = true;
+          changes.push(`cluster: (empty) → ${userCluster}`);
+        }
+        
+        // Perform sync if any values need updating
+        if (needsUpdate) {
+          console.log('[WebhookSettings] Auto-syncing FrostGuard values to ttn_settings:', changes);
           
-          if (saveError) {
-            console.error('[WebhookSettings] Failed to auto-save gateway key:', saveError);
-          } else {
-            console.log('[WebhookSettings] Gateway key from FrostGuard saved to ttn_settings');
-            setGatewayApiKeySet(true);
-            setGatewayApiKeyPreview(`****${gatewayKeyLast4}`);
+          try {
+            const { error: saveError } = await supabase.functions.invoke('manage-ttn-settings', {
+              body: updatePayload,
+            });
+            
+            if (saveError) {
+              console.error('[WebhookSettings] Failed to auto-sync to ttn_settings:', saveError);
+            } else {
+              console.log('[WebhookSettings] Successfully synced FrostGuard values to ttn_settings');
+              toast({
+                title: 'Config Synced from FrostGuard',
+                description: `Updated local settings: ${changes.join(', ')}`,
+              });
+              
+              // Update UI state to reflect synced values
+              if (fullGatewayKeyFromSync) {
+                setGatewayApiKeySet(true);
+                setGatewayApiKeyPreview(`****${gatewayKeyLast4}`);
+              }
+            }
+          } catch (autoSaveErr) {
+            console.error('[WebhookSettings] Exception auto-syncing:', autoSaveErr);
           }
-        } catch (autoSaveErr) {
-          console.error('[WebhookSettings] Exception auto-saving gateway key:', autoSaveErr);
         }
       }
 
@@ -2087,11 +2140,17 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
                 {/* Gateway API Key - separate from Application API Key */}
                 <div className="space-y-2 mt-4">
-                  <Label htmlFor="gatewayApiKey" className="flex items-center gap-2">
+                  <Label htmlFor="gatewayApiKey" className="flex items-center gap-2 flex-wrap">
                     Gateway API Key
                     {gatewayApiKeySet && (
                       <Badge variant="outline" className="text-green-600 border-green-600 text-xs">
                         Saved
+                      </Badge>
+                    )}
+                    {resolvedConfig?.gateway_api_key_from_frostguard && (
+                      <Badge variant="secondary" className="text-xs bg-blue-100 text-blue-700 border-blue-200">
+                        <CloudDownload className="h-3 w-3 mr-1" />
+                        Synced from FrostGuard
                       </Badge>
                     )}
                     <TooltipProvider>
