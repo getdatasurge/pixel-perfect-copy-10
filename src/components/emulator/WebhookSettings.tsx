@@ -10,7 +10,7 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2, ChevronDown, Bug
+  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2, ChevronDown, Bug, CloudDownload
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS, parseOrgFromUrl } from '@/lib/ttnConsoleLinks';
@@ -310,6 +310,9 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     message: string;
     permissions?: { gateway_read: boolean; gateway_write: boolean };
   } | null>(null);
+  
+  // Sync from FrostGuard state
+  const [isSyncingFromFrostguard, setIsSyncingFromFrostguard] = useState(false);
   
   // Config source tracking for badge display
   const [configSource, setConfigSource] = useState(() => getConfigSummary());
@@ -1733,6 +1736,74 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           <Button
             variant="outline"
             size="sm"
+            onClick={async () => {
+              if (!orgId) {
+                toast({
+                  title: 'No Organization',
+                  description: 'Select an organization first',
+                  variant: 'destructive',
+                });
+                return;
+              }
+              
+              setIsSyncingFromFrostguard(true);
+              
+              try {
+                // Call the sync-users-from-frostguard edge function to pull fresh data
+                const frostguardUrl = import.meta.env.VITE_FROSTGUARD_URL || 'https://swtcfcfpdnumdsnwvxqz.supabase.co';
+                
+                console.log('[WebhookSettings] Syncing from FrostGuard:', { frostguardUrl, orgId });
+                
+                const { data, error } = await supabase.functions.invoke('sync-users-from-frostguard', {
+                  body: { frostguardApiUrl: frostguardUrl },
+                });
+                
+                if (error) {
+                  console.error('[WebhookSettings] Sync error:', error);
+                  toast({
+                    title: 'Sync Failed',
+                    description: error.message || 'Failed to sync from FrostGuard',
+                    variant: 'destructive',
+                  });
+                  return;
+                }
+                
+                console.log('[WebhookSettings] Sync result:', data);
+                
+                // Clear existing state to force fresh fetch
+                setResolvedConfig(null);
+                setCanonicalApiKeyLast4(null);
+                setCanonicalGatewayApiKeyLast4(null);
+                setCanonicalWebhookSecretLast4(null);
+                
+                // Reload settings from local database (now updated)
+                await loadSettings();
+                await loadGatewaySettings();
+                
+                toast({
+                  title: 'Synced from FrostGuard',
+                  description: `Updated ${data?.synced || 0} users, ${data?.memberships_synced || 0} site memberships`,
+                });
+              } catch (err: any) {
+                console.error('[WebhookSettings] Sync exception:', err);
+                toast({
+                  title: 'Sync Error',
+                  description: err.message || 'Network error syncing from FrostGuard',
+                  variant: 'destructive',
+                });
+              } finally {
+                setIsSyncingFromFrostguard(false);
+              }
+            }}
+            disabled={isSyncingFromFrostguard || !orgId || isLoading}
+            className="gap-1"
+          >
+            <CloudDownload className={`h-4 w-4 ${isSyncingFromFrostguard ? 'animate-spin' : ''}`} />
+            {isSyncingFromFrostguard ? 'Syncing...' : 'Sync from FrostGuard'}
+          </Button>
+          <Button
+            variant="outline"
+            size="sm"
             onClick={() => setShowWizard(true)}
             className="gap-2"
           >
@@ -2345,6 +2416,26 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                         </AlertDescription>
                       </Alert>
                     )}
+                    
+                    {/* Stale Data Warning - Show when user data is older than 1 day */}
+                    {resolvedConfig?.raw_user_ttn && (() => {
+                      const updatedAt = resolvedConfig.raw_user_ttn.updated_at as string | undefined;
+                      if (!updatedAt) return null;
+                      const ageMs = Date.now() - new Date(updatedAt).getTime();
+                      const ageHours = ageMs / (1000 * 60 * 60);
+                      if (ageHours < 24) return null;
+                      return (
+                        <Alert variant="destructive" className="py-2">
+                          <AlertCircle className="h-3 w-3" />
+                          <AlertDescription className="text-xs flex items-center justify-between">
+                            <span>
+                              User data is {Math.floor(ageHours / 24)}+ days old. 
+                              Click "Sync from FrostGuard" to pull latest credentials.
+                            </span>
+                          </AlertDescription>
+                        </Alert>
+                      );
+                    })()}
                   </div>
                 </CollapsibleContent>
               </Collapsible>
