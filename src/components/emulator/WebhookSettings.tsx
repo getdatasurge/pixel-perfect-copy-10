@@ -682,53 +682,85 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     if (!orgId) return;
 
     setIsLoading(true);
+    let usingSelectedUser = false; // Track if we're actually using the selected user's data
+    
     try {
       // ====== STEP 1: Load from synced_users (FrostGuard sync) ======
       const userId = config.selectedUserId;
 
-      let query = supabase
-        .from('synced_users')
-        .select('ttn, source_organization_id, id, email');
+      let syncedUser: { ttn: unknown; source_organization_id: string; id: string; source_user_id: string; email: string } | null = null;
+      let fetchError: Error | null = null;
 
       if (userId) {
         console.log('[WebhookSettings] Loading TTN settings for user:', userId);
-        query = query.eq('id', userId);
+        
+        // Try source_user_id first (FrostGuard user id - this is what the picker returns)
+        const { data: bySourceId, error: err1 } = await supabase
+          .from('synced_users')
+          .select('ttn, source_organization_id, id, source_user_id, email')
+          .eq('source_user_id', userId)
+          .limit(1)
+          .maybeSingle();
+        
+        if (bySourceId) {
+          syncedUser = bySourceId;
+          usingSelectedUser = true;
+          console.log('[WebhookSettings] Found user by source_user_id:', bySourceId.email);
+        } else {
+          // Fallback: try row id (for backward compatibility with older sessions)
+          const { data: byRowId, error: err2 } = await supabase
+            .from('synced_users')
+            .select('ttn, source_organization_id, id, source_user_id, email')
+            .eq('id', userId)
+            .limit(1)
+            .maybeSingle();
+          
+          if (byRowId) {
+            syncedUser = byRowId;
+            usingSelectedUser = true;
+            console.log('[WebhookSettings] Found user by row id (legacy):', byRowId.email);
+          } else {
+            fetchError = err1 || err2;
+          }
+        }
+        
+        // If user-specific query returned empty, try org-level fallback
+        if (!syncedUser) {
+          console.warn('[WebhookSettings] Selected user not found by source_user_id or id, trying org fallback');
+          const { data: orgSyncedUser } = await supabase
+            .from('synced_users')
+            .select('ttn, source_organization_id, id, source_user_id, email')
+            .eq('source_organization_id', orgId)
+            .limit(1)
+            .maybeSingle();
+          
+          if (orgSyncedUser?.ttn) {
+            syncedUser = orgSyncedUser;
+            usingSelectedUser = false; // Important: we're NOT using the selected user
+            console.log('[WebhookSettings] Loaded TTN from org-level user:', orgSyncedUser.email);
+            // Only show warning toast if we actually had a userId but couldn't find it
+            toast({
+              title: 'User sync data not found',
+              description: `Using org-level data from ${orgSyncedUser.email}. Re-select user to refresh.`,
+            });
+          }
+        }
       } else {
         console.log('[WebhookSettings] Loading TTN settings for org:', orgId);
-        query = query.eq('source_organization_id', orgId);
-      }
-
-      let { data: syncedUser, error: fetchError } = await query.limit(1).maybeSingle();
-
-      if (fetchError) {
-        console.error('[WebhookSettings] Failed to load TTN settings from synced_users:', fetchError);
-      }
-
-      // If user-specific query returned empty, try org-level fallback
-      if (userId && !syncedUser) {
-        console.warn('[WebhookSettings] Selected user not found in synced_users, trying org fallback');
-        const { data: orgSyncedUser } = await supabase
+        const { data, error } = await supabase
           .from('synced_users')
-          .select('ttn, source_organization_id, id, email')
+          .select('ttn, source_organization_id, id, source_user_id, email')
           .eq('source_organization_id', orgId)
           .limit(1)
           .maybeSingle();
         
-        if (orgSyncedUser?.ttn) {
-          syncedUser = orgSyncedUser;
-          console.log('[WebhookSettings] Loaded TTN from org-level user:', orgSyncedUser.email);
-          toast({
-            title: 'User sync data not found',
-            description: `Selected user ID not in synced_users. Using data from ${orgSyncedUser.email}. Consider re-selecting the user.`,
-            variant: 'destructive',
-          });
-        } else {
-          toast({
-            title: 'User sync data not found',
-            description: 'The selected user may be outdated. Click "Change User" to re-select.',
-            variant: 'destructive',
-          });
-        }
+        syncedUser = data;
+        fetchError = error;
+        usingSelectedUser = false;
+      }
+
+      if (fetchError) {
+        console.error('[WebhookSettings] Failed to load TTN settings from synced_users:', fetchError);
       }
 
       // ====== STEP 2: Load from ttn_settings (gateway owner config) ======
@@ -900,7 +932,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
       // ====== STEP 6: Auto-sync FrostGuard data to ttn_settings ======
       // This ensures ttn_settings stays in sync with FrostGuard-pushed values
-      if (orgId && rawUserTTN) {
+      // IMPORTANT: Only sync if we're actually using the selected user's data (not org fallback)
+      if (orgId && rawUserTTN && usingSelectedUser) {
         const updatePayload: Record<string, unknown> = {
           action: 'save',
           org_id: orgId,

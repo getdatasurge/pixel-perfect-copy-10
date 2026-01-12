@@ -384,11 +384,12 @@ async function handleTestStored(
     };
   } else if (selected_user_id) {
     // Fallback: try to load from synced_users (if TTN data was synced)
+    // Use source_user_id since that's the FrostGuard user id the frontend passes
     console.log(`[${requestId}] Loading TTN settings from synced_users for user ${selected_user_id}`);
     const { data, error: fetchError } = await supabase
       .from('synced_users')
       .select('ttn')
-      .eq('id', selected_user_id)
+      .eq('source_user_id', selected_user_id)
       .maybeSingle();
 
     error = fetchError;
