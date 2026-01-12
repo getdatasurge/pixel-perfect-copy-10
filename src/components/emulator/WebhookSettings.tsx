@@ -695,10 +695,37 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         query = query.eq('source_organization_id', orgId);
       }
 
-      const { data: syncedUser, error: fetchError } = await query.limit(1).maybeSingle();
+      let { data: syncedUser, error: fetchError } = await query.limit(1).maybeSingle();
 
       if (fetchError) {
         console.error('[WebhookSettings] Failed to load TTN settings from synced_users:', fetchError);
+      }
+
+      // If user-specific query returned empty, try org-level fallback
+      if (userId && !syncedUser) {
+        console.warn('[WebhookSettings] Selected user not found in synced_users, trying org fallback');
+        const { data: orgSyncedUser } = await supabase
+          .from('synced_users')
+          .select('ttn, source_organization_id, id, email')
+          .eq('source_organization_id', orgId)
+          .limit(1)
+          .maybeSingle();
+        
+        if (orgSyncedUser?.ttn) {
+          syncedUser = orgSyncedUser;
+          console.log('[WebhookSettings] Loaded TTN from org-level user:', orgSyncedUser.email);
+          toast({
+            title: 'User sync data not found',
+            description: `Selected user ID not in synced_users. Using data from ${orgSyncedUser.email}. Consider re-selecting the user.`,
+            variant: 'destructive',
+          });
+        } else {
+          toast({
+            title: 'User sync data not found',
+            description: 'The selected user may be outdated. Click "Change User" to re-select.',
+            variant: 'destructive',
+          });
+        }
       }
 
       // ====== STEP 2: Load from ttn_settings (gateway owner config) ======
