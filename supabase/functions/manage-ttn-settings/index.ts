@@ -1001,7 +1001,7 @@ async function discoverGatewayOwnerInternal(
     console.log(`[${requestId}] Discovery: Organizations check failed:`, e);
   }
 
-  // Try user info for personal API keys
+  // Try user info for personal API keys, or org info for org API keys
   try {
     // The /api/v3/auth_info endpoint returns info about the current auth context
     const authInfoUrl = `${baseUrl}/api/v3/auth_info`;
@@ -1012,9 +1012,23 @@ async function discoverGatewayOwnerInternal(
 
     if (authInfoResponse.ok) {
       const authInfo = await authInfoResponse.json();
-      // For API keys, the user_id might be in oauth_access_token.user_ids.user_id
+      console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
+      
+      // Check for organization API key (entity_ids.organization_ids.organization_id)
+      const orgId = authInfo.api_key?.entity_ids?.organization_ids?.organization_id;
+      if (orgId) {
+        console.log(`[${requestId}] Discovery: Found organization ID from API key: ${orgId}`);
+        return {
+          ok: true,
+          owner_type: 'organization',
+          owner_id: orgId,
+        };
+      }
+      
+      // Check for user API key
       const userId = authInfo.oauth_access_token?.user_ids?.user_id || 
                      authInfo.user?.ids?.user_id ||
+                     authInfo.api_key?.entity_ids?.user_ids?.user_id ||
                      authInfo.user_id;
       
       if (userId) {
@@ -1024,8 +1038,6 @@ async function discoverGatewayOwnerInternal(
           owner_type: 'user',
           owner_id: userId,
         };
-      } else {
-        console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
       }
     } else {
       console.log(`[${requestId}] Discovery: Auth info returned ${authInfoResponse.status}`);
