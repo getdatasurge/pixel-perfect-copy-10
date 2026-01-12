@@ -1,7 +1,7 @@
 import { Card } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Badge } from '@/components/ui/badge';
-import { User, Building2, MapPin, Radio, Clock, X, RefreshCw, Download, Hash } from 'lucide-react';
+import { User, Building2, MapPin, Radio, Clock, X, RefreshCw, Download, Hash, AlertTriangle } from 'lucide-react';
 import { WebhookConfig } from '@/lib/ttn-payload';
 
 interface UserContextBarProps {
@@ -71,6 +71,14 @@ export default function UserContextBar({
             <Badge variant="outline" className="font-normal text-xs">
               <Hash className="h-3 w-3 mr-1" />
               v{config.lastSyncVersion}
+            </Badge>
+          )}
+
+          {/* Warning when user selected but no TTN config synced */}
+          {config.selectedUserId && !config.ttnConfig?.enabled && (
+            <Badge variant="destructive" className="font-normal text-xs">
+              <AlertTriangle className="h-3 w-3 mr-1" />
+              TTN sync missing
             </Badge>
           )}
 
