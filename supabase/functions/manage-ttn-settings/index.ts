@@ -14,7 +14,7 @@ type TTNCluster = typeof VALID_CLUSTERS[number];
 const REQUIRED_PERMISSIONS = ['applications:read', 'devices:read', 'devices:write'];
 
 interface TTNSettingsRequest {
-  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway' | 'check_gateway_permissions' | 'check_app_permissions';
+  action: 'load' | 'save' | 'test' | 'test_stored' | 'check_device' | 'check_gateway' | 'check_gateway_permissions' | 'check_app_permissions' | 'discover_gateway_owner';
   org_id?: string;
   selected_user_id?: string; // For testing specific user's TTN settings
   enabled?: boolean;
@@ -133,6 +133,9 @@ Deno.serve(async (req) => {
 
       case 'check_app_permissions':
         return await handleCheckAppPermissions(body, requestId);
+
+      case 'discover_gateway_owner':
+        return await handleDiscoverGatewayOwner(supabaseAdmin, body, requestId);
 
       default:
         return errorResponse(`Unknown action: ${action}`, 'VALIDATION_ERROR', 400, requestId);
@@ -954,6 +957,132 @@ async function handleCheckGateway(
   }
 }
 
+// Helper function to check if owner ID looks like an invalid internal ID
+function looksLikeInternalId(ownerId: string | null): boolean {
+  if (!ownerId) return false;
+  // FrostGuard internal IDs look like: fg-org-7873654e-wu0 or full UUIDs
+  return ownerId.includes('fg-org-') || 
+         ownerId.includes('fg-user-') || 
+         /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/i.test(ownerId);
+}
+
+// Discover gateway owner from TTN API (organizations or users the API key can access)
+async function discoverGatewayOwnerInternal(
+  apiKey: string,
+  cluster: string,
+  requestId: string
+): Promise<{ ok: boolean; owner_type?: 'user' | 'organization'; owner_id?: string; all_organizations?: string[]; hint?: string }> {
+  const baseUrl = getBaseUrl(cluster);
+
+  // Try organizations first - most common for gateway management
+  try {
+    const orgsUrl = `${baseUrl}/api/v3/organizations?limit=10`;
+    console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
+    const orgsResponse = await fetch(orgsUrl, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+    });
+
+    if (orgsResponse.ok) {
+      const orgsData = await orgsResponse.json();
+      if (orgsData.organizations?.length > 0) {
+        const orgIds = orgsData.organizations.map((o: any) => o.ids?.organization_id).filter(Boolean);
+        console.log(`[${requestId}] Discovery: Found ${orgIds.length} organizations: ${orgIds.join(', ')}`);
+        return {
+          ok: true,
+          owner_type: 'organization',
+          owner_id: orgIds[0],
+          all_organizations: orgIds,
+        };
+      }
+    } else {
+      console.log(`[${requestId}] Discovery: Organizations check returned ${orgsResponse.status}`);
+    }
+  } catch (e) {
+    console.log(`[${requestId}] Discovery: Organizations check failed:`, e);
+  }
+
+  // Try user info for personal API keys
+  try {
+    // The /api/v3/auth_info endpoint returns info about the current auth context
+    const authInfoUrl = `${baseUrl}/api/v3/auth_info`;
+    console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
+    const authInfoResponse = await fetch(authInfoUrl, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+    });
+
+    if (authInfoResponse.ok) {
+      const authInfo = await authInfoResponse.json();
+      // For API keys, the user_id might be in oauth_access_token.user_ids.user_id
+      const userId = authInfo.oauth_access_token?.user_ids?.user_id || 
+                     authInfo.user?.ids?.user_id ||
+                     authInfo.user_id;
+      
+      if (userId) {
+        console.log(`[${requestId}] Discovery: Found user ID: ${userId}`);
+        return {
+          ok: true,
+          owner_type: 'user',
+          owner_id: userId,
+        };
+      } else {
+        console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
+      }
+    } else {
+      console.log(`[${requestId}] Discovery: Auth info returned ${authInfoResponse.status}`);
+    }
+  } catch (e) {
+    console.log(`[${requestId}] Discovery: Auth info check failed:`, e);
+  }
+
+  return {
+    ok: false,
+    hint: 'Could not determine API key owner. Enter your TTN username or organization ID manually.',
+  };
+}
+
+// Handle explicit discover_gateway_owner action
+async function handleDiscoverGatewayOwner(
+  supabase: any,
+  body: TTNSettingsRequest,
+  requestId: string
+): Promise<Response> {
+  const { org_id, cluster, gateway_api_key } = body;
+
+  console.log(`[${requestId}] Discover gateway owner for org ${org_id || 'none'}`);
+
+  // Get the API key (from request or stored)
+  let apiKey = gateway_api_key;
+  if (!apiKey && org_id) {
+    const { data } = await supabase
+      .from('ttn_settings')
+      .select('gateway_api_key, api_key')
+      .eq('org_id', org_id)
+      .maybeSingle();
+    apiKey = data?.gateway_api_key || data?.api_key;
+  }
+
+  if (!apiKey) {
+    return buildResponse({ 
+      ok: false, 
+      error: 'No API key provided',
+      code: 'NO_API_KEY',
+    }, 200, requestId);
+  }
+
+  const ttnCluster = cluster || 'eu1';
+  const result = await discoverGatewayOwnerInternal(apiKey, ttnCluster, requestId);
+
+  return buildResponse({
+    ok: result.ok,
+    discovered: result.ok,
+    owner_type: result.owner_type,
+    owner_id: result.owner_id,
+    all_organizations: result.all_organizations,
+    hint: result.hint,
+    cluster: ttnCluster,
+  }, 200, requestId);
+}
+
 // Check gateway-specific permissions (gateways:read, gateways:write)
 // Uses the ACTUAL owner-scoped endpoint that provisioning will use
 async function handleCheckGatewayPermissions(
@@ -1005,11 +1134,25 @@ async function handleCheckGatewayPermissions(
     console.log(`[${requestId}] No gateway-specific API key configured, using application API key`);
   }
 
-  // Check if gateway owner is configured
+  // Auto-discovery: If owner ID is missing or looks like an internal FrostGuard ID, discover it
+  let discoveredOwner: { ok: boolean; owner_type?: 'user' | 'organization'; owner_id?: string; all_organizations?: string[] } | null = null;
+  
+  if (!gatewayOwnerId || looksLikeInternalId(gatewayOwnerId)) {
+    console.log(`[${requestId}] Owner ID missing or looks invalid (${gatewayOwnerId}), attempting auto-discovery`);
+    discoveredOwner = await discoverGatewayOwnerInternal(apiKey, ttnCluster, requestId);
+    
+    if (discoveredOwner.ok && discoveredOwner.owner_id) {
+      console.log(`[${requestId}] Auto-discovered owner: ${discoveredOwner.owner_type}/${discoveredOwner.owner_id}`);
+      gatewayOwnerType = discoveredOwner.owner_type!;
+      gatewayOwnerId = discoveredOwner.owner_id!;
+    }
+  }
+
+  // Check if gateway owner is configured (after potential discovery)
   if (!gatewayOwnerId) {
     return buildResponse({
       ok: false,
-      error: 'Gateway owner not configured',
+      error: 'Gateway owner not configured and could not be auto-discovered',
       code: 'CONFIG_MISSING',
       hint: 'Set your TTN username or organization ID in Webhook Settings → Gateway Owner section',
       permissions: { gateway_read: false, gateway_write: false },
@@ -1155,6 +1298,11 @@ async function handleCheckGatewayPermissions(
     error: allPermissionsOk ? undefined : 'Missing gateway permissions',
     hint,
     using_gateway_key: usingGatewayKey,
+    // Include discovered owner info if auto-discovery was performed
+    discovered: !!discoveredOwner?.ok,
+    discovered_owner_type: discoveredOwner?.ok ? discoveredOwner.owner_type : undefined,
+    discovered_owner_id: discoveredOwner?.ok ? discoveredOwner.owner_id : undefined,
+    all_discovered_organizations: discoveredOwner?.all_organizations,
     diagnostics: {
       cluster: ttnCluster,
       gateway_owner_type: gatewayOwnerType,
@@ -1167,6 +1315,7 @@ async function handleCheckGatewayPermissions(
       gateway_write_error: writeError || undefined,
       api_key_type: usingGatewayKey ? 'gateway_api_key' : 'application_api_key',
       api_key_last4: apiKey.slice(-4),
+      auto_discovered: !!discoveredOwner?.ok,
     },
   }, 200, requestId);
 }
