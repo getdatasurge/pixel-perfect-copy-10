@@ -756,12 +756,32 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       
       const effectiveEnabled = !!(rawUserTTN?.enabled || rawOrgSettings?.enabled);
       
-      // Gateway config: prefer ttn_settings (has full key), fall back to synced_users
-      const ownerType = rawOrgSettings?.gateway_owner_type || rawUserTTN?.gateway_owner_type || null;
-      const ownerId = rawOrgSettings?.gateway_owner_id || rawUserTTN?.gateway_owner_id || null;
-      const gatewayKeyLast4 = rawOrgSettings?.gateway_api_key 
-        ? rawOrgSettings.gateway_api_key.slice(-4) 
-        : (rawUserTTN?.gateway_api_key_last4 as string) || null;
+      // Gateway config: Priority order:
+      // 1. Full gateway key from synced_users.ttn (FrostGuard push)
+      // 2. Full gateway key from ttn_settings (local org config)
+      // 3. Fallback to last4 for display only
+      const userHasFullGatewayKey = !!(rawUserTTN?.gateway_api_key);
+      const orgHasFullGatewayKey = !!(rawOrgSettings?.gateway_api_key);
+      
+      let gatewayKeyLast4: string | null = null;
+      let gatewayKeySource: TTNConfigSource = 'not_set';
+      let fullGatewayKeyFromSync: string | null = null;
+      
+      if (userHasFullGatewayKey) {
+        fullGatewayKeyFromSync = rawUserTTN.gateway_api_key as string;
+        gatewayKeyLast4 = fullGatewayKeyFromSync.slice(-4);
+        gatewayKeySource = 'user';
+      } else if (orgHasFullGatewayKey) {
+        gatewayKeyLast4 = rawOrgSettings.gateway_api_key.slice(-4);
+        gatewayKeySource = 'org';
+      } else if (rawUserTTN?.gateway_api_key_last4) {
+        gatewayKeyLast4 = rawUserTTN.gateway_api_key_last4 as string;
+        gatewayKeySource = 'user';
+      }
+      
+      // Prefer synced_users.ttn for gateway owner config, fall back to ttn_settings
+      const ownerType = (rawUserTTN?.gateway_owner_type as string) || rawOrgSettings?.gateway_owner_type || null;
+      const ownerId = (rawUserTTN?.gateway_owner_id as string) || rawOrgSettings?.gateway_owner_id || null;
       const webhookSecretLast4 = rawOrgSettings?.webhook_secret?.slice(-4) || (rawUserTTN?.webhook_secret_last4 as string) || null;
       
       // Build the resolved config for diagnostics
@@ -773,12 +793,12 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         api_key_last4: resolvedApiKeyLast4,
         api_key_source: apiKeySource,
         gateway_api_key_last4: gatewayKeyLast4,
-        gateway_api_key_source: rawOrgSettings?.gateway_api_key ? 'org' : (rawUserTTN?.gateway_api_key_last4 ? 'user' : 'not_set'),
+        gateway_api_key_source: gatewayKeySource,
         webhook_secret_last4: webhookSecretLast4,
         webhook_secret_source: rawOrgSettings?.webhook_secret ? 'org' : (rawUserTTN?.webhook_secret_last4 ? 'user' : 'not_set'),
         gateway_owner_type: ownerType as 'user' | 'organization' | null,
         gateway_owner_id: ownerId as string | null,
-        gateway_owner_source: rawOrgSettings?.gateway_owner_type ? 'org' : (rawUserTTN?.gateway_owner_type ? 'user' : 'not_set'),
+        gateway_owner_source: rawUserTTN?.gateway_owner_type ? 'user' : (rawOrgSettings?.gateway_owner_type ? 'org' : 'not_set'),
         raw_user_ttn: rawUserTTN,
         raw_org_settings: rawOrgSettings ? {
           cluster: rawOrgSettings.cluster,
@@ -843,7 +863,37 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         ownerId,
         gatewayKeyLast4: gatewayKeyLast4 ? `****${gatewayKeyLast4}` : null,
         webhookSecretLast4: webhookSecretLast4 ? 'set' : null,
+        gatewayKeySource,
+        fullGatewayKeyFromSync: fullGatewayKeyFromSync ? 'present' : 'none',
       });
+
+      // ====== STEP 6: Auto-save gateway key from FrostGuard sync to ttn_settings ======
+      // This ensures provisioning functions can use the key immediately
+      if (fullGatewayKeyFromSync && orgId) {
+        console.log('[WebhookSettings] Auto-saving gateway key from FrostGuard sync to ttn_settings');
+        
+        try {
+          const { error: saveError } = await supabase.functions.invoke('manage-ttn-settings', {
+            body: {
+              action: 'save',
+              org_id: orgId,
+              gateway_api_key: fullGatewayKeyFromSync,
+              gateway_owner_type: ownerType || 'organization',
+              gateway_owner_id: ownerId || '',
+            },
+          });
+          
+          if (saveError) {
+            console.error('[WebhookSettings] Failed to auto-save gateway key:', saveError);
+          } else {
+            console.log('[WebhookSettings] Gateway key from FrostGuard saved to ttn_settings');
+            setGatewayApiKeySet(true);
+            setGatewayApiKeyPreview(`****${gatewayKeyLast4}`);
+          }
+        } catch (autoSaveErr) {
+          console.error('[WebhookSettings] Exception auto-saving gateway key:', autoSaveErr);
+        }
+      }
 
       // Load connection status
       if (rawUserTTN?.updated_at) {
