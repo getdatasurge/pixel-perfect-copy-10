@@ -27,10 +27,10 @@ export const DEVICE_TEMPLATES: Record<string, DeviceTemplate> = {
   },
   door: {
     sensor_kind: 'door',
-    manufacturer: 'Milesight',
-    model: 'WS301',
-    firmware_version: 'v1.1',
-    description: 'Magnetic contact door sensor',
+    manufacturer: 'Dragino',
+    model: 'LDS02',
+    firmware_version: 'v1.5',
+    description: 'LoRaWAN Door Sensor',
   },
   combo: {
     sensor_kind: 'combo',
