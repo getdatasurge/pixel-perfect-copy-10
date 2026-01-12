@@ -10,7 +10,8 @@ import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/component
 import { 
   Webhook, TestTube, Check, X, Loader2, Copy, ExternalLink, 
   Radio, Cloud, AlertCircle, ShieldCheck, ShieldX, Save, Info, Wand2, RefreshCw,
-  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2, ChevronDown, Bug, CloudDownload
+  Globe, ArrowRightLeft, HardDrive, Clock, KeyRound, CheckCircle2, ChevronDown, Bug, CloudDownload,
+  AlertTriangle
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import { getGatewayApiKeyUrl, getGatewayKeyInstructions, getKeyTypeLabel, GATEWAY_PERMISSIONS, parseOrgFromUrl } from '@/lib/ttnConsoleLinks';
@@ -586,18 +587,18 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           updated_at: ttnSettings.updated_at,
         });
         
-        // Update gateway-specific canonical values
+        // Update ONLY gateway-specific canonical values from ttn_settings
+        // IMPORTANT: Do NOT overwrite cluster, api_key, application_id - those come from synced_users.ttn
         setCanonicalOwnerType(ttnSettings.gateway_owner_type as 'user' | 'organization' || null);
         setCanonicalOwnerId(ttnSettings.gateway_owner_id || null);
         setCanonicalGatewayApiKeyLast4(ttnSettings.gateway_api_key?.slice(-4) || null);
-        setCanonicalWebhookSecretLast4(ttnSettings.webhook_secret?.slice(-4) || null);
         
-        // Also set API key last4 if not already set from props
-        if (ttnSettings.api_key && !canonicalApiKeyLast4) {
-          setCanonicalApiKeyLast4(ttnSettings.api_key.slice(-4));
+        // Only set webhook secret from ttn_settings if we don't have it from synced_users
+        if (!canonicalWebhookSecretLast4 && ttnSettings.webhook_secret) {
+          setCanonicalWebhookSecretLast4(ttnSettings.webhook_secret.slice(-4));
         }
         
-        // Update form state if not already set
+        // Update form state for gateway owner if not already set
         if (ttnSettings.gateway_owner_type && !gatewayOwnerType) {
           setGatewayOwnerType(ttnSettings.gateway_owner_type as 'user' | 'organization');
         }
@@ -608,15 +609,11 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         setGatewayApiKeyPreview(ttnSettings.gateway_api_key ? `****${ttnSettings.gateway_api_key.slice(-4)}` : null);
         setTtnWebhookSecretSet(!!ttnSettings.webhook_secret);
         
-        // Update cluster if available from ttn_settings
-        if (ttnSettings.cluster) {
-          setCanonicalCluster(ttnSettings.cluster);
-        }
+        // NOTE: We intentionally DO NOT update canonicalCluster, canonicalApiKeyLast4, or 
+        // canonicalApplicationId here. Those values should come from synced_users.ttn (FrostGuard sync)
+        // and are already set by loadSettings() or from props. This function only loads gateway-specific config.
         
-        // Update last sync timestamp
-        if (ttnSettings.updated_at) {
-          setCanonicalLastSyncAt(ttnSettings.updated_at);
-        }
+        console.log('[WebhookSettings] loadGatewaySettings: Only gateway-specific fields updated, core TTN values preserved');
       }
     } catch (err: any) {
       console.error('[WebhookSettings] Error loading gateway settings:', err);
@@ -2288,6 +2285,28 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
               {/* Permission Status */}
               {renderPermissionStatus()}
+
+              {/* Application ID Mismatch Warning */}
+              {resolvedConfig?.raw_user_ttn?.application_id && 
+               resolvedConfig?.raw_org_settings?.application_id &&
+               resolvedConfig.raw_user_ttn.application_id !== (resolvedConfig.raw_org_settings as any).application_id && (
+                <Alert className="border-amber-500/50 bg-amber-500/10">
+                  <AlertTriangle className="h-4 w-4 text-amber-600" />
+                  <AlertTitle className="text-amber-700">Application ID Mismatch</AlertTitle>
+                  <AlertDescription className="text-amber-600 text-xs">
+                    <p className="mb-2">
+                      User config has "<span className="font-mono font-medium">{String(resolvedConfig.raw_user_ttn.application_id)}</span>" 
+                      but local ttn_settings has "<span className="font-mono font-medium">{(resolvedConfig.raw_org_settings as any).application_id}</span>".
+                    </p>
+                    <p>
+                      Using <span className="font-medium">{resolvedConfig.application_id_source === 'user' ? 'User' : 'Org'}</span> value: 
+                      "<span className="font-mono font-medium">{resolvedConfig.application_id}</span>".
+                      {resolvedConfig.application_id_source === 'org' && 
+                       " Click Refresh to sync from FrostGuard if this is incorrect."}
+                    </p>
+                  </AlertDescription>
+                </Alert>
+              )}
 
               {/* Compare to FrostGuard Diagnostics */}
               <Collapsible>
