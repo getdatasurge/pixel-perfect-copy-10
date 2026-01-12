@@ -312,8 +312,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     permissions?: { gateway_read: boolean; gateway_write: boolean };
   } | null>(null);
   
-  // Sync from FrostGuard state
-  const [isSyncingFromFrostguard, setIsSyncingFromFrostguard] = useState(false);
   
   // Config source tracking for badge display
   const [configSource, setConfigSource] = useState(() => getConfigSummary());
@@ -1733,74 +1731,6 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           <Button
             variant="outline"
             size="sm"
-            onClick={async () => {
-              if (!orgId) {
-                toast({
-                  title: 'No Organization',
-                  description: 'Select an organization first',
-                  variant: 'destructive',
-                });
-                return;
-              }
-              
-              setIsSyncingFromFrostguard(true);
-              
-              try {
-                // Call the sync-users-from-frostguard edge function to pull fresh data
-                const frostguardUrl = import.meta.env.VITE_FROSTGUARD_URL || 'https://swtcfcfpdnumdsnwvxqz.supabase.co';
-                
-                console.log('[WebhookSettings] Syncing from FrostGuard:', { frostguardUrl, orgId });
-                
-                const { data, error } = await supabase.functions.invoke('sync-users-from-frostguard', {
-                  body: { frostguardApiUrl: frostguardUrl },
-                });
-                
-                if (error) {
-                  console.error('[WebhookSettings] Sync error:', error);
-                  toast({
-                    title: 'Sync Failed',
-                    description: error.message || 'Failed to sync from FrostGuard',
-                    variant: 'destructive',
-                  });
-                  return;
-                }
-                
-                console.log('[WebhookSettings] Sync result:', data);
-                
-                // Clear existing state to force fresh fetch
-                setResolvedConfig(null);
-                setCanonicalApiKeyLast4(null);
-                setCanonicalGatewayApiKeyLast4(null);
-                setCanonicalWebhookSecretLast4(null);
-                
-                // Reload settings from local database (now updated)
-                await loadSettings();
-                await loadGatewaySettings();
-                
-                toast({
-                  title: 'Synced from FrostGuard',
-                  description: `Updated ${data?.synced || 0} users, ${data?.memberships_synced || 0} site memberships`,
-                });
-              } catch (err: any) {
-                console.error('[WebhookSettings] Sync exception:', err);
-                toast({
-                  title: 'Sync Error',
-                  description: err.message || 'Network error syncing from FrostGuard',
-                  variant: 'destructive',
-                });
-              } finally {
-                setIsSyncingFromFrostguard(false);
-              }
-            }}
-            disabled={isSyncingFromFrostguard || !orgId || isLoading}
-            className="gap-1"
-          >
-            <CloudDownload className={`h-4 w-4 ${isSyncingFromFrostguard ? 'animate-spin' : ''}`} />
-            {isSyncingFromFrostguard ? 'Syncing...' : 'Sync from FrostGuard'}
-          </Button>
-          <Button
-            variant="outline"
-            size="sm"
             onClick={() => setShowWizard(true)}
             className="gap-2"
           >
@@ -2302,7 +2232,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                       Using <span className="font-medium">{resolvedConfig.application_id_source === 'user' ? 'User' : 'Org'}</span> value: 
                       "<span className="font-mono font-medium">{resolvedConfig.application_id}</span>".
                       {resolvedConfig.application_id_source === 'org' && 
-                       " Click Refresh to sync from FrostGuard if this is incorrect."}
+                       " Click Refresh to reload local data."}
                     </p>
                   </AlertDescription>
                 </Alert>
@@ -2449,7 +2379,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                           <AlertDescription className="text-xs flex items-center justify-between">
                             <span>
                               User data is {Math.floor(ageHours / 24)}+ days old. 
-                              Click "Sync from FrostGuard" to pull latest credentials.
+                              TTN credentials may be stale.
                             </span>
                           </AlertDescription>
                         </Alert>
