@@ -290,13 +290,19 @@ export function encodePayload(data: Record<string, unknown>): string {
 }
 
 // Build TTN uplink webhook payload
+// Optionally accepts a server timestamp for consistent time sync
 export function buildTTNPayload(
   device: LoRaWANDevice,
   gateway: GatewayConfig,
   decodedPayload: Record<string, unknown>,
-  applicationId: string
+  applicationId: string,
+  serverTimestamp?: string
 ): TTNUplinkPayload {
   const signalStrength = decodedPayload.signal_strength as number ?? -65;
+  const receivedAt = serverTimestamp || new Date().toISOString();
+  const timestampMs = serverTimestamp 
+    ? new Date(serverTimestamp).getTime() 
+    : Date.now();
   
   return {
     end_device_ids: {
@@ -306,7 +312,7 @@ export function buildTTNPayload(
         application_id: applicationId,
       },
     },
-    received_at: new Date().toISOString(),
+    received_at: receivedAt,
     uplink_message: {
       decoded_payload: decodedPayload,
       rx_metadata: [
@@ -317,7 +323,7 @@ export function buildTTNPayload(
           },
           rssi: signalStrength,
           snr: 7.5 + (Math.random() - 0.5) * 3, // SNR typically 5-10 dB
-          timestamp: Date.now(),
+          timestamp: timestampMs,
         },
       ],
       f_port: device.type === 'temperature' ? 1 : 2,
