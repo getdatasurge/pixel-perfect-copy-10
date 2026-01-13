@@ -12,6 +12,8 @@ import { debug } from '@/lib/debugLogger';
 interface TelemetryMonitorProps {
   orgId?: string;
   unitId?: string;
+  // Whether emulation is currently running
+  isEmulating?: boolean;
   // Fallback to local state when no DB telemetry available
   localState?: {
     currentTemp: number | null;
@@ -30,7 +32,7 @@ interface PullError {
   diagnostics?: Record<string, unknown>;
 }
 
-export default function TelemetryMonitor({ orgId, unitId, localState }: TelemetryMonitorProps) {
+export default function TelemetryMonitor({ orgId, unitId, isEmulating = false, localState }: TelemetryMonitorProps) {
   const { telemetry, loading, getSensorStatus, refetch } = useTelemetrySubscription({
     orgId,
     enabled: !!orgId, // Only enabled if we have an org_id
@@ -220,12 +222,33 @@ export default function TelemetryMonitor({ orgId, unitId, localState }: Telemetr
     ? formatDistanceToNow(new Date(telemetry.last_uplink_at), { addSuffix: true })
     : 'Never';
 
+  // Show "no emulation" state when stopped and no DB telemetry
+  if (!isEmulating && !useDbTelemetry && !loading) {
+    return (
+      <Card className="border-muted">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Signal className="h-5 w-5 text-muted-foreground" />
+            Telemetry Monitor
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="text-center py-8 text-muted-foreground">
+            <Signal className="h-12 w-12 mx-auto mb-3 opacity-30" />
+            <p className="font-medium">No active emulation</p>
+            <p className="text-sm mt-1">Start emulation to see live telemetry data</p>
+          </div>
+        </CardContent>
+      </Card>
+    );
+  }
+
   return (
     <div className="space-y-4">
       {/* Data Source Indicator */}
       <div className="flex items-center justify-between flex-wrap gap-2">
-        <Badge variant={useDbTelemetry ? "default" : "outline"}>
-          {useDbTelemetry ? '📡 Live from Database' : '🔌 Local Emulator State'}
+        <Badge variant={useDbTelemetry ? "default" : isEmulating ? "outline" : "secondary"}>
+          {useDbTelemetry ? '📡 Live from Database' : isEmulating ? '🔌 Local Emulator State' : '⏸️ Idle'}
         </Badge>
         {useDbTelemetry && getStatusBadge()}
         {(orgId || unitId) && (

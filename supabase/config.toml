@@ -53,3 +53,6 @@ verify_jwt = false
 
 [functions.push-ttn-settings]
 verify_jwt = false
+
+[functions.emulator-lock]
+verify_jwt = false
