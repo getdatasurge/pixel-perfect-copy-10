@@ -126,6 +126,9 @@ export default function LoRaWANEmulator() {
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // BroadcastChannel for cross-tab emulator synchronization
+  const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
   // Track consecutive permission errors to auto-stop emulation
   const permissionErrorCountRef = useRef<number>(0);
@@ -1107,6 +1110,16 @@ export default function LoRaWANEmulator() {
   }, [webhookConfig, devices, addLog]);
 
   const startEmulation = useCallback(async () => {
+    // GUARD: Clear any existing intervals first to prevent duplicates
+    if (tempIntervalRef.current) {
+      clearInterval(tempIntervalRef.current);
+      tempIntervalRef.current = null;
+    }
+    if (doorIntervalRef.current) {
+      clearInterval(doorIntervalRef.current);
+      doorIntervalRef.current = null;
+    }
+    
     // Reset permission error counter on fresh start
     permissionErrorCountRef.current = 0;
 
@@ -1127,6 +1140,9 @@ export default function LoRaWANEmulator() {
         return; // Don't start emulation if preflight fails
       }
     }
+
+    // Notify other tabs that this tab is starting emulation
+    broadcastChannelRef.current?.postMessage({ type: 'EMULATOR_STARTED' });
 
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
@@ -1152,12 +1168,42 @@ export default function LoRaWANEmulator() {
     addLog('info', '⏹️ Emulation stopped');
   }, [addLog]);
 
+  // Cleanup intervals on unmount
   useEffect(() => {
     return () => {
       if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
       if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
     };
   }, []);
+
+  // Cross-tab synchronization: stop emulation if another tab starts
+  useEffect(() => {
+    broadcastChannelRef.current = new BroadcastChannel('emulator-sync');
+    
+    broadcastChannelRef.current.onmessage = (event) => {
+      if (event.data.type === 'EMULATOR_STARTED' && isRunning) {
+        // Another tab started - stop this one
+        setIsRunning(false);
+        if (tempIntervalRef.current) {
+          clearInterval(tempIntervalRef.current);
+          tempIntervalRef.current = null;
+        }
+        if (doorIntervalRef.current) {
+          clearInterval(doorIntervalRef.current);
+          doorIntervalRef.current = null;
+        }
+        addLog('info', '⏹️ Emulation stopped (another tab started)');
+        toast({
+          title: 'Emulation Stopped',
+          description: 'Another browser tab started the emulator',
+        });
+      }
+    };
+
+    return () => {
+      broadcastChannelRef.current?.close();
+    };
+  }, [isRunning, addLog]);
 
   const applyScenario = (scenario: ScenarioConfig) => {
     if (scenario.tempRange) {
