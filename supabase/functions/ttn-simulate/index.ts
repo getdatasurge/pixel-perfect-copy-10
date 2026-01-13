@@ -577,6 +577,154 @@ serve(async (req) => {
 
     console.log(`[ttn-simulate][${requestId}] Success: uplink simulated for ${deviceId}`);
 
+    // ========================================
+    // DUAL-WRITE: After TTN success, persist to Supabase
+    // ========================================
+    console.log(`[ttn-simulate][${requestId}] Writing uplink to Supabase...`);
+    
+    const supabaseUrl = Deno.env.get('SUPABASE_URL')!;
+    const supabaseServiceKey = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY')!;
+    const supabase = createClient(supabaseUrl, supabaseServiceKey);
+    
+    // Extract dev_eui from device_id (sensor-XXXXXXXXXXXXXXXX)
+    const devEui = deviceId.replace('sensor-', '').toUpperCase();
+    const now = new Date().toISOString();
+    
+    // Get unit_id from payload or lookup from lora_sensors
+    let unitId = decodedPayload.unit_id as string | undefined;
+    
+    // If unit_id is not a UUID, try to resolve it from lora_sensors
+    const isUuid = unitId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(unitId);
+    if (!isUuid && org_id) {
+      console.log(`[ttn-simulate][${requestId}] Resolving unit_id from lora_sensors for dev_eui: ${devEui}`);
+      const { data: sensorData } = await supabase
+        .from('lora_sensors')
+        .select('unit_id')
+        .eq('dev_eui', devEui.toLowerCase())
+        .eq('org_id', org_id)
+        .maybeSingle();
+      
+      if (sensorData?.unit_id) {
+        unitId = sensorData.unit_id;
+        console.log(`[ttn-simulate][${requestId}] Resolved unit_id: ${unitId}`);
+      }
+    }
+    
+    // 1. Insert into sensor_uplinks (raw history)
+    const uplinkRecord = {
+      org_id: org_id,
+      dev_eui: devEui.toLowerCase(),
+      f_port: fPort,
+      payload_json: decodedPayload,
+      rssi_dbm: (decodedPayload.signal_strength as number) ?? -70,
+      battery_pct: (decodedPayload.battery_level as number) ?? null,
+      received_at: now,
+      unit_id: isUuid ? unitId : (unitId || null),
+    };
+    
+    console.log(`[ttn-simulate][${requestId}] Inserting sensor_uplink:`, JSON.stringify(uplinkRecord));
+    
+    const { error: uplinkError } = await supabase
+      .from('sensor_uplinks')
+      .insert(uplinkRecord);
+    
+    if (uplinkError) {
+      console.warn(`[ttn-simulate][${requestId}] Failed to insert sensor_uplink:`, uplinkError.message);
+    } else {
+      console.log(`[ttn-simulate][${requestId}] sensor_uplink inserted successfully`);
+    }
+    
+    // 2. Upsert unit_telemetry (real-time state) if we have a valid unit_id
+    if (unitId && isUuid && org_id) {
+      const telemetryUpdate: Record<string, unknown> = {
+        unit_id: unitId,
+        org_id: org_id,
+        battery_pct: (decodedPayload.battery_level as number) ?? null,
+        rssi_dbm: (decodedPayload.signal_strength as number) ?? null,
+        last_uplink_at: now,
+        updated_at: now,
+      };
+      
+      // fPort 1 = temperature sensor
+      if (fPort === 1) {
+        const tempC = decodedPayload.temperature as number | undefined;
+        if (tempC !== undefined) {
+          telemetryUpdate.last_temp_f = tempC * 9/5 + 32;
+        }
+        if (decodedPayload.humidity !== undefined) {
+          telemetryUpdate.last_humidity = decodedPayload.humidity;
+        }
+      }
+      
+      // fPort 2 = door sensor
+      if (fPort === 2) {
+        const doorStatus = decodedPayload.door_status as string;
+        telemetryUpdate.door_state = doorStatus === 'open' ? 'open' : 'closed';
+        telemetryUpdate.last_door_event_at = now;
+        console.log(`[ttn-simulate][${requestId}] Door event: ${doorStatus} for unit ${unitId}`);
+      }
+      
+      console.log(`[ttn-simulate][${requestId}] Upserting unit_telemetry:`, JSON.stringify(telemetryUpdate));
+      
+      const { error: telemetryError } = await supabase
+        .from('unit_telemetry')
+        .upsert(telemetryUpdate, { onConflict: 'unit_id' });
+      
+      if (telemetryError) {
+        console.warn(`[ttn-simulate][${requestId}] Failed to upsert unit_telemetry:`, telemetryError.message);
+      } else {
+        console.log(`[ttn-simulate][${requestId}] unit_telemetry upserted for unit ${unitId}`);
+      }
+    }
+    
+    // 3. Insert into legacy door_events table for fPort 2
+    if (fPort === 2) {
+      const doorEventRecord = {
+        device_serial: devEui.toLowerCase(),
+        door_status: decodedPayload.door_status as string,
+        battery_level: (decodedPayload.battery_level as number) ?? null,
+        signal_strength: (decodedPayload.signal_strength as number) ?? null,
+        unit_id: unitId || null,
+      };
+      
+      console.log(`[ttn-simulate][${requestId}] Inserting door_event:`, JSON.stringify(doorEventRecord));
+      
+      const { error: doorError } = await supabase
+        .from('door_events')
+        .insert(doorEventRecord);
+      
+      if (doorError) {
+        console.warn(`[ttn-simulate][${requestId}] Failed to insert door_event:`, doorError.message);
+      } else {
+        console.log(`[ttn-simulate][${requestId}] door_event inserted successfully`);
+      }
+    }
+    
+    // 4. Insert into legacy sensor_readings table for fPort 1
+    if (fPort === 1) {
+      const readingRecord = {
+        device_serial: devEui.toLowerCase(),
+        temperature: decodedPayload.temperature ?? null,
+        humidity: decodedPayload.humidity ?? null,
+        battery_level: (decodedPayload.battery_level as number) ?? null,
+        signal_strength: (decodedPayload.signal_strength as number) ?? null,
+        unit_id: unitId || null,
+        reading_type: 'simulated',
+      };
+      
+      console.log(`[ttn-simulate][${requestId}] Inserting sensor_reading:`, JSON.stringify(readingRecord));
+      
+      const { error: readingError } = await supabase
+        .from('sensor_readings')
+        .insert(readingRecord);
+      
+      if (readingError) {
+        console.warn(`[ttn-simulate][${requestId}] Failed to insert sensor_reading:`, readingError.message);
+      } else {
+        console.log(`[ttn-simulate][${requestId}] sensor_reading inserted successfully`);
+      }
+    }
+
     // TTN simulate endpoint returns empty response on success
     return new Response(
       JSON.stringify({ 
@@ -588,6 +736,12 @@ serve(async (req) => {
         applicationId,
         deviceId,
         request_id: requestId,
+        db_writes: {
+          sensor_uplinks: !uplinkError,
+          unit_telemetry: unitId && isUuid ? true : 'skipped_no_uuid',
+          door_events: fPort === 2,
+          sensor_readings: fPort === 1,
+        },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
     );
