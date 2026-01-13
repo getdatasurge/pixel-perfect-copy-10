@@ -833,6 +833,19 @@ export default function LoRaWANEmulator() {
       org_id: webhookConfig.testOrgId || null,
       site_id: webhookConfig.testSiteId || null,
     };
+    
+    // DEBUG: Log full payload being sent for door events
+    const debugRequestId = crypto.randomUUID();
+    console.log('[DOOR_UPLINK_DEBUG]', JSON.stringify({
+      request_id: debugRequestId,
+      devEui: device.devEui,
+      fPort: 2,
+      door_status: doorStatus,
+      payload,
+      ttnEnabled: webhookConfig.ttnConfig?.enabled,
+      applicationId: webhookConfig.ttnConfig?.applicationId,
+      timestamp: new Date().toISOString(),
+    }));
 
     let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
       deviceId: device.id,
