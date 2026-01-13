@@ -13,7 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { 
   Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, 
   Radio, Settings, Activity, FileText, Webhook, FlaskConical,
-  ClipboardList, Info
+  ClipboardList, Info, AlertTriangle
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -44,6 +44,7 @@ import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } fro
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
 import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
+import { acquireEmulatorLock, releaseEmulatorLock, sendEmulatorHeartbeat, releaseEmulatorLockBeacon, LockInfo } from '@/lib/emulatorLock';
 import CreateUnitModal from './emulator/CreateUnitModal';
 
 interface LogEntry {
@@ -126,6 +127,7 @@ export default function LoRaWANEmulator() {
   
   const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
   // BroadcastChannel for cross-tab emulator synchronization
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
@@ -133,6 +135,10 @@ export default function LoRaWANEmulator() {
   // Track consecutive permission errors to auto-stop emulation
   const permissionErrorCountRef = useRef<number>(0);
   const MAX_PERMISSION_ERRORS = 2; // Stop after 2 consecutive permission errors
+
+  // Emulator lock state
+  const [sessionId] = useState(() => crypto.randomUUID());
+  const [lockError, setLockError] = useState<LockInfo | null>(null);
 
   // Storage keys for persistence
   const STORAGE_KEY_DEVICES = 'lorawan-emulator-devices';
@@ -1132,9 +1138,52 @@ export default function LoRaWANEmulator() {
       clearInterval(doorIntervalRef.current);
       doorIntervalRef.current = null;
     }
+    if (heartbeatIntervalRef.current) {
+      clearInterval(heartbeatIntervalRef.current);
+      heartbeatIntervalRef.current = null;
+    }
     
     // Reset permission error counter on fresh start
     permissionErrorCountRef.current = 0;
+
+    // Try to acquire server-side lock
+    const orgId = webhookConfig.testOrgId;
+    const userId = webhookConfig.selectedUserId || 'anonymous';
+    
+    if (orgId) {
+      addLog('info', '🔒 Acquiring emulator lock...');
+      const lockResult = await acquireEmulatorLock(orgId, userId, sessionId);
+      
+      if (!lockResult.ok) {
+        setLockError(lockResult.lock_info || null);
+        addLog('error', `❌ Cannot start: ${lockResult.error}`);
+        toast({
+          title: 'Emulator Already Running',
+          description: lockResult.lock_info 
+            ? `Another session started at ${new Date(lockResult.lock_info.started_at).toLocaleTimeString()}. Close it first or force takeover.`
+            : lockResult.error,
+          variant: 'destructive',
+        });
+        return;
+      }
+      setLockError(null);
+      addLog('info', '✅ Lock acquired');
+      
+      // Start heartbeat interval (every 10 seconds)
+      heartbeatIntervalRef.current = setInterval(async () => {
+        const heartbeatResult = await sendEmulatorHeartbeat(orgId, sessionId);
+        if (!heartbeatResult.ok) {
+          // Lock was taken over - stop emulation
+          addLog('error', '⚠️ Lock lost - another session took over');
+          stopEmulation();
+          toast({
+            title: 'Emulation Stopped',
+            description: 'Another session took over the emulator',
+            variant: 'destructive',
+          });
+        }
+      }, 10000);
+    }
 
     // Run preflight check if TTN is enabled
     const ttnConfig = webhookConfig.ttnConfig;
@@ -1150,6 +1199,14 @@ export default function LoRaWANEmulator() {
           description: preflight.error,
           variant: 'destructive',
         });
+        // Release the lock since we're not starting
+        if (orgId) {
+          await releaseEmulatorLock(orgId, sessionId);
+          if (heartbeatIntervalRef.current) {
+            clearInterval(heartbeatIntervalRef.current);
+            heartbeatIntervalRef.current = null;
+          }
+        }
         return; // Don't start emulation if preflight fails
       }
     }
@@ -1172,22 +1229,48 @@ export default function LoRaWANEmulator() {
     if (doorState.enabled) {
       doorIntervalRef.current = setInterval(() => sendDoorEvent(), doorState.intervalSeconds * 1000);
     }
-  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog, webhookConfig, runPreflightCheck]);
+  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
-  const stopEmulation = useCallback(() => {
+  const stopEmulation = useCallback(async () => {
     setIsRunning(false);
     if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
     if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
+    if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+    
+    // Release server-side lock
+    const orgId = webhookConfig.testOrgId;
+    if (orgId) {
+      await releaseEmulatorLock(orgId, sessionId);
+      addLog('info', '🔓 Lock released');
+    }
+    
+    // Reset local state to prevent stale display
+    setCurrentTemp(null);
+    setReadingCount(0);
+    setLockError(null);
+    
     addLog('info', '⏹️ Emulation stopped');
-  }, [addLog]);
+  }, [addLog, webhookConfig.testOrgId, sessionId]);
 
-  // Cleanup intervals on unmount
+  // Cleanup intervals and release lock on unmount
   useEffect(() => {
+    const handleUnload = () => {
+      // Use sendBeacon for reliable delivery on tab close
+      const orgId = webhookConfig.testOrgId;
+      if (isRunning && orgId) {
+        releaseEmulatorLockBeacon(orgId, sessionId);
+      }
+    };
+
+    window.addEventListener('beforeunload', handleUnload);
+
     return () => {
+      window.removeEventListener('beforeunload', handleUnload);
       if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
       if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, []);
+  }, [isRunning, webhookConfig.testOrgId, sessionId]);
 
   // Cross-tab synchronization: stop emulation if another tab starts
   useEffect(() => {
@@ -1217,6 +1300,29 @@ export default function LoRaWANEmulator() {
       broadcastChannelRef.current?.close();
     };
   }, [isRunning, addLog]);
+
+  // Force takeover handler
+  const handleForceTakeover = useCallback(async () => {
+    const orgId = webhookConfig.testOrgId;
+    const userId = webhookConfig.selectedUserId || 'anonymous';
+    
+    if (!orgId) {
+      toast({ title: 'Error', description: 'No organization context', variant: 'destructive' });
+      return;
+    }
+    
+    addLog('info', '⚠️ Force takeover requested...');
+    const lockResult = await acquireEmulatorLock(orgId, userId, sessionId, undefined, true);
+    
+    if (lockResult.ok) {
+      setLockError(null);
+      toast({ title: 'Lock acquired', description: 'You can now start emulation' });
+      addLog('info', '✅ Force takeover successful');
+    } else {
+      toast({ title: 'Takeover failed', description: lockResult.error, variant: 'destructive' });
+      addLog('error', `❌ Force takeover failed: ${lockResult.error}`);
+    }
+  }, [webhookConfig.testOrgId, webhookConfig.selectedUserId, sessionId, addLog]);
 
   const applyScenario = (scenario: ScenarioConfig) => {
     if (scenario.tempRange) {
@@ -1647,6 +1753,7 @@ export default function LoRaWANEmulator() {
                 <TelemetryMonitor
                   orgId={webhookConfig.testOrgId}
                   unitId={webhookConfig.testUnitId}
+                  isEmulating={isRunning}
                   localState={{
                     currentTemp,
                     humidity: tempState.humidity,
@@ -1687,6 +1794,7 @@ export default function LoRaWANEmulator() {
                 <TelemetryMonitor
                   orgId={webhookConfig.testOrgId}
                   unitId={webhookConfig.testUnitId}
+                  isEmulating={isRunning}
                   localState={{
                     currentTemp,
                     humidity: tempState.humidity,
@@ -1716,6 +1824,7 @@ export default function LoRaWANEmulator() {
                 <TelemetryMonitor
                   orgId={webhookConfig.testOrgId}
                   unitId={webhookConfig.testUnitId}
+                  isEmulating={isRunning}
                   localState={{
                     currentTemp,
                     humidity: tempState.humidity,

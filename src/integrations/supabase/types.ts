@@ -44,6 +44,36 @@ export type Database = {
         }
         Relationships: []
       }
+      emulator_locks: {
+        Row: {
+          device_info: string | null
+          id: string
+          last_heartbeat_at: string
+          org_id: string
+          session_id: string
+          started_at: string
+          user_id: string
+        }
+        Insert: {
+          device_info?: string | null
+          id?: string
+          last_heartbeat_at?: string
+          org_id: string
+          session_id: string
+          started_at?: string
+          user_id: string
+        }
+        Update: {
+          device_info?: string | null
+          id?: string
+          last_heartbeat_at?: string
+          org_id?: string
+          session_id?: string
+          started_at?: string
+          user_id?: string
+        }
+        Relationships: []
+      }
       lora_gateways: {
         Row: {
           cluster: string | null
