@@ -130,6 +130,10 @@ export default function LoRaWANEmulator() {
   const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
+  // Refs to hold latest callback versions for stable interval references
+  const sendTempReadingRef = useRef<() => void>(() => {});
+  const sendDoorEventRef = useRef<(status?: 'open' | 'closed') => void>(() => {});
+  
   // BroadcastChannel for cross-tab emulator synchronization
   const broadcastChannelRef = useRef<BroadcastChannel | null>(null);
 
@@ -1047,6 +1051,15 @@ export default function LoRaWANEmulator() {
     addTestResult(testResult);
   }, [doorState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway]);
 
+  // Keep refs updated with latest callback versions for stable interval references
+  useEffect(() => {
+    sendTempReadingRef.current = sendTempReading;
+  }, [sendTempReading]);
+
+  useEffect(() => {
+    sendDoorEventRef.current = sendDoorEvent;
+  }, [sendDoorEvent]);
+
   const toggleDoor = useCallback(() => {
     const newStatus = !doorState.doorOpen;
     setDoorState(prev => ({ ...prev, doorOpen: newStatus }));
@@ -1230,17 +1243,32 @@ export default function LoRaWANEmulator() {
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
-    // Send initial readings
+    // Send initial readings directly
     sendTempReading();
     if (doorState.enabled) {
       sendDoorEvent();
     }
 
-    // Set up intervals
-    tempIntervalRef.current = setInterval(sendTempReading, tempState.intervalSeconds * 1000);
+    // Set up intervals using refs to always get latest callback versions
+    console.log('[EMULATOR_SCHEDULE]', {
+      tempInterval: `${tempState.intervalSeconds}s`,
+      doorInterval: doorState.enabled ? `${doorState.intervalSeconds}s` : 'disabled',
+      nextTempAt: new Date(Date.now() + tempState.intervalSeconds * 1000).toISOString(),
+      nextDoorAt: doorState.enabled 
+        ? new Date(Date.now() + doorState.intervalSeconds * 1000).toISOString() 
+        : null,
+    });
+
+    tempIntervalRef.current = setInterval(() => {
+      console.log('[INTERVAL_TICK] Temperature reading scheduled');
+      sendTempReadingRef.current();
+    }, tempState.intervalSeconds * 1000);
 
     if (doorState.enabled) {
-      doorIntervalRef.current = setInterval(() => sendDoorEvent(), doorState.intervalSeconds * 1000);
+      doorIntervalRef.current = setInterval(() => {
+        console.log('[INTERVAL_TICK] Door event scheduled');
+        sendDoorEventRef.current();
+      }, doorState.intervalSeconds * 1000);
     }
   }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
