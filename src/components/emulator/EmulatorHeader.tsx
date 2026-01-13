@@ -5,7 +5,8 @@ import { WebhookConfig } from '@/lib/ttn-payload';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { DeveloperMenu } from './DebugModeToggle';
-import { getServerTimeOffset, getLastSyncTime, isTimeSyncStale } from '@/lib/serverTime';
+import { getServerTime, getServerTimeOffset, getLastSyncTime, isTimeSyncStale } from '@/lib/serverTime';
+import { format } from 'date-fns';
 import { useState, useEffect } from 'react';
 interface EmulatorHeaderProps {
   isRunning: boolean;
@@ -127,7 +128,7 @@ export default function EmulatorHeader({
             )}
 
             {/* Server Time Sync Indicator */}
-            {lastSync && (
+            {lastSync ? (
               <TooltipProvider>
                 <Tooltip>
                   <TooltipTrigger asChild>
@@ -140,17 +141,26 @@ export default function EmulatorHeader({
                       )}
                     >
                       <Clock className="h-3 w-3" />
-                      {offsetSeconds === 0 ? 'Synced' : `${offsetSeconds > 0 ? '+' : ''}${offsetSeconds}s`}
+                      {format(getServerTime(), 'HH:mm:ss')}
+                      <span className="opacity-60">
+                        ({offsetSeconds === 0 ? '±0' : `${offsetSeconds > 0 ? '+' : ''}${offsetSeconds}s`})
+                      </span>
                     </Badge>
                   </TooltipTrigger>
                   <TooltipContent>
-                    <p>Server time offset: {offsetSeconds}s</p>
+                    <p>Server Time: {format(getServerTime(), 'PPpp')}</p>
                     <p className="text-xs text-muted-foreground">
-                      Last synced: {formatRelativeTime(lastSync)}
+                      Offset: {offsetSeconds}s from browser | Last synced: {formatRelativeTime(lastSync)}
                     </p>
                   </TooltipContent>
                 </Tooltip>
               </TooltipProvider>
+            ) : (
+              <Badge variant="outline" className="gap-1 font-mono text-xs bg-orange-500/10 text-orange-600 border-orange-500/30">
+                <Clock className="h-3 w-3" />
+                {format(new Date(), 'HH:mm:ss')}
+                <span className="opacity-60">(local)</span>
+              </Badge>
             )}
           </div>
 
