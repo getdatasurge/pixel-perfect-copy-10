@@ -43,6 +43,7 @@ import {
 import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
+import { updateServerOffset, getServerTime, getServerTimeISO } from '@/lib/serverTime';
 import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
 import { acquireEmulatorLock, releaseEmulatorLock, sendEmulatorHeartbeat, releaseEmulatorLockBeacon, LockInfo } from '@/lib/emulatorLock';
 import CreateUnitModal from './emulator/CreateUnitModal';
@@ -389,7 +390,7 @@ export default function LoRaWANEmulator() {
   const addLog = useCallback((type: LogEntry['type'], message: string) => {
     const entry: LogEntry = {
       id: `${Date.now()}-${Math.random()}`,
-      timestamp: new Date(),
+      timestamp: getServerTime(), // Use server-synchronized time
       type,
       message,
     };
@@ -400,7 +401,7 @@ export default function LoRaWANEmulator() {
     const entry: TestResult = {
       ...result,
       id: `${Date.now()}-${Math.random()}`,
-      timestamp: new Date(),
+      timestamp: getServerTime(), // Use server-synchronized time
     };
     setTestResults(prev => [entry, ...prev].slice(0, 50));
   }, []);
@@ -729,16 +730,22 @@ export default function LoRaWANEmulator() {
         // Reset permission error counter on success
         permissionErrorCountRef.current = 0;
 
+        // Sync server time offset from authoritative response
+        if (data?.server_timestamp) {
+          updateServerOffset(data.server_timestamp);
+        }
+
         // Log success
         log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
           deviceId,
           applicationId: data?.applicationId || ttnConfig.applicationId,
           settingsSource: data?.settingsSource,
+          serverTimestamp: data?.server_timestamp,
         });
         
         // Log to snapshot history
         logTTNSimulateEvent({
-          timestamp: new Date().toISOString(),
+          timestamp: data?.server_timestamp || new Date().toISOString(),
           device_id: deviceId,
           application_id: data?.applicationId || ttnConfig.applicationId,
           status: 'success',
@@ -958,16 +965,22 @@ export default function LoRaWANEmulator() {
           throw new Error(ttnError.message);
         }
         
+        // Sync server time offset from authoritative response
+        if (data?.server_timestamp) {
+          updateServerOffset(data.server_timestamp);
+        }
+        
         // Log success
         log('ttn-preflight', 'info', 'TTN_SIMULATE_SUCCESS', {
           deviceId,
           applicationId: data?.applicationId || ttnConfig.applicationId,
           settingsSource: data?.settingsSource,
+          serverTimestamp: data?.server_timestamp,
         });
         
         // Log to snapshot history
         logTTNSimulateEvent({
-          timestamp: new Date().toISOString(),
+          timestamp: data?.server_timestamp || new Date().toISOString(),
           device_id: deviceId,
           application_id: data?.applicationId || ttnConfig.applicationId,
           status: 'success',

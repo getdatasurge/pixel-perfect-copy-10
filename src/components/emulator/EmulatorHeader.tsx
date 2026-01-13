@@ -1,11 +1,12 @@
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
-import { Play, Square, Zap, Cloud, Webhook, Radio, Check, X } from 'lucide-react';
+import { Play, Square, Zap, Cloud, Webhook, Radio, Check, X, Clock } from 'lucide-react';
 import { WebhookConfig } from '@/lib/ttn-payload';
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { DeveloperMenu } from './DebugModeToggle';
-
+import { getServerTimeOffset, getLastSyncTime, isTimeSyncStale } from '@/lib/serverTime';
+import { useState, useEffect } from 'react';
 interface EmulatorHeaderProps {
   isRunning: boolean;
   readingCount: number;
@@ -36,6 +37,20 @@ export default function EmulatorHeader({
   onStopEmulation,
   onSingleReading,
 }: EmulatorHeaderProps) {
+  // Update time display every second when running
+  const [, setTick] = useState(0);
+  
+  useEffect(() => {
+    if (!isRunning) return;
+    const interval = setInterval(() => setTick(t => t + 1), 1000);
+    return () => clearInterval(interval);
+  }, [isRunning]);
+
+  const offsetMs = getServerTimeOffset();
+  const lastSync = getLastSyncTime();
+  const isSyncStale = isTimeSyncStale(5 * 60 * 1000); // 5 minutes
+  const offsetSeconds = Math.round(offsetMs / 1000);
+  
   return (
     <header className="sticky top-0 z-10 bg-background border-b">
       <div className="flex items-center justify-between px-6 py-4">
@@ -109,6 +124,33 @@ export default function EmulatorHeader({
                 <Webhook className="h-3 w-3 mr-1" />
                 Webhook
               </Badge>
+            )}
+
+            {/* Server Time Sync Indicator */}
+            {lastSync && (
+              <TooltipProvider>
+                <Tooltip>
+                  <TooltipTrigger asChild>
+                    <Badge 
+                      variant="outline" 
+                      className={cn(
+                        "gap-1 cursor-help font-mono text-xs",
+                        isSyncStale && "bg-yellow-500/10 text-yellow-600 border-yellow-500/30",
+                        !isSyncStale && "bg-blue-500/10 text-blue-600 border-blue-500/30"
+                      )}
+                    >
+                      <Clock className="h-3 w-3" />
+                      {offsetSeconds === 0 ? 'Synced' : `${offsetSeconds > 0 ? '+' : ''}${offsetSeconds}s`}
+                    </Badge>
+                  </TooltipTrigger>
+                  <TooltipContent>
+                    <p>Server time offset: {offsetSeconds}s</p>
+                    <p className="text-xs text-muted-foreground">
+                      Last synced: {formatRelativeTime(lastSync)}
+                    </p>
+                  </TooltipContent>
+                </Tooltip>
+              </TooltipProvider>
             )}
           </div>
 

@@ -726,6 +726,7 @@ serve(async (req) => {
     }
 
     // TTN simulate endpoint returns empty response on success
+    // Include server_timestamp for frontend time synchronization
     return new Response(
       JSON.stringify({ 
         success: true, 
@@ -736,6 +737,9 @@ serve(async (req) => {
         applicationId,
         deviceId,
         request_id: requestId,
+        // Authoritative server timestamp for client sync
+        server_timestamp: now,
+        received_at: now,
         db_writes: {
           sensor_uplinks: !uplinkError,
           unit_telemetry: unitId && isUuid ? true : 'skipped_no_uuid',
