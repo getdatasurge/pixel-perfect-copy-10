@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback, useEffect } from 'react';
+import { useState, useRef, useCallback, useEffect, useMemo } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { Button } from '@/components/ui/button';
@@ -23,6 +23,7 @@ import WebhookSettings from './emulator/WebhookSettings';
 import DeviceManager from './emulator/DeviceManager';
 import QRCodeModal from './emulator/QRCodeModal';
 import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
+import SensorSelector from './emulator/SensorSelector';
 import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
 import TelemetryMonitor from './emulator/TelemetryMonitor';
@@ -47,6 +48,16 @@ import { updateServerOffset, getServerTime, getServerTimeISO } from '@/lib/serve
 import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
 import { acquireEmulatorLock, releaseEmulatorLock, sendEmulatorHeartbeat, releaseEmulatorLockBeacon, LockInfo } from '@/lib/emulatorLock';
 import CreateUnitModal from './emulator/CreateUnitModal';
+import { 
+  SensorState, 
+  initializeSensorState, 
+  saveSensorState, 
+  loadSelectedSensorIds, 
+  saveSelectedSensorIds,
+  getTempCompatibleSensors,
+  getDoorCompatibleSensors,
+  logStateChange
+} from '@/lib/emulatorSensorState';
 
 interface LogEntry {
   id: string;
@@ -390,6 +401,104 @@ export default function LoRaWANEmulator() {
     doorOpen: false,
     intervalSeconds: 300,
   });
+
+  // Per-sensor state management
+  const [sensorStates, setSensorStates] = useState<Record<string, SensorState>>(() => 
+    initializeSensorState(devices)
+  );
+  
+  const [selectedSensorIds, setSelectedSensorIds] = useState<string[]>(() => 
+    loadSelectedSensorIds(devices)
+  );
+
+  // Sync sensor states when devices change
+  useEffect(() => {
+    setSensorStates(prev => {
+      const updated = initializeSensorState(devices);
+      // Merge with existing state to preserve runtime values
+      for (const id of Object.keys(updated)) {
+        if (prev[id]) {
+          updated[id] = { ...updated[id], ...prev[id], type: updated[id].type };
+        }
+      }
+      return updated;
+    });
+    
+    // Clean up selection for removed devices
+    setSelectedSensorIds(prev => {
+      const valid = prev.filter(id => devices.some(d => d.id === id));
+      if (valid.length === 0 && devices.length > 0) {
+        return [devices[0].id];
+      }
+      return valid;
+    });
+  }, [devices]);
+
+  // Persist sensor states
+  useEffect(() => {
+    saveSensorState(sensorStates);
+  }, [sensorStates]);
+
+  // Persist selected sensor IDs
+  useEffect(() => {
+    saveSelectedSensorIds(selectedSensorIds);
+  }, [selectedSensorIds]);
+
+  // Get sensor types map for ScenarioPresets
+  const sensorTypesMap = useMemo(() => {
+    const map: Record<string, 'temperature' | 'door'> = {};
+    for (const device of devices) {
+      map[device.id] = device.type;
+    }
+    return map;
+  }, [devices]);
+
+  // Get compatible sensors for current selection
+  const tempCompatibleIds = useMemo(() => 
+    getTempCompatibleSensors(selectedSensorIds, sensorStates),
+    [selectedSensorIds, sensorStates]
+  );
+  
+  const doorCompatibleIds = useMemo(() => 
+    getDoorCompatibleSensors(selectedSensorIds, sensorStates),
+    [selectedSensorIds, sensorStates]
+  );
+
+  // Update sensor state helper
+  const updateSensorState = useCallback((sensorId: string, updates: Partial<SensorState>) => {
+    setSensorStates(prev => {
+      const before = prev[sensorId];
+      const after = { ...before, ...updates };
+      
+      logStateChange('UPDATE_SENSOR', [sensorId], 
+        { [sensorId]: before }, 
+        { [sensorId]: after }
+      );
+      
+      return { ...prev, [sensorId]: after };
+    });
+  }, []);
+
+  // Update multiple sensors at once (for scenarios)
+  const updateMultipleSensors = useCallback((sensorIds: string[], updates: Partial<SensorState>) => {
+    setSensorStates(prev => {
+      const next = { ...prev };
+      const beforeState: Record<string, Partial<SensorState>> = {};
+      const afterState: Record<string, Partial<SensorState>> = {};
+      
+      for (const id of sensorIds) {
+        if (prev[id]) {
+          beforeState[id] = prev[id];
+          next[id] = { ...prev[id], ...updates };
+          afterState[id] = next[id];
+        }
+      }
+      
+      logStateChange('UPDATE_MULTIPLE', sensorIds, beforeState, afterState);
+      
+      return next;
+    });
+  }, []);
 
   const addLog = useCallback((type: LogEntry['type'], message: string) => {
     const entry: LogEntry = {
@@ -1365,8 +1474,37 @@ export default function LoRaWANEmulator() {
     }
   }, [webhookConfig.testOrgId, webhookConfig.selectedUserId, sessionId, addLog]);
 
-  const applyScenario = (scenario: ScenarioConfig) => {
+  const applyScenario = useCallback((scenario: ScenarioConfig) => {
+    if (selectedSensorIds.length === 0) {
+      toast({ 
+        title: 'No sensors selected', 
+        description: 'Select at least one sensor to apply a scenario',
+        variant: 'destructive' 
+      });
+      return;
+    }
+
+    console.log('[SCENARIO_APPLY]', {
+      scenario_name: scenario.name,
+      selected_sensor_ids: selectedSensorIds,
+      timestamp: new Date().toISOString(),
+    });
+
+    // Apply temperature settings to temp-compatible sensors
     if (scenario.tempRange) {
+      const tempSensors = getTempCompatibleSensors(selectedSensorIds, sensorStates);
+      if (tempSensors.length > 0) {
+        updateMultipleSensors(tempSensors, {
+          minTempF: scenario.tempRange.min,
+          maxTempF: scenario.tempRange.max,
+          tempF: (scenario.tempRange.min + scenario.tempRange.max) / 2,
+          humidity: scenario.humidity ?? sensorStates[tempSensors[0]]?.humidity ?? 45,
+          batteryPct: scenario.batteryLevel ?? sensorStates[tempSensors[0]]?.batteryPct ?? 95,
+          signalStrength: scenario.signalStrength ?? sensorStates[tempSensors[0]]?.signalStrength ?? -65,
+        });
+      }
+      
+      // Also update global tempState for backward compatibility
       setTempState(prev => ({
         ...prev,
         minTemp: scenario.tempRange!.min,
@@ -1376,12 +1514,32 @@ export default function LoRaWANEmulator() {
         signalStrength: scenario.signalStrength ?? prev.signalStrength,
       }));
     }
+
+    // Apply door settings to door-compatible sensors
     if (scenario.doorBehavior === 'stuck-open') {
+      const doorSensors = getDoorCompatibleSensors(selectedSensorIds, sensorStates);
+      if (doorSensors.length > 0) {
+        updateMultipleSensors(doorSensors, {
+          doorOpen: true,
+          batteryPct: scenario.batteryLevel ?? sensorStates[doorSensors[0]]?.batteryPct ?? 90,
+          signalStrength: scenario.signalStrength ?? sensorStates[doorSensors[0]]?.signalStrength ?? -70,
+        });
+      }
+      
+      // Also update global doorState for backward compatibility
       setDoorState(prev => ({ ...prev, doorOpen: true }));
     }
-    addLog('info', `🎛️ Applied "${scenario.name}" scenario`);
-    toast({ title: 'Scenario applied', description: scenario.description });
-  };
+
+    // Apply battery/signal to all selected sensors
+    if (scenario.batteryLevel !== undefined || scenario.signalStrength !== undefined) {
+      const updates: Partial<SensorState> = {};
+      if (scenario.batteryLevel !== undefined) updates.batteryPct = scenario.batteryLevel;
+      if (scenario.signalStrength !== undefined) updates.signalStrength = scenario.signalStrength;
+      updateMultipleSensors(selectedSensorIds, updates);
+    }
+
+    addLog('info', `🎛️ Applied "${scenario.name}" scenario to ${selectedSensorIds.length} sensor(s)`);
+  }, [selectedSensorIds, sensorStates, updateMultipleSensors, addLog]);
 
   const tempDevice = getActiveDevice('temperature');
   const doorDevice = getActiveDevice('door');
@@ -1586,13 +1744,43 @@ export default function LoRaWANEmulator() {
 
           {/* Sensors Tab */}
           <TabsContent value="sensors" className="space-y-6">
+            {/* Sensor Selector - only shows if multiple sensors exist */}
+            <SensorSelector
+              devices={devices}
+              sensorStates={sensorStates}
+              selectedSensorIds={selectedSensorIds}
+              onSelectionChange={setSelectedSensorIds}
+              disabled={isRunning}
+            />
+
+            {/* Show which sensors will be affected */}
+            {devices.length > 1 && selectedSensorIds.length > 0 && (
+              <div className="flex flex-wrap gap-2">
+                {tempCompatibleIds.length > 0 && (
+                  <Badge variant="outline" className="bg-blue-500/10 text-blue-600 border-blue-500/30">
+                    <Thermometer className="h-3 w-3 mr-1" />
+                    {tempCompatibleIds.length} temp sensor{tempCompatibleIds.length !== 1 ? 's' : ''} selected
+                  </Badge>
+                )}
+                {doorCompatibleIds.length > 0 && (
+                  <Badge variant="outline" className="bg-orange-500/10 text-orange-600 border-orange-500/30">
+                    <DoorOpen className="h-3 w-3 mr-1" />
+                    {doorCompatibleIds.length} door sensor{doorCompatibleIds.length !== 1 ? 's' : ''} selected
+                  </Badge>
+                )}
+              </div>
+            )}
+
             <div className="grid gap-6 lg:grid-cols-2">
               {/* Temperature Sensor Card */}
-              <Card>
+              <Card className={tempCompatibleIds.length === 0 ? 'opacity-50' : ''}>
                 <CardHeader>
                   <CardTitle className="text-base flex items-center gap-2">
                     <Thermometer className="h-4 w-4 text-blue-500" />
                     Temperature Sensor Settings
+                    {tempCompatibleIds.length === 0 && selectedSensorIds.length > 0 && (
+                      <Badge variant="outline" className="text-xs ml-auto">No temp sensors selected</Badge>
+                    )}
                   </CardTitle>
                 </CardHeader>
                 <CardContent className="space-y-6">
@@ -1602,8 +1790,15 @@ export default function LoRaWANEmulator() {
                       <Input
                         type="number"
                         value={tempState.minTemp}
-                        onChange={e => setTempState(prev => ({ ...prev, minTemp: Number(e.target.value) }))}
-                        disabled={isRunning}
+                        onChange={e => {
+                          const minTemp = Number(e.target.value);
+                          setTempState(prev => ({ ...prev, minTemp }));
+                          // Update selected temp sensors
+                          if (tempCompatibleIds.length > 0) {
+                            updateMultipleSensors(tempCompatibleIds, { minTempF: minTemp });
+                          }
+                        }}
+                        disabled={isRunning || tempCompatibleIds.length === 0}
                         className="w-20 h-9 text-center"
                       />
                       <div className="flex-1">
@@ -1612,15 +1807,28 @@ export default function LoRaWANEmulator() {
                           min={-20}
                           max={80}
                           step={1}
-                          onValueChange={([min, max]) => setTempState(prev => ({ ...prev, minTemp: min, maxTemp: max }))}
-                          disabled={isRunning}
+                          onValueChange={([min, max]) => {
+                            setTempState(prev => ({ ...prev, minTemp: min, maxTemp: max }));
+                            // Update selected temp sensors
+                            if (tempCompatibleIds.length > 0) {
+                              updateMultipleSensors(tempCompatibleIds, { minTempF: min, maxTempF: max });
+                            }
+                          }}
+                          disabled={isRunning || tempCompatibleIds.length === 0}
                         />
                       </div>
                       <Input
                         type="number"
                         value={tempState.maxTemp}
-                        onChange={e => setTempState(prev => ({ ...prev, maxTemp: Number(e.target.value) }))}
-                        disabled={isRunning}
+                        onChange={e => {
+                          const maxTemp = Number(e.target.value);
+                          setTempState(prev => ({ ...prev, maxTemp }));
+                          // Update selected temp sensors
+                          if (tempCompatibleIds.length > 0) {
+                            updateMultipleSensors(tempCompatibleIds, { maxTempF: maxTemp });
+                          }
+                        }}
+                        disabled={isRunning || tempCompatibleIds.length === 0}
                         className="w-20 h-9 text-center"
                       />
                     </div>
@@ -1642,8 +1850,14 @@ export default function LoRaWANEmulator() {
                       min={0}
                       max={100}
                       step={1}
-                      onValueChange={([v]) => setTempState(prev => ({ ...prev, humidity: v }))}
-                      disabled={isRunning}
+                      onValueChange={([v]) => {
+                        setTempState(prev => ({ ...prev, humidity: v }));
+                        // Update selected temp sensors
+                        if (tempCompatibleIds.length > 0) {
+                          updateMultipleSensors(tempCompatibleIds, { humidity: v });
+                        }
+                      }}
+                      disabled={isRunning || tempCompatibleIds.length === 0}
                     />
                   </div>
 
@@ -1651,8 +1865,15 @@ export default function LoRaWANEmulator() {
                     <Label className="text-sm">Reading Interval</Label>
                     <Select
                       value={String(tempState.intervalSeconds)}
-                      onValueChange={(v) => setTempState(prev => ({ ...prev, intervalSeconds: Number(v) }))}
-                      disabled={isRunning}
+                      onValueChange={(v) => {
+                        const intervalSec = Number(v);
+                        setTempState(prev => ({ ...prev, intervalSeconds: intervalSec }));
+                        // Update selected temp sensors
+                        if (tempCompatibleIds.length > 0) {
+                          updateMultipleSensors(tempCompatibleIds, { intervalSec });
+                        }
+                      }}
+                      disabled={isRunning || tempCompatibleIds.length === 0}
                     >
                       <SelectTrigger className="h-9">
                         <SelectValue />
@@ -1670,22 +1891,25 @@ export default function LoRaWANEmulator() {
               </Card>
 
               {/* Door Sensor Card */}
-              <Card>
+              <Card className={doorCompatibleIds.length === 0 ? 'opacity-50' : ''}>
                 <CardHeader>
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-base flex items-center gap-2">
                       <DoorOpen className="h-4 w-4 text-orange-500" />
                       Door Sensor Settings
+                      {doorCompatibleIds.length === 0 && selectedSensorIds.length > 0 && (
+                        <Badge variant="outline" className="text-xs ml-2">No door sensors selected</Badge>
+                      )}
                     </CardTitle>
                     <Switch
                       checked={doorState.enabled}
                       onCheckedChange={enabled => setDoorState(prev => ({ ...prev, enabled }))}
-                      disabled={isRunning}
+                      disabled={isRunning || doorCompatibleIds.length === 0}
                     />
                   </div>
                 </CardHeader>
                 <CardContent className="space-y-6">
-                  {doorState.enabled ? (
+                  {doorState.enabled && doorCompatibleIds.length > 0 ? (
                     <>
                       <div className="space-y-3">
                         <div className="flex items-center justify-between">
@@ -1697,7 +1921,13 @@ export default function LoRaWANEmulator() {
                           min={30}
                           max={600}
                           step={30}
-                          onValueChange={([v]) => setDoorState(prev => ({ ...prev, intervalSeconds: v }))}
+                          onValueChange={([v]) => {
+                            setDoorState(prev => ({ ...prev, intervalSeconds: v }));
+                            // Update selected door sensors
+                            if (doorCompatibleIds.length > 0) {
+                              updateMultipleSensors(doorCompatibleIds, { intervalSec: v });
+                            }
+                          }}
                           disabled={isRunning}
                         />
                       </div>
@@ -1708,7 +1938,13 @@ export default function LoRaWANEmulator() {
                         </div>
                         <Button
                           variant={doorState.doorOpen ? 'destructive' : 'outline'}
-                          onClick={toggleDoor}
+                          onClick={() => {
+                            toggleDoor();
+                            // Update selected door sensors
+                            if (doorCompatibleIds.length > 0) {
+                              updateMultipleSensors(doorCompatibleIds, { doorOpen: !doorState.doorOpen });
+                            }
+                          }}
                           className="gap-2"
                         >
                           {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
@@ -1719,8 +1955,12 @@ export default function LoRaWANEmulator() {
                   ) : (
                     <div className="flex flex-col items-center justify-center py-8 text-center">
                       <DoorClosed className="h-12 w-12 text-muted-foreground mb-3" />
-                      <p className="text-muted-foreground">Door sensor disabled</p>
-                      <p className="text-xs text-muted-foreground">Enable to configure settings</p>
+                      <p className="text-muted-foreground">
+                        {doorCompatibleIds.length === 0 ? 'No door sensors selected' : 'Door sensor disabled'}
+                      </p>
+                      <p className="text-xs text-muted-foreground">
+                        {doorCompatibleIds.length === 0 ? 'Select a door sensor above' : 'Enable to configure settings'}
+                      </p>
                     </div>
                   )}
                 </CardContent>
@@ -1730,7 +1970,12 @@ export default function LoRaWANEmulator() {
             {/* Scenario Presets */}
             <Card>
               <CardContent className="pt-6">
-                <ScenarioPresets onApply={applyScenario} disabled={isRunning} />
+                <ScenarioPresets 
+                  onApply={applyScenario} 
+                  disabled={isRunning}
+                  selectedSensorIds={selectedSensorIds}
+                  sensorTypes={sensorTypesMap}
+                />
               </CardContent>
             </Card>
           </TabsContent>
