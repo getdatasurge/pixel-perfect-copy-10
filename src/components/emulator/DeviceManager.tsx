@@ -325,27 +325,38 @@ export default function DeviceManager({
   // Track deletion state
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
-  // Delete device - if TTN provisioned, delete from TTN first
+  // Delete device - TTN authoritative: delete from TTN and/or FrostGuard DB
   const removeDevice = async (id: string) => {
     const device = devices.find(d => d.id === id);
     if (!device) return;
 
-    // Check if device is TTN provisioned
     const isProvisionedInTTN = ttnProvisionedDevices?.has(device.devEui);
+    const hasOrgContext = !!webhookConfig?.testOrgId;
     
-    if (isProvisionedInTTN) {
-      // Delete from TTN first
-      setDeletingId(id);
-      log('network', 'info', 'TTN_DELETE_DEVICE_REQUEST', {
-        device_id: id,
-        dev_eui: device.devEui.slice(-4),
-        name: device.name,
-      });
+    setDeletingId(id);
+    console.log('[DEVICE_LIFECYCLE] Deleting device:', {
+      id,
+      name: device.name,
+      devEui: device.devEui.slice(-4),
+      isProvisionedInTTN,
+      hasOrgContext,
+      willDeleteFromTTN: isProvisionedInTTN,
+      willDeleteFromDB: hasOrgContext,
+    });
 
-      try {
+    try {
+      // Step 1: If TTN provisioned, delete from TTN first
+      if (isProvisionedInTTN) {
+        log('network', 'info', 'TTN_DELETE_DEVICE_REQUEST', {
+          device_id: id,
+          dev_eui: device.devEui.slice(-4),
+          name: device.name,
+        });
+
         const { data, error } = await supabase.functions.invoke('ttn-delete-device', {
           body: {
             dev_eui: device.devEui,
+            device_id: id, // Include UUID for direct DB delete
             org_id: webhookConfig?.testOrgId,
             selected_user_id: webhookConfig?.selectedUserId,
             application_id: webhookConfig?.ttnConfig?.applicationId,
@@ -380,54 +391,81 @@ export default function DeviceManager({
           device_id: id,
           dev_eui: device.devEui.slice(-4),
           already_deleted: data?.already_deleted,
+          removed_from_db: data?.removed_from_db,
         });
-        
-        toast({ 
-          title: 'Device Deleted', 
-          description: `${device.name} removed from TTN and local state`,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        log('network', 'error', 'TTN_DELETE_DEVICE_ERROR', { error: message });
-        toast({ 
-          title: 'Delete Failed', 
-          description: message, 
-          variant: 'destructive' 
-        });
-        setDeletingId(null);
-        return;
-      } finally {
-        setDeletingId(null);
       }
-    }
+      // Step 2: For non-TTN devices, still delete from FrostGuard DB if synced
+      else if (hasOrgContext) {
+        log('network', 'info', 'DB_DELETE_DEVICE_REQUEST', {
+          device_id: id,
+          dev_eui: device.devEui.slice(-4),
+          name: device.name,
+        });
 
-    // Remove from local state
-    onDevicesChange(devices.filter(d => d.id !== id));
-    setSyncedIds(prev => {
-      const next = new Set(prev);
-      next.delete(id);
-      return next;
-    });
+        // Call edge function with skip_ttn flag to just clean DB
+        const { data, error } = await supabase.functions.invoke('ttn-delete-device', {
+          body: {
+            dev_eui: device.devEui,
+            device_id: id,
+            org_id: webhookConfig?.testOrgId,
+            skip_ttn: true, // Skip TTN API, just clean database
+          },
+        });
 
-    // Clear from session storage cache if exists
-    try {
-      const stored = sessionStorage.getItem('lorawan-emulator-user-context');
-      if (stored) {
-        const context = JSON.parse(stored);
-        if (context.pulledDevices) {
-          context.pulledDevices = context.pulledDevices.filter((d: { id: string }) => d.id !== id);
-          sessionStorage.setItem('lorawan-emulator-user-context', JSON.stringify(context));
+        if (error) {
+          console.warn('[DEVICE_LIFECYCLE] DB delete warning:', error.message);
+          // Don't fail - device may not have been synced to FrostGuard
+        } else {
+          log('network', 'info', 'DB_DELETE_DEVICE_SUCCESS', {
+            device_id: id,
+            removed_from_db: data?.removed_from_db,
+          });
         }
       }
-    } catch {
-      // Ignore session storage errors
-    }
 
-    if (!isProvisionedInTTN) {
-      toast({ 
-        title: 'Device Removed', 
-        description: `${device.name} removed from local state`,
+      // Step 3: Remove from local React state
+      onDevicesChange(devices.filter(d => d.id !== id));
+      setSyncedIds(prev => {
+        const next = new Set(prev);
+        next.delete(id);
+        return next;
       });
+
+      // Step 4: Clear from session storage cache
+      try {
+        const stored = sessionStorage.getItem('lorawan-emulator-user-context');
+        if (stored) {
+          const context = JSON.parse(stored);
+          if (context.pulledDevices) {
+            context.pulledDevices = context.pulledDevices.filter((d: { id: string }) => d.id !== id);
+            sessionStorage.setItem('lorawan-emulator-user-context', JSON.stringify(context));
+          }
+        }
+      } catch {
+        // Ignore session storage errors
+      }
+
+      const source = isProvisionedInTTN ? 'TTN + DB' : (hasOrgContext ? 'DB' : 'local');
+      toast({ 
+        title: 'Device Deleted', 
+        description: `${device.name} removed from ${source}`,
+      });
+      
+      console.log('[DEVICE_LIFECYCLE] Device deleted successfully:', {
+        id,
+        source,
+      });
+
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      log('network', 'error', 'DELETE_DEVICE_ERROR', { error: message });
+      toast({ 
+        title: 'Delete Failed', 
+        description: message, 
+        variant: 'destructive' 
+      });
+    } finally {
+      setDeletingId(null);
     }
   };
 

@@ -20,9 +20,11 @@ import {
 interface DeleteDeviceRequest {
   dev_eui: string;
   org_id: string;
+  device_id?: string;        // UUID for direct DB delete
   selected_user_id?: string;
   application_id?: string;
   cluster?: string;
+  skip_ttn?: boolean;        // Skip TTN API, just clean database
 }
 
 Deno.serve(async (req: Request) => {
@@ -38,14 +40,16 @@ Deno.serve(async (req: Request) => {
 
   try {
     const body: DeleteDeviceRequest = await req.json();
-    const { dev_eui, org_id, selected_user_id, application_id, cluster } = body;
+    const { dev_eui, org_id, device_id, selected_user_id, application_id, cluster, skip_ttn } = body;
 
     console.log(`[${requestId}] Delete device request:`, { 
       dev_eui: dev_eui?.slice(-4), 
       org_id, 
+      device_id: device_id?.slice(-4),
       selected_user_id,
       application_id,
       cluster,
+      skip_ttn,
     });
 
     // Validate required fields
@@ -78,8 +82,40 @@ Deno.serve(async (req: Request) => {
       });
     }
 
-    // Load TTN settings
     const supabase = getSupabaseClient();
+
+    // If skip_ttn flag is set, only do database cleanup
+    if (skip_ttn) {
+      console.log(`[${requestId}] Skipping TTN API - database cleanup only`);
+      
+      // Delete from lora_sensors table using device_id or dev_eui
+      let deleteQuery = supabase.from('lora_sensors').delete().eq('org_id', org_id);
+      
+      if (device_id) {
+        deleteQuery = deleteQuery.eq('id', device_id);
+      } else {
+        deleteQuery = deleteQuery.eq('dev_eui', normalizedDevEui);
+      }
+      
+      const { error: dbError } = await deleteQuery;
+
+      if (dbError) {
+        console.warn(`[${requestId}] DB delete warning:`, dbError.message);
+        // Return success anyway - device may not have been in DB
+      } else {
+        console.log(`[${requestId}] Removed from lora_sensors table (DB-only mode)`);
+      }
+
+      return successResponse({
+        deleted: true,
+        device_id: deviceId,
+        dev_eui: normalizedDevEui,
+        removed_from_db: !dbError,
+        skip_ttn: true,
+      }, requestId);
+    }
+
+    // Load TTN settings for API call
     const { settings, source } = await loadTTNSettings(selected_user_id || '', org_id);
 
     console.log(`[${requestId}] TTN settings loaded from: ${source}`);
