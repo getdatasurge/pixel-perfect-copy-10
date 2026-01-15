@@ -843,6 +843,35 @@ export default function DeviceManager({
                           </>
                         )}
                       </Badge>
+                      {/* Type/name mismatch warning */}
+                      {(() => {
+                        const nameImpliesDoor = device.name.toLowerCase().includes('door');
+                        const nameImpliesTemp = device.name.toLowerCase().includes('temp');
+                        const typeMismatch = 
+                          (nameImpliesDoor && device.type === 'temperature') ||
+                          (nameImpliesTemp && device.type === 'door');
+                        
+                        if (typeMismatch) {
+                          return (
+                            <TooltipProvider>
+                              <Tooltip>
+                                <TooltipTrigger asChild>
+                                  <Badge variant="outline" className="text-xs text-yellow-600 border-yellow-600 gap-1">
+                                    <AlertCircle className="h-3 w-3" />
+                                    Type Mismatch
+                                  </Badge>
+                                </TooltipTrigger>
+                                <TooltipContent>
+                                  <p>Device name suggests it's a {nameImpliesDoor ? 'door' : 'temperature'} sensor,</p>
+                                  <p>but it's configured as a {device.type} sensor.</p>
+                                  <p className="text-muted-foreground text-xs mt-1">Fix this in FrostGuard and re-sync.</p>
+                                </TooltipContent>
+                              </Tooltip>
+                            </TooltipProvider>
+                          );
+                        }
+                        return null;
+                      })()}
                       <Badge variant="outline" className="text-xs">Class A</Badge>
                       {ttnProvisionedDevices?.has(device.devEui) && (
                         <Badge variant="outline" className="text-xs text-green-600 border-green-600 gap-1">
