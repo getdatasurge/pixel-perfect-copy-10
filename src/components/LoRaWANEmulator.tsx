@@ -165,8 +165,7 @@ export default function LoRaWANEmulator() {
   const [sessionId] = useState(() => crypto.randomUUID());
   const [lockError, setLockError] = useState<LockInfo | null>(null);
 
-  // Storage keys for persistence
-  const STORAGE_KEY_DEVICES = 'lorawan-emulator-devices';
+  // NOTE: STORAGE_KEY_DEVICES removed - devices are no longer persisted to localStorage
   const STORAGE_KEY_GATEWAYS = 'lorawan-emulator-gateways';
   const STORAGE_KEY_WEBHOOK = 'lorawan-emulator-webhook';
 
@@ -183,26 +182,13 @@ export default function LoRaWANEmulator() {
     return [createGateway('Primary Gateway')];
   });
 
-  const [devices, setDevices] = useState<LoRaWANDevice[]>(() => {
-    const saved = localStorage.getItem(STORAGE_KEY_DEVICES);
-    if (saved) {
-      try {
-        return JSON.parse(saved);
-      } catch {
-        // Fall through to default
-      }
-    }
-    const gateway = gateways[0] || createGateway('Primary Gateway');
-    return [
-      createDevice('Temp Sensor 1', 'temperature', gateway.id),
-      createDevice('Door Sensor 1', 'door', gateway.id),
-    ];
-  });
+  // Devices are TTN-authoritative: start empty, only populated from TTN pull via UserSelectionGate
+  // This prevents stale/deleted local devices from reappearing after logout/login
+  const [devices, setDevices] = useState<LoRaWANDevice[]>([]);
 
-  // Persist devices and gateways to localStorage
-  useEffect(() => {
-    localStorage.setItem(STORAGE_KEY_DEVICES, JSON.stringify(devices));
-  }, [devices]);
+  // NOTE: Devices are NO LONGER persisted to localStorage
+  // They are sourced from TTN via UserSelectionGate on each login
+  // This ensures deleted devices don't resurrect across sessions
 
   useEffect(() => {
     localStorage.setItem(STORAGE_KEY_GATEWAYS, JSON.stringify(gateways));
@@ -278,12 +264,8 @@ export default function LoRaWANEmulator() {
           ttnGatewayId: g.ttn_gateway_id || undefined,
         }));
 
-        // Merge: use database gateways as base, keep any local-only gateways not in DB
-        setGateways(prev => {
-          const dbEuis = new Set(dbGateways.map(g => g.eui.toUpperCase()));
-          const localOnly = prev.filter(g => !dbEuis.has(g.eui.toUpperCase()));
-          return [...dbGateways, ...localOnly];
-        });
+        // TTN-authoritative: completely replace with database gateways (no merge)
+        setGateways(dbGateways);
 
         // Update provisioned set
         const provisionedEuis = new Set(

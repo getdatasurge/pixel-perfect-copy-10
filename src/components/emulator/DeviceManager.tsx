@@ -322,13 +322,113 @@ export default function DeviceManager({
     toast({ title: 'Device added', description: `Created ${name}` });
   };
 
-  const removeDevice = (id: string) => {
+  // Track deletion state
+  const [deletingId, setDeletingId] = useState<string | null>(null);
+
+  // Delete device - if TTN provisioned, delete from TTN first
+  const removeDevice = async (id: string) => {
+    const device = devices.find(d => d.id === id);
+    if (!device) return;
+
+    // Check if device is TTN provisioned
+    const isProvisionedInTTN = ttnProvisionedDevices?.has(device.devEui);
+    
+    if (isProvisionedInTTN) {
+      // Delete from TTN first
+      setDeletingId(id);
+      log('network', 'info', 'TTN_DELETE_DEVICE_REQUEST', {
+        device_id: id,
+        dev_eui: device.devEui.slice(-4),
+        name: device.name,
+      });
+
+      try {
+        const { data, error } = await supabase.functions.invoke('ttn-delete-device', {
+          body: {
+            dev_eui: device.devEui,
+            org_id: webhookConfig?.testOrgId,
+            selected_user_id: webhookConfig?.selectedUserId,
+            application_id: webhookConfig?.ttnConfig?.applicationId,
+            cluster: webhookConfig?.ttnConfig?.cluster,
+          },
+        });
+
+        if (error) {
+          log('network', 'error', 'TTN_DELETE_DEVICE_ERROR', { error: error.message });
+          toast({ 
+            title: 'Delete Failed', 
+            description: `Failed to delete from TTN: ${error.message}`, 
+            variant: 'destructive' 
+          });
+          setDeletingId(null);
+          return; // Don't remove locally if TTN delete failed
+        }
+
+        if (!data?.ok && !data?.deleted) {
+          const errorMsg = data?.error || 'Unknown error';
+          log('network', 'error', 'TTN_DELETE_DEVICE_ERROR', { error: errorMsg });
+          toast({ 
+            title: 'Delete Failed', 
+            description: errorMsg, 
+            variant: 'destructive' 
+          });
+          setDeletingId(null);
+          return;
+        }
+
+        log('network', 'info', 'TTN_DELETE_DEVICE_SUCCESS', {
+          device_id: id,
+          dev_eui: device.devEui.slice(-4),
+          already_deleted: data?.already_deleted,
+        });
+        
+        toast({ 
+          title: 'Device Deleted', 
+          description: `${device.name} removed from TTN and local state`,
+        });
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        log('network', 'error', 'TTN_DELETE_DEVICE_ERROR', { error: message });
+        toast({ 
+          title: 'Delete Failed', 
+          description: message, 
+          variant: 'destructive' 
+        });
+        setDeletingId(null);
+        return;
+      } finally {
+        setDeletingId(null);
+      }
+    }
+
+    // Remove from local state
     onDevicesChange(devices.filter(d => d.id !== id));
     setSyncedIds(prev => {
       const next = new Set(prev);
       next.delete(id);
       return next;
     });
+
+    // Clear from session storage cache if exists
+    try {
+      const stored = sessionStorage.getItem('lorawan-emulator-user-context');
+      if (stored) {
+        const context = JSON.parse(stored);
+        if (context.pulledDevices) {
+          context.pulledDevices = context.pulledDevices.filter((d: { id: string }) => d.id !== id);
+          sessionStorage.setItem('lorawan-emulator-user-context', JSON.stringify(context));
+        }
+      }
+    } catch {
+      // Ignore session storage errors
+    }
+
+    if (!isProvisionedInTTN) {
+      toast({ 
+        title: 'Device Removed', 
+        description: `${device.name} removed from local state`,
+      });
+    }
   };
 
   const updateDevice = (id: string, updates: Partial<LoRaWANDevice>) => {
@@ -929,9 +1029,14 @@ export default function DeviceManager({
                     size="icon"
                     className="h-8 w-8"
                     onClick={() => removeDevice(device.id)}
-                    disabled={disabled}
+                    disabled={disabled || deletingId === device.id}
+                    title={ttnProvisionedDevices?.has(device.devEui) ? 'Delete from TTN & local' : 'Remove from local state'}
                   >
-                    <Trash2 className="h-4 w-4 text-destructive" />
+                    {deletingId === device.id ? (
+                      <Loader2 className="h-4 w-4 animate-spin text-destructive" />
+                    ) : (
+                      <Trash2 className="h-4 w-4 text-destructive" />
+                    )}
                   </Button>
                 </div>
               </div>
