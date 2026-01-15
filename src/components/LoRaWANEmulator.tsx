@@ -39,7 +39,9 @@ import {
   SyncResult,
   createGateway, 
   createDevice,
-  buildTTNPayload 
+  buildTTNPayload,
+  buildTempPayload,
+  buildDoorPayload,
 } from '@/lib/ttn-payload';
 import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
@@ -137,11 +139,18 @@ export default function LoRaWANEmulator() {
     return new Set();
   });
   
-  const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
-  const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  // Per-device interval refs for independent uplink scheduling
+  const deviceIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
-  // Refs to hold latest callback versions for stable interval references
+  // Legacy refs (kept for backward compatibility during transition)
+  const tempIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  const doorIntervalRef = useRef<NodeJS.Timeout | null>(null);
+  
+  // Ref to hold latest callback version for stable interval references
+  const sendDeviceUplinkRef = useRef<(deviceId: string) => void>(() => {});
+  
+  // Legacy refs (kept for backward compatibility)
   const sendTempReadingRef = useRef<() => void>(() => {});
   const sendDoorEventRef = useRef<(status?: 'open' | 'closed') => void>(() => {});
   
@@ -531,6 +540,169 @@ export default function LoRaWANEmulator() {
     if (!device) return gateways.find(g => g.isOnline);
     return gateways.find(g => g.id === device.gatewayId && g.isOnline);
   }, [gateways]);
+
+  /**
+   * Send uplink for a specific device using its per-device state
+   * Each device sends ONLY its own independent payload - no bundling
+   */
+  const sendDeviceUplink = useCallback(async (deviceId: string) => {
+    const device = devices.find(d => d.id === deviceId);
+    const sensorState = sensorStates[deviceId];
+    
+    if (!device) {
+      console.warn('[DEVICE_UPLINK] Device not found:', deviceId);
+      return;
+    }
+    
+    if (!sensorState) {
+      console.warn('[DEVICE_UPLINK] No sensor state for device:', deviceId);
+      return;
+    }
+    
+    const gateway = getActiveGateway(device);
+    if (!gateway) {
+      addLog('error', `❌ No online gateway for ${device.name}`);
+      return;
+    }
+
+    // Build type-specific payload using per-device state
+    const orgContext = {
+      org_id: webhookConfig.testOrgId || null,
+      site_id: webhookConfig.testSiteId || null,
+      unit_id: webhookConfig.testUnitId || device.name,
+    };
+    
+    let payload: Record<string, unknown>;
+    let fPort: number;
+    const requestId = crypto.randomUUID().slice(0, 8);
+    
+    if (device.type === 'temperature') {
+      payload = buildTempPayload(sensorState, orgContext);
+      fPort = 1;
+    } else {
+      payload = buildDoorPayload(sensorState, orgContext);
+      fPort = 2;
+    }
+
+    // Use canonical device_id format: sensor-{normalized_deveui}
+    const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
+    const ttnDeviceId = `sensor-${normalizedDevEui}`;
+
+    // Debug log per-device uplink
+    console.log('[DEVICE_UPLINK]', {
+      deviceId: device.id,
+      deviceName: device.name,
+      ttn_device_id: ttnDeviceId,
+      kind: device.type,
+      payloadPreview: JSON.stringify(payload).slice(0, 100),
+      request_id: requestId,
+      fPort,
+      timestamp: new Date().toISOString(),
+    });
+
+    let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
+      deviceId: device.id,
+      deviceType: device.type,
+      ttnStatus: 'skipped',
+      webhookStatus: 'pending',
+      dbStatus: 'pending',
+      orgApplied: !!webhookConfig.testOrgId,
+    };
+
+    try {
+      const ttnConfig = webhookConfig.ttnConfig;
+      
+      // Route through TTN if enabled
+      if (ttnConfig?.enabled && ttnConfig.applicationId) {
+        log('ttn-preflight', 'info', 'DEVICE_UPLINK_TTN_SIMULATE', {
+          deviceId: ttnDeviceId,
+          devEui: device.devEui,
+          kind: device.type,
+          applicationId: ttnConfig.applicationId,
+          fPort,
+          request_id: requestId,
+        });
+
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
+          body: {
+            org_id: webhookConfig.testOrgId,
+            selected_user_id: webhookConfig.selectedUserId,
+            applicationId: ttnConfig.applicationId,
+            deviceId: ttnDeviceId,
+            decodedPayload: payload,
+            fPort,
+          },
+        });
+
+        if (error) throw error;
+        if (data && !data.success) {
+          throw new Error(data.error || 'TTN simulate error');
+        }
+
+        // Sync server time offset from authoritative response
+        if (data?.server_timestamp) {
+          updateServerOffset(data.server_timestamp);
+        }
+
+        testResult.ttnStatus = 'success';
+        testResult.webhookStatus = 'pending';
+        testResult.dbStatus = 'pending';
+        testResult.uplinkPath = 'ttn-simulate';
+        
+        addLog('info', `DEVICE_UPLINK | ${device.name} | path=ttn-simulate | request_id=${requestId}`);
+      } 
+      // External webhook
+      else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        testResult.uplinkPath = 'external-webhook';
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        const response = await fetch(webhookConfig.targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
+          body: JSON.stringify(ttnPayload),
+        });
+        
+        if (!response.ok) throw new Error(`Webhook returned ${response.status}`);
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
+        addLog('info', `DEVICE_UPLINK | ${device.name} | path=external-webhook | request_id=${requestId}`);
+      } 
+      // Local webhook
+      else {
+        testResult.uplinkPath = 'local-webhook';
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        const { error } = await supabase.functions.invoke('ttn-webhook', {
+          body: ttnPayload,
+        });
+        if (error) throw error;
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
+        addLog('info', `DEVICE_UPLINK | ${device.name} | path=local-webhook | request_id=${requestId}`);
+      }
+
+      // Update sensor state with lastSentAt
+      updateSensorState(deviceId, { lastSentAt: new Date(), isOnline: true });
+      
+      // Type-specific logs
+      if (device.type === 'temperature') {
+        const temp = payload.temperature as number;
+        const humidity = payload.humidity as number;
+        addLog('temp', `📡 ${device.name}: ${temp}°F, ${humidity}% RH`);
+        setCurrentTemp(temp);
+      } else {
+        addLog('door', `🚪 ${device.name}: Door ${payload.door_status}`);
+      }
+      
+      setReadingCount(prev => prev + 1);
+    } catch (err: any) {
+      testResult.webhookStatus = 'failed';
+      testResult.dbStatus = 'failed';
+      testResult.error = err.message;
+      addLog('error', `❌ ${device.name} uplink failed: ${err.message}`);
+    }
+
+    addTestResult(testResult);
+  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway]);
 
   const sendTempReading = useCallback(async () => {
     const device = getActiveDevice('temperature');
@@ -1162,6 +1334,11 @@ export default function LoRaWANEmulator() {
 
   // Keep refs updated with latest callback versions for stable interval references
   useEffect(() => {
+    sendDeviceUplinkRef.current = sendDeviceUplink;
+  }, [sendDeviceUplink]);
+  
+  // Legacy refs (kept for backward compatibility)
+  useEffect(() => {
     sendTempReadingRef.current = sendTempReading;
   }, [sendTempReading]);
 
@@ -1265,6 +1442,8 @@ export default function LoRaWANEmulator() {
 
   const startEmulation = useCallback(async () => {
     // GUARD: Clear any existing intervals first to prevent duplicates
+    deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
+    deviceIntervalsRef.current.clear();
     if (tempIntervalRef.current) {
       clearInterval(tempIntervalRef.current);
       tempIntervalRef.current = null;
@@ -1352,37 +1531,50 @@ export default function LoRaWANEmulator() {
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
-    // Send initial readings directly
-    sendTempReading();
-    if (doorState.enabled) {
-      sendDoorEvent();
-    }
-
-    // Set up intervals using refs to always get latest callback versions
-    console.log('[EMULATOR_SCHEDULE]', {
-      tempInterval: `${tempState.intervalSeconds}s`,
-      doorInterval: doorState.enabled ? `${doorState.intervalSeconds}s` : 'disabled',
-      nextTempAt: new Date(Date.now() + tempState.intervalSeconds * 1000).toISOString(),
-      nextDoorAt: doorState.enabled 
-        ? new Date(Date.now() + doorState.intervalSeconds * 1000).toISOString() 
-        : null,
+    // Per-device scheduling: Each device gets its own independent interval
+    console.log('[EMULATOR_SCHEDULE] Per-device intervals:', {
+      deviceCount: devices.length,
+      devices: devices.map(d => ({
+        id: d.id,
+        name: d.name,
+        type: d.type,
+        intervalSec: sensorStates[d.id]?.intervalSec || 60,
+      })),
     });
 
-    tempIntervalRef.current = setInterval(() => {
-      console.log('[INTERVAL_TICK] Temperature reading scheduled');
-      sendTempReadingRef.current();
-    }, tempState.intervalSeconds * 1000);
+    // Send initial uplink for each device and set up per-device intervals
+    for (const device of devices) {
+      const sensorState = sensorStates[device.id];
+      if (!sensorState) continue;
 
-    if (doorState.enabled) {
-      doorIntervalRef.current = setInterval(() => {
-        console.log('[INTERVAL_TICK] Door event scheduled');
-        sendDoorEventRef.current();
-      }, doorState.intervalSeconds * 1000);
+      // Send initial uplink immediately
+      sendDeviceUplink(device.id);
+
+      // Set up per-device interval
+      const intervalMs = sensorState.intervalSec * 1000;
+      const interval = setInterval(() => {
+        console.log('[INTERVAL_TICK]', { 
+          deviceId: device.id, 
+          deviceName: device.name,
+          kind: device.type,
+        });
+        sendDeviceUplinkRef.current(device.id);
+      }, intervalMs);
+
+      deviceIntervalsRef.current.set(device.id, interval);
+
+      addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s`);
     }
-  }, [tempState.intervalSeconds, doorState, sendTempReading, sendDoorEvent, addLog, webhookConfig, runPreflightCheck, sessionId]);
+  }, [devices, sensorStates, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
   const stopEmulation = useCallback(async () => {
     setIsRunning(false);
+    
+    // Clear per-device intervals
+    deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
+    deviceIntervalsRef.current.clear();
+    
+    // Clear legacy intervals
     if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
     if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
     if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
@@ -1416,6 +1608,10 @@ export default function LoRaWANEmulator() {
 
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
+      // Clear per-device intervals
+      deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
+      deviceIntervalsRef.current.clear();
+      // Clear legacy intervals
       if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
       if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
@@ -1430,6 +1626,10 @@ export default function LoRaWANEmulator() {
       if (event.data.type === 'EMULATOR_STARTED' && isRunning) {
         // Another tab started - stop this one
         setIsRunning(false);
+        // Clear per-device intervals
+        deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
+        deviceIntervalsRef.current.clear();
+        // Clear legacy intervals
         if (tempIntervalRef.current) {
           clearInterval(tempIntervalRef.current);
           tempIntervalRef.current = null;

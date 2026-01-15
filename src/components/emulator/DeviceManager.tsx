@@ -821,27 +821,28 @@ export default function DeviceManager({
                   <div>
                     <div className="flex items-center gap-2">
                       <span className="font-medium">{device.name}</span>
-                      <Select
-                        value={device.type}
-                        onValueChange={(value: 'temperature' | 'door') => updateDevice(device.id, { type: value })}
-                        disabled={disabled}
+                      {/* Device Kind - read-only, immutable after creation */}
+                      <Badge 
+                        variant="outline" 
+                        className={cn(
+                          "text-xs gap-1",
+                          device.type === 'temperature' 
+                            ? "text-blue-600 border-blue-600" 
+                            : "text-orange-600 border-orange-600"
+                        )}
                       >
-                        <SelectTrigger className="h-6 w-[110px] text-xs px-2">
-                          <SelectValue />
-                        </SelectTrigger>
-                        <SelectContent className="bg-background">
-                          <SelectItem value="temperature">
-                            <span className="flex items-center gap-1">
-                              <Thermometer className="h-3 w-3 text-blue-500" /> Temperature
-                            </span>
-                          </SelectItem>
-                          <SelectItem value="door">
-                            <span className="flex items-center gap-1">
-                              <DoorOpen className="h-3 w-3 text-orange-500" /> Door
-                            </span>
-                          </SelectItem>
-                        </SelectContent>
-                      </Select>
+                        {device.type === 'temperature' ? (
+                          <>
+                            <Thermometer className="h-3 w-3" />
+                            Temp Sensor
+                          </>
+                        ) : (
+                          <>
+                            <DoorOpen className="h-3 w-3" />
+                            Door Sensor
+                          </>
+                        )}
+                      </Badge>
                       <Badge variant="outline" className="text-xs">Class A</Badge>
                       {ttnProvisionedDevices?.has(device.devEui) && (
                         <Badge variant="outline" className="text-xs text-green-600 border-green-600 gap-1">
