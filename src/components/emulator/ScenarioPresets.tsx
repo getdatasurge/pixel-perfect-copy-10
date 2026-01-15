@@ -1,6 +1,8 @@
 import { Card, CardContent } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
-import { Snowflake, Thermometer, AlertTriangle, DoorOpen, BatteryLow, WifiOff } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Snowflake, Thermometer, AlertTriangle, DoorOpen, BatteryLow, WifiOff, Info } from 'lucide-react';
+import { toast } from '@/hooks/use-toast';
 
 export interface ScenarioConfig {
   name: string;
@@ -93,9 +95,51 @@ const iconBgColors: Record<ScenarioConfig['category'], string> = {
 interface ScenarioPresetsProps {
   onApply: (scenario: ScenarioConfig) => void;
   disabled?: boolean;
+  // New props for multi-sensor targeting
+  selectedSensorIds?: string[];
+  sensorTypes?: Record<string, 'temperature' | 'door'>;
 }
 
-export default function ScenarioPresets({ onApply, disabled }: ScenarioPresetsProps) {
+export default function ScenarioPresets({ 
+  onApply, 
+  disabled,
+  selectedSensorIds = [],
+  sensorTypes = {},
+}: ScenarioPresetsProps) {
+  const hasSelection = selectedSensorIds.length > 0;
+  
+  // Count sensors by type
+  const tempSensorCount = selectedSensorIds.filter(id => sensorTypes[id] === 'temperature').length;
+  const doorSensorCount = selectedSensorIds.filter(id => sensorTypes[id] === 'door').length;
+  const hasMixedTypes = tempSensorCount > 0 && doorSensorCount > 0;
+
+  const handleApply = (scenario: ScenarioConfig) => {
+    if (!hasSelection) return;
+    
+    // Log scenario application
+    console.log('[SCENARIO_APPLY]', {
+      scenario_name: scenario.name,
+      selected_sensor_ids: selectedSensorIds,
+      temp_sensors: tempSensorCount,
+      door_sensors: doorSensorCount,
+      timestamp: new Date().toISOString(),
+    });
+    
+    onApply(scenario);
+    
+    // Show toast with count
+    const targetCount = scenario.doorBehavior 
+      ? doorSensorCount 
+      : scenario.tempRange 
+        ? tempSensorCount 
+        : selectedSensorIds.length;
+    
+    toast({
+      title: `Applied "${scenario.name}"`,
+      description: `Applied to ${targetCount} sensor${targetCount !== 1 ? 's' : ''}`,
+    });
+  };
+
   return (
     <div className="space-y-4">
       <div>
@@ -105,40 +149,71 @@ export default function ScenarioPresets({ onApply, disabled }: ScenarioPresetsPr
         </p>
       </div>
 
+      {/* No selection warning */}
+      {!hasSelection && !disabled && (
+        <Alert>
+          <Info className="h-4 w-4" />
+          <AlertDescription>
+            Select at least one sensor to apply scenarios
+          </AlertDescription>
+        </Alert>
+      )}
+
+      {/* Mixed types warning */}
+      {hasMixedTypes && (
+        <Alert>
+          <AlertTriangle className="h-4 w-4" />
+          <AlertDescription>
+            Mixed sensor types selected. Temperature scenarios apply only to Temp sensors, 
+            door scenarios apply only to Door sensors.
+          </AlertDescription>
+        </Alert>
+      )}
+
       <div className="grid grid-cols-2 md:grid-cols-3 gap-3">
-        {scenarios.map(scenario => (
-          <Card 
-            key={scenario.name} 
-            className={`cursor-pointer transition-all hover:border-primary hover:shadow-sm ${disabled ? 'opacity-50 pointer-events-none' : ''}`}
-            onClick={() => !disabled && onApply(scenario)}
-          >
-            <CardContent className="p-3">
-              <div className="flex items-start gap-3">
-                <div className={`p-2 rounded-md ${iconBgColors[scenario.category]}`}>
-                  {scenario.icon}
-                </div>
-                <div className="flex-1 min-w-0 space-y-1">
-                  <div className="flex items-center gap-2">
-                    <h4 className="font-medium text-sm truncate">{scenario.name}</h4>
+        {scenarios.map(scenario => {
+          // Determine if this scenario applies to any selected sensors
+          const appliesToTemp = scenario.tempRange && tempSensorCount > 0;
+          const appliesToDoor = scenario.doorBehavior && doorSensorCount > 0;
+          const appliesToAny = appliesToTemp || appliesToDoor || 
+            (scenario.batteryLevel !== undefined || scenario.signalStrength !== undefined);
+          
+          const isDisabled = disabled || !hasSelection || (!appliesToAny && hasSelection);
+          
+          return (
+            <Card 
+              key={scenario.name} 
+              className={`cursor-pointer transition-all hover:border-primary hover:shadow-sm ${isDisabled ? 'opacity-50 pointer-events-none' : ''}`}
+              onClick={() => !isDisabled && handleApply(scenario)}
+            >
+              <CardContent className="p-3">
+                <div className="flex items-start gap-3">
+                  <div className={`p-2 rounded-md ${iconBgColors[scenario.category]}`}>
+                    {scenario.icon}
                   </div>
-                  <p className="text-xs text-muted-foreground line-clamp-1">
-                    {scenario.description}
-                  </p>
-                  <div className="flex items-center gap-2 flex-wrap">
-                    <Badge variant="outline" className={`text-xs ${categoryColors[scenario.category]}`}>
-                      {scenario.category}
-                    </Badge>
-                    {scenario.tempRange && (
-                      <span className="text-xs text-muted-foreground">
-                        {scenario.tempRange.min}°F — {scenario.tempRange.max}°F
-                      </span>
-                    )}
+                  <div className="flex-1 min-w-0 space-y-1">
+                    <div className="flex items-center gap-2">
+                      <h4 className="font-medium text-sm truncate">{scenario.name}</h4>
+                    </div>
+                    <p className="text-xs text-muted-foreground line-clamp-1">
+                      {scenario.description}
+                    </p>
+                    <div className="flex items-center gap-2 flex-wrap">
+                      <Badge variant="outline" className={`text-xs ${categoryColors[scenario.category]}`}>
+                        {scenario.category}
+                      </Badge>
+                      {scenario.tempRange && (
+                        <span className="text-xs text-muted-foreground">
+                          {scenario.tempRange.min}°F — {scenario.tempRange.max}°F
+                        </span>
+                      )}
+                    </div>
                   </div>
                 </div>
-              </div>
-            </CardContent>
-          </Card>
-        ))}
+              </CardContent>
+            </Card>
+          );
+        })}
       </div>
     </div>
   );
