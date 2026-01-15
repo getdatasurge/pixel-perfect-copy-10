@@ -56,3 +56,6 @@ verify_jwt = false
 
 [functions.emulator-lock]
 verify_jwt = false
+
+[functions.ttn-delete-device]
+verify_jwt = false
