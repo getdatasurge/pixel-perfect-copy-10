@@ -93,10 +93,10 @@ export default function UserSelectionGate({
       try {
         const context: StoredUserContext = JSON.parse(stored);
         const syncedAt = new Date(context.syncedAt);
-        const hourAgo = new Date(Date.now() - 60 * 60 * 1000);
+        const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
 
-        // If context is recent (< 1 hour), restore it
-        if (syncedAt > hourAgo && context.selectedUserId) {
+        // If context is recent (< 15 min), restore it - reduced from 1 hour to prevent stale data
+        if (syncedAt > fifteenMinAgo && context.selectedUserId) {
           console.log('[UserSelectionGate] Restoring context from session:', context.selectedUserId);
           
           // Restore pulled gateways and devices
@@ -232,7 +232,21 @@ export default function UserSelectionGate({
         });
       }
 
-      // Update local state (complete replacement, not merge)
+      // CRITICAL: Clear state FIRST before setting new data (TTN authoritative)
+      // This prevents any merge issues with stale local data
+      console.log('[DEVICE_LIFECYCLE] TTN pull replacing devices:', {
+        previousGatewayCount: gateways.length,
+        previousDeviceCount: devices.length,
+        newGatewayCount: pulledGateways.length,
+        newDeviceCount: pulledDevices.length,
+        source: 'TTN_AUTHORITATIVE',
+      });
+      
+      // Clear first, then set (complete replacement, no merge)
+      onGatewaysChange([]);
+      onDevicesChange([]);
+      
+      // Then set from pull (authoritative data)
       onGatewaysChange(pulledGateways);
       onDevicesChange(pulledDevices);
 
