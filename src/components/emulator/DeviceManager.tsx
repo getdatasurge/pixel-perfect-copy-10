@@ -394,33 +394,49 @@ export default function DeviceManager({
           removed_from_db: data?.removed_from_db,
         });
       }
-      // Step 2: For non-TTN devices, still delete from FrostGuard DB if synced
-      else if (hasOrgContext) {
-        log('network', 'info', 'DB_DELETE_DEVICE_REQUEST', {
+      // Step 2: Delete from FrostGuard (source of truth) - ALWAYS do this if we have org context
+      // This applies to both TTN-provisioned and non-TTN devices
+      if (hasOrgContext) {
+        log('network', 'info', 'FROSTGUARD_DELETE_DEVICE_REQUEST', {
           device_id: id,
           dev_eui: device.devEui.slice(-4),
           name: device.name,
         });
 
-        // Call edge function with skip_ttn flag to just clean DB
-        const { data, error } = await supabase.functions.invoke('ttn-delete-device', {
+        const { data, error } = await supabase.functions.invoke('frostguard-delete-device', {
           body: {
             dev_eui: device.devEui,
             device_id: id,
             org_id: webhookConfig?.testOrgId,
-            skip_ttn: true, // Skip TTN API, just clean database
           },
         });
 
         if (error) {
-          console.warn('[DEVICE_LIFECYCLE] DB delete warning:', error.message);
-          // Don't fail - device may not have been synced to FrostGuard
-        } else {
-          log('network', 'info', 'DB_DELETE_DEVICE_SUCCESS', {
-            device_id: id,
-            removed_from_db: data?.removed_from_db,
+          log('network', 'error', 'FROSTGUARD_DELETE_DEVICE_ERROR', { error: error.message });
+          toast({ 
+            title: 'Delete Failed', 
+            description: `Could not delete from source: ${error.message}. Device may reappear on next sync.`, 
+            variant: 'destructive' 
           });
+          setDeletingId(null);
+          return; // Don't remove locally if FrostGuard delete failed
         }
+
+        if (data?.error) {
+          log('network', 'error', 'FROSTGUARD_DELETE_DEVICE_ERROR', { error: data.error });
+          toast({ 
+            title: 'Delete Failed', 
+            description: data.error, 
+            variant: 'destructive' 
+          });
+          setDeletingId(null);
+          return;
+        }
+
+        log('network', 'info', 'FROSTGUARD_DELETE_DEVICE_SUCCESS', {
+          device_id: id,
+          deleted_from_frostguard: data?.deleted_from_frostguard,
+        });
       }
 
       // Step 3: Remove from local React state
