@@ -375,3 +375,65 @@ export function createGateway(name: string): GatewayConfig {
     isOnline: true,
   };
 }
+
+// =============================================================================
+// Per-Device Payload Builders
+// Each device sends ONLY its own payload - no bundling across devices
+// =============================================================================
+
+export interface DeviceSensorState {
+  // Temperature sensor fields
+  tempF: number;
+  minTempF: number;
+  maxTempF: number;
+  humidity: number;
+  // Door sensor fields
+  doorOpen: boolean;
+  // Common fields
+  batteryPct: number;
+  signalStrength: number;
+}
+
+/**
+ * Build temperature payload for a temperature sensor
+ * Contains only temperature/humidity readings + metadata
+ */
+export function buildTempPayload(
+  state: DeviceSensorState,
+  orgContext?: { org_id?: string | null; site_id?: string | null; unit_id?: string | null }
+): Record<string, unknown> {
+  // Generate random temp within configured range
+  const temp = state.minTempF + Math.random() * (state.maxTempF - state.minTempF);
+  const humidity = state.humidity + (Math.random() - 0.5) * 5;
+  
+  return {
+    temperature: Math.round(temp * 10) / 10,
+    humidity: Math.round(humidity * 10) / 10,
+    battery_level: Math.round(state.batteryPct),
+    signal_strength: Math.round(state.signalStrength),
+    reading_type: 'scheduled',
+    // Multi-tenant context
+    org_id: orgContext?.org_id || null,
+    site_id: orgContext?.site_id || null,
+    unit_id: orgContext?.unit_id || null,
+  };
+}
+
+/**
+ * Build door payload for a door sensor
+ * Contains only door state + metadata
+ */
+export function buildDoorPayload(
+  state: DeviceSensorState,
+  orgContext?: { org_id?: string | null; site_id?: string | null; unit_id?: string | null }
+): Record<string, unknown> {
+  return {
+    door_status: state.doorOpen ? 'open' : 'closed',
+    battery_level: Math.round(state.batteryPct),
+    signal_strength: Math.round(state.signalStrength),
+    // Multi-tenant context
+    org_id: orgContext?.org_id || null,
+    site_id: orgContext?.site_id || null,
+    unit_id: orgContext?.unit_id || null,
+  };
+}
