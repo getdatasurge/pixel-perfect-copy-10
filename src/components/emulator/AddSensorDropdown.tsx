@@ -148,6 +148,12 @@ export default function AddSensorDropdown({
   const grouped = React.useMemo(() => groupByCategory(results), [results]);
 
   const handleSelect = (deviceId: string) => {
+    // Defensive: ensure library is loaded before proceeding
+    if (!isLibraryLoaded()) {
+      console.log('[AddSensorDropdown] Library not loaded, initializing before selection');
+      initializeDeviceLibrary();
+    }
+    
     setSelectedId(deviceId);
     setOpen(false);
     setQuery('');
