@@ -6,7 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Badge } from '@/components/ui/badge';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Thermometer, DoorOpen, Plus, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy, Database, ChevronDown } from 'lucide-react';
+import { Thermometer, DoorOpen, Trash2, Copy, Check, QrCode, RefreshCw, Radio, Cloud, Loader2, Lock, Unlock, MapPin, Box, AlertCircle, RotateCcw, Download, ClipboardCopy, Database, ChevronDown } from 'lucide-react';
 import { LoRaWANDevice, GatewayConfig, WebhookConfig, createDevice, generateEUI, generateAppKey } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
 import { supabase } from '@/integrations/supabase/client';
@@ -14,11 +14,13 @@ import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/comp
 import { cn } from '@/lib/utils';
 import UnitSelect from './UnitSelect';
 import SiteSelect from './SiteSelect';
+import AddSensorDropdown from './AddSensorDropdown';
 import { OrgStateUnit } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { downloadSnapshot, buildSupportSnapshot } from '@/lib/supportSnapshot';
 import { DEVICE_TEMPLATES, normalizeEui, normalizeAppKey } from '@/lib/deviceTemplates';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
+import { getDevice, setDeviceModel, type DeviceCategory } from '@/lib/deviceLibrary';
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
   gateways: GatewayConfig[];
@@ -320,6 +322,48 @@ export default function DeviceManager({
     };
     onDevicesChange([...devices, newDevice]);
     toast({ title: 'Device added', description: `Created ${name}` });
+  };
+
+  // Add device from library selection
+  const addDeviceFromLibrary = (libraryDeviceId: string) => {
+    const libraryDevice = getDevice(libraryDeviceId);
+    if (!libraryDevice) {
+      toast({ title: 'Error', description: 'Device not found in library', variant: 'destructive' });
+      return;
+    }
+    
+    const defaultGateway = gateways[0]?.id || '';
+    
+    // Map library category to emulator type
+    const categoryToType: Record<DeviceCategory, 'temperature' | 'door'> = {
+      'temperature': 'temperature',
+      'door': 'door',
+      'co2': 'temperature',
+      'leak': 'door',
+      'motion': 'door',
+      'air_quality': 'temperature',
+      'gps': 'temperature',
+      'meter': 'temperature',
+      'combo': 'temperature',
+    };
+    
+    const deviceType = categoryToType[libraryDevice.category] || 'temperature';
+    const count = devices.filter(d => d.type === deviceType).length + 1;
+    
+    const newDevice = {
+      ...createDevice(`${libraryDevice.name} ${count}`, deviceType, defaultGateway),
+      credentialSource: 'local_generated' as const,
+      credentialsLockedFromFrostguard: false,
+    };
+    
+    // Assign library model for payload generation
+    setDeviceModel(newDevice.id, libraryDeviceId);
+    
+    onDevicesChange([...devices, newDevice]);
+    toast({ 
+      title: 'Device added', 
+      description: `${libraryDevice.name} (${libraryDevice.manufacturer})` 
+    });
   };
 
   // Track deletion state
@@ -911,26 +955,10 @@ export default function DeviceManager({
             </Tooltip>
           </TooltipProvider>
 
-          <Button 
-            onClick={() => addDevice('temperature')} 
-            disabled={disabled || gateways.length === 0} 
-            size="sm" 
-            variant="outline"
-            className="gap-1"
-          >
-            <Plus className="h-4 w-4" />
-            Add Temp
-          </Button>
-          <Button 
-            onClick={() => addDevice('door')} 
-            disabled={disabled || gateways.length === 0} 
-            size="sm" 
-            variant="outline"
-            className="gap-1"
-          >
-            <Plus className="h-4 w-4" />
-            Add Door
-          </Button>
+          <AddSensorDropdown
+            onAddFromLibrary={addDeviceFromLibrary}
+            disabled={disabled || gateways.length === 0}
+          />
         </div>
       </div>
 
