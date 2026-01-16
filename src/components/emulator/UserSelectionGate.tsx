@@ -12,6 +12,7 @@ import UserSearchDialog, { UserProfile } from './UserSearchDialog';
 import { debug, log, clearDebugContext, setDebugContext } from '@/lib/debugLogger';
 import { buildSupportSnapshot, downloadSnapshot } from '@/lib/supportSnapshot';
 import { setCanonicalConfig, clearCanonicalConfig } from '@/lib/ttnConfigStore';
+import { findDeviceByName, setDeviceModel, isLibraryLoaded, initializeDeviceLibrary, type DeviceCategory } from '@/lib/deviceLibrary';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 
@@ -206,15 +207,58 @@ export default function UserSelectionGate({
         isOnline: g.is_online,
       }));
 
+      // Ensure device library is loaded for name-based matching
+      if (!isLibraryLoaded()) {
+        console.log('[UserSelectionGate] Initializing device library for classification');
+        initializeDeviceLibrary();
+      }
+
+      // Category to emulator type mapping
+      const categoryToType: Record<DeviceCategory, 'temperature' | 'door'> = {
+        'temperature': 'temperature',
+        'door': 'door',
+        'co2': 'temperature',
+        'leak': 'door',         // Leak/distance sensors → door (event-based)
+        'motion': 'door',       // Motion sensors → door (event-based)
+        'air_quality': 'temperature',
+        'gps': 'temperature',
+        'meter': 'temperature',
+        'combo': 'temperature',
+      };
+
       const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => {
         const hasFrostguardCredentials = !!s.join_eui && !!s.app_key;
+        
+        // Try to match device name to library for accurate type classification
+        const libraryDevice = findDeviceByName(s.name);
+        
+        // Determine device type:
+        // 1. If library match found, use library category
+        // 2. Else fall back to FrostGuard type
+        let deviceType: 'temperature' | 'door' = 'temperature';
+        let assignedLibraryId: string | null = null;
+        
+        if (libraryDevice) {
+          deviceType = categoryToType[libraryDevice.category];
+          assignedLibraryId = libraryDevice.id;
+          console.log(`[UserSelectionGate] Matched "${s.name}" → ${libraryDevice.id} (${libraryDevice.category} → ${deviceType})`);
+        } else {
+          // Fall back to FrostGuard type
+          deviceType = s.type === 'door' ? 'door' : 'temperature';
+        }
+        
+        // Persist library assignment for payload generation
+        if (assignedLibraryId) {
+          setDeviceModel(s.id, assignedLibraryId);
+        }
+        
         return {
           id: s.id,
           name: s.name,
           devEui: s.dev_eui,
           joinEui: s.join_eui || '',
           appKey: s.app_key || '',
-          type: s.type === 'door' ? 'door' : 'temperature',
+          type: deviceType,
           gatewayId: s.gateway_id || '',
           siteId: s.site_id,
           unitId: s.unit_id,
