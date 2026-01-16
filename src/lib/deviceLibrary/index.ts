@@ -54,6 +54,7 @@ export {
   getLibraryMetadata,
   findMatchingDevices,
   getRecommendedDevice,
+  findDeviceByName,
 } from './loader';
 
 // Store

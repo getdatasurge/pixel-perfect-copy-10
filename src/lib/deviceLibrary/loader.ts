@@ -232,3 +232,43 @@ export function getRecommendedDevice(sensorKind: 'temp' | 'door' | 'combo'): Dev
   
   return exactMatch || matches[0] || null;
 }
+
+/**
+ * Find a library device by name matching.
+ * Searches device names, model numbers, and manufacturer names.
+ * Returns the best match or null.
+ */
+export function findDeviceByName(name: string): DeviceDefinition | null {
+  if (!libraryIndexes || !activeLibrary) return null;
+  
+  const normalizedName = name.toLowerCase().trim();
+  // Strip trailing numbers (e.g., "LDDS75 1" → "ldds75")
+  const nameWithoutSuffix = normalizedName.replace(/\s*\d+$/, '');
+  
+  // Try exact model match first (e.g., "LDDS75" → "dragino-ldds75")
+  for (const device of activeLibrary.devices) {
+    const modelLower = (device.model || '').toLowerCase();
+    const nameLower = device.name.toLowerCase();
+    
+    // Check if device model/name appears in search term
+    if (modelLower && (nameWithoutSuffix.includes(modelLower) || modelLower.includes(nameWithoutSuffix))) {
+      return device;
+    }
+    // Also check device.name (e.g., "WS301" in "Milesight WS301")
+    if (nameLower.includes(nameWithoutSuffix) || nameWithoutSuffix.includes(nameLower.split(' ').pop() || '')) {
+      return device;
+    }
+  }
+  
+  // Try ID-based match (e.g., "dragino-ldds75" in name)
+  for (const device of activeLibrary.devices) {
+    const idParts = device.id.split('-');
+    for (const part of idParts) {
+      if (part.length > 3 && nameWithoutSuffix.includes(part)) {
+        return device;
+      }
+    }
+  }
+  
+  return null;
+}
