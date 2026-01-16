@@ -24,6 +24,12 @@ export type {
   ValidationError,
   ValidationWarning,
   DeviceModelAssignment,
+  // Simulation types
+  SimulationContext,
+  DeviceSimulationState,
+  GenerationMode,
+  GenerationOptions,
+  GenerationResult,
 } from './types';
 
 // Schema & Validation
@@ -63,6 +69,33 @@ export {
   clearAllModelAssignments,
   initializeDeviceLibrary,
 } from './store';
+
+// Simulation Engine
+export {
+  SeededRandom,
+  generateFields,
+  generateDevicePayload,
+  createInitialSimulationState,
+  verifyDeterminism,
+} from './simulationEngine';
+
+// Device State Store
+export {
+  getDeviceSimState,
+  updateDeviceSimState,
+  resetDeviceSimState,
+  deleteDeviceSimState,
+  incrementFCnt,
+  incrementCounter,
+  getCounterValue,
+  setCounterValue,
+  updateLastValues,
+  getLastValue,
+  getAllDeviceStates,
+  resetAllDeviceStates,
+  clearAllDeviceStates,
+  getStateSummary,
+} from './deviceStateStore';
 
 // Default Library
 export { defaultDeviceLibrary } from './defaultLibrary';
