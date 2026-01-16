@@ -20,7 +20,7 @@ import { log } from '@/lib/debugLogger';
 import { downloadSnapshot, buildSupportSnapshot } from '@/lib/supportSnapshot';
 import { DEVICE_TEMPLATES, normalizeEui, normalizeAppKey } from '@/lib/deviceTemplates';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
-import { getDevice, setDeviceModel, type DeviceCategory } from '@/lib/deviceLibrary';
+import { getDevice, setDeviceModel, isLibraryLoaded, initializeDeviceLibrary, type DeviceCategory } from '@/lib/deviceLibrary';
 interface DeviceManagerProps {
   devices: LoRaWANDevice[];
   gateways: GatewayConfig[];
@@ -326,9 +326,20 @@ export default function DeviceManager({
 
   // Add device from library selection
   const addDeviceFromLibrary = (libraryDeviceId: string) => {
+    // Defensive: ensure library is loaded before lookup
+    if (!isLibraryLoaded()) {
+      console.log('[DeviceManager] Library not loaded, initializing before lookup');
+      initializeDeviceLibrary();
+    }
+    
     const libraryDevice = getDevice(libraryDeviceId);
     if (!libraryDevice) {
-      toast({ title: 'Error', description: 'Device not found in library', variant: 'destructive' });
+      console.error('[DeviceManager] Device not found in library:', libraryDeviceId);
+      toast({ 
+        title: 'Error', 
+        description: `Device "${libraryDeviceId}" not found in library. Try refreshing.`, 
+        variant: 'destructive' 
+      });
       return;
     }
     
