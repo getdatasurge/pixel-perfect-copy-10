@@ -128,6 +128,82 @@ describe('Deterministic Simulation', () => {
     expect(JSON.stringify(result1.fields)).not.toBe(JSON.stringify(result2.fields));
   });
 
+  it('changing orgId changes output', () => {
+    if (defaultDeviceLibrary.devices.length === 0) return;
+    
+    const device = defaultDeviceLibrary.devices[0];
+    
+    const context1: SimulationContext = { ...testContext, orgId: 'org-A' };
+    const context2: SimulationContext = { ...testContext, orgId: 'org-B' };
+    
+    const state1 = createInitialSimulationState(context1.deviceInstanceId, device.id);
+    const state2 = createInitialSimulationState(context2.deviceInstanceId, device.id);
+    state1.emissionSequence = context1.emissionSequence;
+    state2.emissionSequence = context2.emissionSequence;
+    
+    const result1 = generateFields(device.simulation_profile, state1, context1, 'normal');
+    const result2 = generateFields(device.simulation_profile, state2, context2, 'normal');
+    
+    expect(JSON.stringify(result1.fields)).not.toBe(JSON.stringify(result2.fields));
+  });
+
+  it('changing siteId changes output', () => {
+    if (defaultDeviceLibrary.devices.length === 0) return;
+    
+    const device = defaultDeviceLibrary.devices[0];
+    
+    const context1: SimulationContext = { ...testContext, siteId: 'site-A' };
+    const context2: SimulationContext = { ...testContext, siteId: 'site-B' };
+    
+    const state1 = createInitialSimulationState(context1.deviceInstanceId, device.id);
+    const state2 = createInitialSimulationState(context2.deviceInstanceId, device.id);
+    state1.emissionSequence = context1.emissionSequence;
+    state2.emissionSequence = context2.emissionSequence;
+    
+    const result1 = generateFields(device.simulation_profile, state1, context1, 'normal');
+    const result2 = generateFields(device.simulation_profile, state2, context2, 'normal');
+    
+    expect(JSON.stringify(result1.fields)).not.toBe(JSON.stringify(result2.fields));
+  });
+
+  it('changing unitId changes output', () => {
+    if (defaultDeviceLibrary.devices.length === 0) return;
+    
+    const device = defaultDeviceLibrary.devices[0];
+    
+    const context1: SimulationContext = { ...testContext, unitId: 'unit-A' };
+    const context2: SimulationContext = { ...testContext, unitId: 'unit-B' };
+    
+    const state1 = createInitialSimulationState(context1.deviceInstanceId, device.id);
+    const state2 = createInitialSimulationState(context2.deviceInstanceId, device.id);
+    state1.emissionSequence = context1.emissionSequence;
+    state2.emissionSequence = context2.emissionSequence;
+    
+    const result1 = generateFields(device.simulation_profile, state1, context1, 'normal');
+    const result2 = generateFields(device.simulation_profile, state2, context2, 'normal');
+    
+    expect(JSON.stringify(result1.fields)).not.toBe(JSON.stringify(result2.fields));
+  });
+
+  it('changing deviceInstanceId changes output', () => {
+    if (defaultDeviceLibrary.devices.length === 0) return;
+    
+    const device = defaultDeviceLibrary.devices[0];
+    
+    const context1: SimulationContext = { ...testContext, deviceInstanceId: 'device-A' };
+    const context2: SimulationContext = { ...testContext, deviceInstanceId: 'device-B' };
+    
+    const state1 = createInitialSimulationState(context1.deviceInstanceId, device.id);
+    const state2 = createInitialSimulationState(context2.deviceInstanceId, device.id);
+    state1.emissionSequence = context1.emissionSequence;
+    state2.emissionSequence = context2.emissionSequence;
+    
+    const result1 = generateFields(device.simulation_profile, state1, context1, 'normal');
+    const result2 = generateFields(device.simulation_profile, state2, context2, 'normal');
+    
+    expect(JSON.stringify(result1.fields)).not.toBe(JSON.stringify(result2.fields));
+  });
+
   it('maintains determinism across 100 iterations', () => {
     if (defaultDeviceLibrary.devices.length === 0) return;
     
