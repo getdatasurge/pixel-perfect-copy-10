@@ -21,6 +21,7 @@ export interface TTNUplinkPayload {
       timestamp?: number;
     }>;
     f_port: number;
+    f_cnt: number;  // TTN frame counter
     frm_payload: string;
   };
 }
@@ -291,18 +292,27 @@ export function encodePayload(data: Record<string, unknown>): string {
 
 // Build TTN uplink webhook payload
 // Optionally accepts a server timestamp for consistent time sync
+// f_cnt parameter allows passing frame counter from device library simulation
 export function buildTTNPayload(
   device: LoRaWANDevice,
   gateway: GatewayConfig,
   decodedPayload: Record<string, unknown>,
   applicationId: string,
-  serverTimestamp?: string
+  serverTimestamp?: string,
+  f_cnt?: number,
+  f_port?: number
 ): TTNUplinkPayload {
   const signalStrength = decodedPayload.signal_strength as number ?? -65;
   const receivedAt = serverTimestamp || new Date().toISOString();
   const timestampMs = serverTimestamp 
     ? new Date(serverTimestamp).getTime() 
     : Date.now();
+  
+  // Use provided f_port, or default based on device type
+  const port = f_port ?? (device.type === 'temperature' ? 1 : 2);
+  
+  // Use provided f_cnt or generate a random one for backward compatibility
+  const frameCount = f_cnt ?? Math.floor(Math.random() * 65535);
   
   return {
     end_device_ids: {
@@ -326,7 +336,8 @@ export function buildTTNPayload(
           timestamp: timestampMs,
         },
       ],
-      f_port: device.type === 'temperature' ? 1 : 2,
+      f_port: port,
+      f_cnt: frameCount,
       frm_payload: encodePayload(decodedPayload),
     },
   };

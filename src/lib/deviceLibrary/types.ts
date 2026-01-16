@@ -169,3 +169,62 @@ export interface DeviceModelAssignment {
   libraryDeviceId: string;
   assignedAt: string;
 }
+
+// ============================================
+// Simulation Context & State
+// ============================================
+
+/**
+ * Context for deterministic payload generation.
+ * Same context = same output sequence.
+ */
+export interface SimulationContext {
+  orgId: string;
+  siteId: string;
+  unitId: string;
+  deviceInstanceId: string;  // devEui or emulator device id
+  emissionSequence: number;  // 0, 1, 2, ... per device
+}
+
+/**
+ * Per-device simulation state that persists across emissions.
+ */
+export interface DeviceSimulationState {
+  deviceInstanceId: string;
+  libraryDeviceId: string;
+  f_cnt: number;                              // TTN frame counter
+  emissionSequence: number;                   // For deterministic generation
+  incrementCounters: Record<string, number>;  // door_open_count, pulse_count, etc.
+  lastValues: Record<string, unknown>;        // For drift smoothing
+  lastEmittedAt: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/**
+ * Mode for payload generation.
+ */
+export type GenerationMode = 'normal' | 'alarm';
+
+/**
+ * Options for field generation.
+ */
+export interface GenerationOptions {
+  enableDrift?: boolean;      // Gradual changes for temp/humidity
+  driftMaxStep?: number;      // Max change per emission (default: 2.0)
+  alarmOverrides?: Record<string, unknown>;  // From examples.alarm
+}
+
+/**
+ * Result of payload generation.
+ */
+export interface GenerationResult {
+  fields: Record<string, unknown>;
+  updatedState: DeviceSimulationState;
+  metadata: {
+    f_cnt: number;
+    emissionSequence: number;
+    mode: GenerationMode;
+    generatedAt: string;
+  };
+}

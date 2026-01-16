@@ -25,6 +25,9 @@ export interface SensorState {
   // Tracking
   lastSentAt: Date | null;
   isOnline: boolean;
+  // Device Library integration
+  libraryDeviceId?: string;  // Which library device model
+  f_cnt?: number;            // TTN frame counter (synced from deviceStateStore)
 }
 
 // Full emulator state
