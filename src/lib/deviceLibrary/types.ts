@@ -226,5 +226,7 @@ export interface GenerationResult {
     emissionSequence: number;
     mode: GenerationMode;
     generatedAt: string;
+    seed?: number;
+    context?: SimulationContext;
   };
 }

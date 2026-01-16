@@ -7,6 +7,7 @@
 
 import { DeviceDefinition, DeviceSimulationState } from './types';
 import { encodePayload, generateDeviceId, LoRaWANDevice, GatewayConfig } from '../ttn-payload';
+import { debug } from '../debugLogger';
 
 // ============================================
 // Types

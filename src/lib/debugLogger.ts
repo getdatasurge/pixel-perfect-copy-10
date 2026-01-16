@@ -9,6 +9,7 @@ export type DebugCategory =
   | 'ttn-preflight' // TTN preflight checks
   | 'ttn-sync'     // TTN settings push/pull to FrostGuard
   | 'provisioning' // Device/gateway provisioning
+  | 'simulation'   // Device library simulation events
   | 'ui'           // UI state changes, tab switches
   | 'error';       // Errors and exceptions
 
@@ -170,6 +171,7 @@ export const debug = {
   ttnPreflight: (message: string, data?: Record<string, unknown>) => log('ttn-preflight', 'info', message, data),
   ttnSync: (message: string, data?: Record<string, unknown>) => log('ttn-sync', 'info', message, data),
   provisioning: (message: string, data?: Record<string, unknown>) => log('provisioning', 'info', message, data),
+  simulation: (message: string, data?: Record<string, unknown>) => log('simulation', 'info', message, data),
   error: (message: string, data?: Record<string, unknown>) => log('error', 'error', message, data),
   warn: (category: DebugCategory, message: string, data?: Record<string, unknown>) => log(category, 'warn', message, data),
 };

@@ -143,5 +143,16 @@ export {
 export type { DeviceEmissionStatus, EmissionCallback } from './emissionScheduler';
 export { EmissionScheduler, createEmissionScheduler } from './emissionScheduler';
 
+// Test Harness
+export type { TestResult, TestSuiteResult } from './testHarness';
+export {
+  testSchemaValidation,
+  testDeterminism,
+  testBounds,
+  testIncrementPersistence,
+  runTestSuite,
+  runTestsWithOutput,
+} from './testHarness';
+
 // Default Library
 export { defaultDeviceLibrary } from './defaultLibrary';

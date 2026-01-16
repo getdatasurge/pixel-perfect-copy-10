@@ -8,7 +8,8 @@ import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import { 
   ChevronDown, ChevronUp, X, Search, Trash2, Pause, Play, 
   Download, Copy, User, Building2, Hash, Clock, Radio,
-  Network, RefreshCw, AlertTriangle, Bug, Cpu, HelpCircle, FileDown
+  Network, RefreshCw, AlertTriangle, Bug, Cpu, HelpCircle, FileDown,
+  Zap,
 } from 'lucide-react';
 import { 
   DebugEntry, DebugCategory, DebugLevel,
@@ -27,6 +28,7 @@ const CATEGORY_ICONS: Record<DebugCategory, React.ReactNode> = {
   'ttn-preflight': <Radio className="h-3 w-3" />,
   'ttn-sync': <RefreshCw className="h-3 w-3" />,
   'provisioning': <Cpu className="h-3 w-3" />,
+  'simulation': <Zap className="h-3 w-3" />,
   'ui': <Bug className="h-3 w-3" />,
   'error': <AlertTriangle className="h-3 w-3" />,
 };
@@ -46,6 +48,7 @@ const CATEGORY_LABELS: Record<DebugCategory, string> = {
   'ttn-preflight': 'Preflight',
   'ttn-sync': 'TTN Sync',
   'provisioning': 'Provisioning',
+  'simulation': 'Simulation',
   'ui': 'UI',
   'error': 'Errors',
 };
