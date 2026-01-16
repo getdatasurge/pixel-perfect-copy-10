@@ -262,3 +262,28 @@ export function logStateChange(
     timestamp: new Date().toISOString(),
   });
 }
+
+/**
+ * Check if a sensor has a library device assigned
+ */
+export function hasLibraryDevice(state: SensorState): boolean {
+  return !!state.libraryDeviceId;
+}
+
+/**
+ * Get sensors with library device assignments
+ */
+export function getLibraryDeviceSensors(
+  sensors: Record<string, SensorState>
+): SensorState[] {
+  return Object.values(sensors).filter(s => !!s.libraryDeviceId);
+}
+
+/**
+ * Get sensors without library device assignments (legacy)
+ */
+export function getLegacySensors(
+  sensors: Record<string, SensorState>
+): SensorState[] {
+  return Object.values(sensors).filter(s => !s.libraryDeviceId);
+}
