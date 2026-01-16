@@ -123,5 +123,25 @@ export {
   mergeWithExample,
 } from './scenarioComposer';
 
+// Envelope Builder
+export type { 
+  RxMetadata, 
+  TTNEnvelope, 
+  DeviceInstance, 
+  GatewayInstance,
+  SignalOverrides,
+  EnvelopeOptions,
+} from './envelopeBuilder';
+export {
+  generateRxMetadata,
+  buildLibraryEnvelope,
+  buildLegacyEnvelope,
+  getEnvelopeLogData,
+} from './envelopeBuilder';
+
+// Emission Scheduler
+export type { DeviceEmissionStatus, EmissionCallback } from './emissionScheduler';
+export { EmissionScheduler, createEmissionScheduler } from './emissionScheduler';
+
 // Default Library
 export { defaultDeviceLibrary } from './defaultLibrary';
