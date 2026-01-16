@@ -97,5 +97,31 @@ export {
   getStateSummary,
 } from './deviceStateStore';
 
+// Alarm Triggers
+export type { AlarmTrigger, AlarmTriggerId } from './alarmTriggers';
+export {
+  ALARM_TRIGGERS,
+  getAllAlarmTriggers,
+  getAlarmTrigger,
+  getAlarmsForCategory,
+  getAlarmsForCategories,
+  alarmAppliesToCategory,
+  getSeverityColor,
+  getSeverityIconBg,
+} from './alarmTriggers';
+
+// Scenario Composer
+export type { ScenarioType, ScenarioDefinition } from './scenarioComposer';
+export {
+  SCENARIOS,
+  composeScenarioPayload,
+  composeAlarmPayload,
+  getDeviceAlarms,
+  deviceSupportsScenario,
+  getDeviceScenarios,
+  applySignalOverrides,
+  mergeWithExample,
+} from './scenarioComposer';
+
 // Default Library
 export { defaultDeviceLibrary } from './defaultLibrary';
