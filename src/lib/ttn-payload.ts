@@ -433,13 +433,18 @@ export function buildTempPayload(
 /**
  * Build door payload for a door sensor
  * Contains only door state + metadata
+ * 
+ * Includes both door_status (string) and door_open (boolean) for FrostGuard compatibility
  */
 export function buildDoorPayload(
   state: DeviceSensorState,
   orgContext?: { org_id?: string | null; site_id?: string | null; unit_id?: string | null }
 ): Record<string, unknown> {
+  // Use canonical conversion for consistency
+  const isOpen = state.doorOpen;
   return {
-    door_status: state.doorOpen ? 'open' : 'closed',
+    door_status: isOpen ? 'open' : 'closed',
+    door_open: isOpen, // Boolean for FrostGuard compatibility
     battery_level: Math.round(state.batteryPct),
     signal_strength: Math.round(state.signalStrength),
     // Multi-tenant context
