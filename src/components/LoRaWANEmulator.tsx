@@ -1331,8 +1331,15 @@ export default function LoRaWANEmulator() {
   const toggleDoor = useCallback(() => {
     const newStatus = !doorState.doorOpen;
     setDoorState(prev => ({ ...prev, doorOpen: newStatus }));
-    sendDoorEvent(newStatus ? 'open' : 'closed');
-  }, [doorState.doorOpen, sendDoorEvent]);
+    
+    // Update all selected door sensors' state and trigger uplinks via unified system
+    doorCompatibleIds.forEach(deviceId => {
+      // Update sensor state with new door status
+      updateSensorState(deviceId, { doorOpen: newStatus });
+      // Send uplink through unified per-device system (produces DEVICE_UPLINK log)
+      sendDeviceUplink(deviceId);
+    });
+  }, [doorState.doorOpen, doorCompatibleIds, updateSensorState, sendDeviceUplink]);
 
   // Preflight check: validate TTN configuration and API key permissions before starting
   const runPreflightCheck = useCallback(async (): Promise<{ ok: boolean; error?: string; hint?: string }> => {
@@ -2120,13 +2127,7 @@ export default function LoRaWANEmulator() {
                         </div>
                         <Button
                           variant={doorState.doorOpen ? 'destructive' : 'outline'}
-                          onClick={() => {
-                            toggleDoor();
-                            // Update selected door sensors
-                            if (doorCompatibleIds.length > 0) {
-                              updateMultipleSensors(doorCompatibleIds, { doorOpen: !doorState.doorOpen });
-                            }
-                          }}
+                          onClick={toggleDoor}
                           className="gap-2"
                         >
                           {doorState.doorOpen ? <DoorOpen className="h-4 w-4" /> : <DoorClosed className="h-4 w-4" />}
