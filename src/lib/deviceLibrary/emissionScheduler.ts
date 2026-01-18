@@ -17,6 +17,7 @@ export interface DeviceEmissionStatus {
   isRunning: boolean;
   intervalMs: number;
   lastEmittedAt: string | null;
+  nextFireAt: string | null; // Added for drift correction visibility
   emissionCount: number;
   errors: number;
   startedAt: string | null;
@@ -28,12 +29,13 @@ export interface DeviceEmissionStatus {
 export type EmissionCallback = (deviceId: string) => void | Promise<void>;
 
 /**
- * Device interval entry
+ * Device interval entry - using setTimeout for drift correction
  */
 interface IntervalEntry {
-  interval: ReturnType<typeof setInterval>;
+  timeout: ReturnType<typeof setTimeout>;
   callback: EmissionCallback;
   intervalMs: number;
+  nextFireAt: number; // Epoch ms for drift correction
 }
 
 // ============================================
@@ -58,7 +60,8 @@ export class EmissionScheduler {
   }
 
   /**
-   * Start emission for a single device
+   * Start emission for a single device with drift-corrected scheduling
+   * Uses chained setTimeout instead of setInterval to prevent timing drift
    */
   startDevice(
     deviceId: string,
@@ -66,11 +69,15 @@ export class EmissionScheduler {
     callback: EmissionCallback,
     options?: { emitImmediately?: boolean }
   ): void {
-    // Stop existing interval if any
+    // Stop existing timer if any
     this.stopDevice(deviceId);
 
     const intervalMs = intervalSec * 1000;
-    const now = new Date().toISOString();
+    const now = Date.now();
+    const nowIso = new Date(now).toISOString();
+
+    // Calculate first fire time
+    let nextFireAt = now + intervalMs;
 
     // Initialize or reset status
     const existingStatus = this.status.get(deviceId);
@@ -79,33 +86,71 @@ export class EmissionScheduler {
       isRunning: true,
       intervalMs,
       lastEmittedAt: existingStatus?.lastEmittedAt || null,
+      nextFireAt: new Date(nextFireAt).toISOString(),
       emissionCount: existingStatus?.emissionCount || 0,
       errors: existingStatus?.errors || 0,
-      startedAt: now,
+      startedAt: nowIso,
     });
 
-    // Create interval
-    const interval = setInterval(async () => {
-      try {
-        await callback(deviceId);
-        this.recordEmission(deviceId);
-      } catch (error) {
-        this.recordError(deviceId);
-        console.error(`[EmissionScheduler] Error emitting for ${deviceId}:`, error);
-      }
-    }, intervalMs);
+    // Drift-corrected scheduling using chained setTimeout
+    const scheduleNext = () => {
+      const currentTime = Date.now();
+      const delay = Math.max(0, nextFireAt - currentTime);
 
-    // Store interval entry
-    this.intervals.set(deviceId, {
-      interval,
-      callback,
-      intervalMs,
-    });
+      const timeout = setTimeout(async () => {
+        // Check if still running (might have been stopped)
+        if (!this.intervals.has(deviceId)) return;
 
-    // Emit immediately if requested
+        try {
+          await callback(deviceId);
+          this.recordEmission(deviceId);
+        } catch (error) {
+          this.recordError(deviceId);
+          console.error(`[EmissionScheduler] Error emitting for ${deviceId}:`, error);
+        }
+
+        // Schedule next tick based on EXPECTED time (drift correction)
+        nextFireAt += intervalMs;
+
+        // If we're behind (e.g., tab was backgrounded), catch up but don't spam
+        const currentNow = Date.now();
+        if (nextFireAt < currentNow) {
+          console.log(`[EmissionScheduler] Drift detected for ${deviceId}, resyncing`);
+          nextFireAt = currentNow + intervalMs;
+        }
+
+        // Update status with next fire time
+        const status = this.status.get(deviceId);
+        if (status) {
+          this.status.set(deviceId, {
+            ...status,
+            nextFireAt: new Date(nextFireAt).toISOString(),
+          });
+        }
+
+        // Store updated entry and schedule next
+        this.intervals.set(deviceId, {
+          timeout,
+          callback,
+          intervalMs,
+          nextFireAt,
+        });
+
+        scheduleNext();
+      }, delay);
+
+      // Store initial entry
+      this.intervals.set(deviceId, {
+        timeout,
+        callback,
+        intervalMs,
+        nextFireAt,
+      });
+    };
+
+    // Emit immediately if requested, then start scheduling
     if (options?.emitImmediately) {
-      // Use setTimeout(0) to make it async and avoid blocking
-      setTimeout(async () => {
+      (async () => {
         try {
           await callback(deviceId);
           this.recordEmission(deviceId);
@@ -113,10 +158,13 @@ export class EmissionScheduler {
           this.recordError(deviceId);
           console.error(`[EmissionScheduler] Error on immediate emit for ${deviceId}:`, error);
         }
-      }, 0);
+        scheduleNext();
+      })();
+    } else {
+      scheduleNext();
     }
 
-    console.log(`[EmissionScheduler] Started device ${deviceId} with ${intervalSec}s interval`);
+    console.log(`[EmissionScheduler] Started device ${deviceId} with ${intervalSec}s interval (drift-corrected)`);
   }
 
   /**
@@ -125,7 +173,7 @@ export class EmissionScheduler {
   stopDevice(deviceId: string): void {
     const entry = this.intervals.get(deviceId);
     if (entry) {
-      clearInterval(entry.interval);
+      clearTimeout(entry.timeout);
       this.intervals.delete(deviceId);
     }
 
@@ -134,6 +182,7 @@ export class EmissionScheduler {
       this.status.set(deviceId, {
         ...status,
         isRunning: false,
+        nextFireAt: null,
       });
     }
 
@@ -145,19 +194,20 @@ export class EmissionScheduler {
    */
   stopAll(): void {
     const deviceIds = Array.from(this.intervals.keys());
-    
+
     for (const [deviceId, entry] of this.intervals) {
-      clearInterval(entry.interval);
-      
+      clearTimeout(entry.timeout);
+
       const status = this.status.get(deviceId);
       if (status) {
         this.status.set(deviceId, {
           ...status,
           isRunning: false,
+          nextFireAt: null,
         });
       }
     }
-    
+
     this.intervals.clear();
     console.log(`[EmissionScheduler] Stopped all devices: ${deviceIds.join(', ')}`);
   }

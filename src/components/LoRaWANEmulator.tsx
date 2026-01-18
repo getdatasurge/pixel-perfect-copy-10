@@ -50,6 +50,7 @@ import { updateServerOffset, getServerTime, getServerTimeISO } from '@/lib/serve
 import { getCanonicalConfig, setCanonicalConfig, isConfigStale, hasCanonicalConfig, isLocalDirty, canAcceptCanonicalUpdate, clearLocalDirty, logConfigSnapshot } from '@/lib/ttnConfigStore';
 import { acquireEmulatorLock, releaseEmulatorLock, sendEmulatorHeartbeat, releaseEmulatorLockBeacon, LockInfo } from '@/lib/emulatorLock';
 import CreateUnitModal from './emulator/CreateUnitModal';
+import EmulatorDiagnosticsPanel from './emulator/EmulatorDiagnosticsPanel';
 import { 
   SensorState, 
   initializeSensorState, 
@@ -60,6 +61,8 @@ import {
   getDoorCompatibleSensors,
   logStateChange
 } from '@/lib/emulatorSensorState';
+import { toCanonicalDoor, generateDoorTraceId, logDoorTrace } from '@/lib/doorStateCanonical';
+import { EmissionScheduler, createEmissionScheduler } from '@/lib/deviceLibrary/emissionScheduler';
 
 interface LogEntry {
   id: string;
@@ -139,7 +142,10 @@ export default function LoRaWANEmulator() {
     return new Set();
   });
   
-  // Per-device interval refs for independent uplink scheduling
+  // Emission scheduler for drift-corrected per-device scheduling
+  const schedulerRef = useRef<EmissionScheduler | null>(null);
+  
+  // Per-device interval refs for independent uplink scheduling (deprecated, kept for cleanup)
   const deviceIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
   const heartbeatIntervalRef = useRef<NodeJS.Timeout | null>(null);
   
@@ -1328,18 +1334,189 @@ export default function LoRaWANEmulator() {
     sendDoorEventRef.current = sendDoorEvent;
   }, [sendDoorEvent]);
 
+  /**
+   * Send uplink for a door sensor with EXPLICIT door state
+   * This bypasses the React state closure issue by accepting state as parameter
+   */
+  const sendDoorUplinkWithState = useCallback(async (
+    deviceId: string,
+    doorOpen: boolean,
+    traceId: string
+  ) => {
+    const device = devices.find(d => d.id === deviceId);
+    if (!device || device.type !== 'door') return;
+
+    const sensorState = sensorStates[deviceId];
+    if (!sensorState) return;
+
+    const gateway = getActiveGateway(device);
+    if (!gateway) {
+      addLog('error', `❌ No online gateway for ${device.name}`);
+      return;
+    }
+
+    // Use canonical conversion for consistency
+    const canonical = toCanonicalDoor(doorOpen);
+    const requestId = crypto.randomUUID().slice(0, 8);
+
+    // Build payload with EXPLICIT door state (not from sensorState)
+    const orgContext = {
+      org_id: webhookConfig.testOrgId || null,
+      site_id: webhookConfig.testSiteId || null,
+      unit_id: webhookConfig.testUnitId || device.name,
+    };
+
+    const payload: Record<string, unknown> = {
+      door_status: canonical.door_status,
+      door_open: canonical.door_open,
+      battery_level: Math.round(sensorState.batteryPct),
+      signal_strength: Math.round(sensorState.signalStrength),
+      org_id: orgContext.org_id,
+      site_id: orgContext.site_id,
+      unit_id: orgContext.unit_id,
+    };
+
+    const fPort = 2;
+    const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
+    const ttnDeviceId = `sensor-${normalizedDevEui}`;
+
+    // TRACE LOG: proves truth source matches payload
+    logDoorTrace(traceId, device.id, device.devEui, doorOpen, payload);
+
+    // Debug log per-device uplink
+    console.log('[DEVICE_UPLINK]', {
+      deviceId: device.id,
+      deviceName: device.name,
+      ttn_device_id: ttnDeviceId,
+      kind: device.type,
+      payloadPreview: JSON.stringify(payload).slice(0, 100),
+      request_id: requestId,
+      trace_id: traceId,
+      fPort,
+      timestamp: new Date().toISOString(),
+    });
+
+    let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
+      deviceId: device.id,
+      deviceType: device.type,
+      ttnStatus: 'skipped',
+      webhookStatus: 'pending',
+      dbStatus: 'pending',
+      orgApplied: !!webhookConfig.testOrgId,
+    };
+
+    try {
+      const ttnConfig = webhookConfig.ttnConfig;
+
+      // Route through TTN if enabled
+      if (ttnConfig?.enabled && ttnConfig.applicationId) {
+        log('ttn-preflight', 'info', 'DOOR_UPLINK_TTN_SIMULATE', {
+          deviceId: ttnDeviceId,
+          devEui: device.devEui,
+          kind: device.type,
+          applicationId: ttnConfig.applicationId,
+          fPort,
+          request_id: requestId,
+          trace_id: traceId,
+        });
+
+        const { data, error } = await supabase.functions.invoke('ttn-simulate', {
+          body: {
+            org_id: webhookConfig.testOrgId,
+            selected_user_id: webhookConfig.selectedUserId,
+            applicationId: ttnConfig.applicationId,
+            deviceId: ttnDeviceId,
+            decodedPayload: payload,
+            fPort,
+          },
+        });
+
+        if (error) throw error;
+        if (data && !data.success) {
+          throw new Error(data.error || 'TTN simulate error');
+        }
+
+        if (data?.server_timestamp) {
+          updateServerOffset(data.server_timestamp);
+        }
+
+        testResult.ttnStatus = 'success';
+        testResult.webhookStatus = 'pending';
+        testResult.dbStatus = 'pending';
+        testResult.uplinkPath = 'ttn-simulate';
+
+        addLog('info', `DOOR_UPLINK | ${device.name} | ${canonical.label} | trace=${traceId}`);
+      }
+      // External webhook
+      else if (webhookConfig.enabled && webhookConfig.targetUrl) {
+        testResult.uplinkPath = 'external-webhook';
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        const response = await fetch(webhookConfig.targetUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          credentials: 'omit',
+          body: JSON.stringify(ttnPayload),
+        });
+
+        if (!response.ok) throw new Error(`Webhook returned ${response.status}`);
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
+        addLog('info', `DOOR_UPLINK | ${device.name} | ${canonical.label} | trace=${traceId}`);
+      }
+      // Local webhook
+      else {
+        testResult.uplinkPath = 'local-webhook';
+        const ttnPayload = buildTTNPayload(device, gateway, payload, webhookConfig.applicationId);
+        const { error } = await supabase.functions.invoke('ttn-webhook', {
+          body: ttnPayload,
+        });
+        if (error) throw error;
+        testResult.webhookStatus = 'success';
+        testResult.dbStatus = 'inserted';
+        addLog('info', `DOOR_UPLINK | ${device.name} | ${canonical.label} | trace=${traceId}`);
+      }
+
+      // Update sensor state with lastSentAt
+      updateSensorState(deviceId, { lastSentAt: new Date(), isOnline: true, doorOpen });
+      addLog('door', `🚪 ${device.name}: Door ${canonical.door_status} (trace: ${traceId})`);
+      setReadingCount(prev => prev + 1);
+    } catch (err: any) {
+      testResult.webhookStatus = 'failed';
+      testResult.dbStatus = 'failed';
+      testResult.error = err.message;
+      addLog('error', `❌ ${device.name} uplink failed: ${err.message}`);
+    }
+
+    addTestResult(testResult);
+  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway]);
+
+  /**
+   * Toggle door state for all selected door sensors
+   * Uses explicit state passing to prevent race conditions
+   */
   const toggleDoor = useCallback(() => {
     const newStatus = !doorState.doorOpen;
+    const traceId = generateDoorTraceId();
+    
+    console.log('[DOOR_TOGGLE]', {
+      trace_id: traceId,
+      from: doorState.doorOpen ? 'open' : 'closed',
+      to: newStatus ? 'open' : 'closed',
+      affectedDevices: doorCompatibleIds,
+    });
+    
     setDoorState(prev => ({ ...prev, doorOpen: newStatus }));
     
-    // Update all selected door sensors' state and trigger uplinks via unified system
+    // Update all selected door sensors' state (for UI sync)
     doorCompatibleIds.forEach(deviceId => {
-      // Update sensor state with new door status
       updateSensorState(deviceId, { doorOpen: newStatus });
-      // Send uplink through unified per-device system (produces DEVICE_UPLINK log)
-      sendDeviceUplink(deviceId);
     });
-  }, [doorState.doorOpen, doorCompatibleIds, updateSensorState, sendDeviceUplink]);
+    
+    // Send uplinks with EXPLICIT state (bypasses stale closure issue)
+    doorCompatibleIds.forEach(deviceId => {
+      sendDoorUplinkWithState(deviceId, newStatus, traceId);
+    });
+  }, [doorState.doorOpen, doorCompatibleIds, updateSensorState, sendDoorUplinkWithState]);
 
   // Preflight check: validate TTN configuration and API key permissions before starting
   const runPreflightCheck = useCallback(async (): Promise<{ ok: boolean; error?: string; hint?: string }> => {
@@ -1520,8 +1697,8 @@ export default function LoRaWANEmulator() {
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
-    // Per-device scheduling: Each device gets its own independent interval
-    console.log('[EMULATOR_SCHEDULE] Per-device intervals:', {
+    // Per-device scheduling using EmissionScheduler for drift-corrected timing
+    console.log('[EMULATOR_SCHEDULE] Initializing drift-corrected scheduler:', {
       deviceCount: devices.length,
       devices: devices.map(d => ({
         id: d.id,
@@ -1531,35 +1708,43 @@ export default function LoRaWANEmulator() {
       })),
     });
 
-    // Send initial uplink for each device and set up per-device intervals
+    // Create scheduler if needed
+    if (!schedulerRef.current) {
+      schedulerRef.current = createEmissionScheduler();
+    }
+    const scheduler = schedulerRef.current;
+
+    // Register each device with the scheduler
     for (const device of devices) {
       const sensorState = sensorStates[device.id];
       if (!sensorState) continue;
 
-      // Send initial uplink immediately
-      sendDeviceUplink(device.id);
+      scheduler.startDevice(
+        device.id,
+        sensorState.intervalSec,
+        (deviceId) => {
+          console.log('[SCHEDULER_TICK]', {
+            deviceId,
+            deviceName: device.name,
+            kind: device.type,
+            timestamp: new Date().toISOString(),
+          });
+          sendDeviceUplinkRef.current(deviceId);
+        },
+        { emitImmediately: true }
+      );
 
-      // Set up per-device interval
-      const intervalMs = sensorState.intervalSec * 1000;
-      const interval = setInterval(() => {
-        console.log('[INTERVAL_TICK]', { 
-          deviceId: device.id, 
-          deviceName: device.name,
-          kind: device.type,
-        });
-        sendDeviceUplinkRef.current(device.id);
-      }, intervalMs);
-
-      deviceIntervalsRef.current.set(device.id, interval);
-
-      addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s`);
+      addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s (drift-corrected)`);
     }
   }, [devices, sensorStates, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
   const stopEmulation = useCallback(async () => {
     setIsRunning(false);
     
-    // Clear per-device intervals
+    // Stop the scheduler
+    schedulerRef.current?.stopAll();
+    
+    // Clear legacy per-device intervals (deprecated, kept for cleanup)
     deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
     deviceIntervalsRef.current.clear();
     
@@ -1597,7 +1782,9 @@ export default function LoRaWANEmulator() {
 
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
-      // Clear per-device intervals
+      // Stop the scheduler
+      schedulerRef.current?.stopAll();
+      // Clear legacy per-device intervals
       deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
       deviceIntervalsRef.current.clear();
       // Clear legacy intervals
@@ -1615,7 +1802,9 @@ export default function LoRaWANEmulator() {
       if (event.data.type === 'EMULATOR_STARTED' && isRunning) {
         // Another tab started - stop this one
         setIsRunning(false);
-        // Clear per-device intervals
+        // Stop the scheduler
+        schedulerRef.current?.stopAll();
+        // Clear legacy per-device intervals
         deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
         deviceIntervalsRef.current.clear();
         // Clear legacy intervals
