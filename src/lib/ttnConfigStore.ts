@@ -25,7 +25,7 @@ const STORAGE_KEY = 'ttn-config-canonical';
 // Default empty config
 const EMPTY_CONFIG: TTNCanonicalConfig = {
   enabled: false,
-  cluster: 'eu1',
+  cluster: 'nam1',
   applicationId: '',
   apiKeyLast4: null,
   webhookSecretLast4: null,

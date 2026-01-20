@@ -257,7 +257,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   
   // Local form state for TTN settings
   const [ttnEnabled, setTtnEnabled] = useState(false);
-  const [ttnCluster, setTtnCluster] = useState<string>('eu1');
+  const [ttnCluster, setTtnCluster] = useState<string>('nam1');
   const [ttnApplicationId, setTtnApplicationId] = useState('');
   const [ttnApiKey, setTtnApiKey] = useState('');
   const [ttnWebhookSecret, setTtnWebhookSecret] = useState('');
@@ -596,7 +596,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const ttnConfig: TTNConfig = config.ttnConfig || {
     enabled: false,
     applicationId: '',
-    cluster: 'eu1',
+    cluster: 'nam1',
   };
 
   // Load gateway-specific settings from ttn_settings (source of truth for gateway config)
@@ -847,7 +847,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       
       // Determine cluster source
       const clusterSource: TTNConfigSource = rawUserTTN?.cluster ? 'user' : (rawOrgSettings?.cluster ? 'org' : 'not_set');
-      const effectiveCluster = (rawUserTTN?.cluster as string) || rawOrgSettings?.cluster || 'eu1';
+      const effectiveCluster = (rawUserTTN?.cluster as string) || rawOrgSettings?.cluster || 'nam1';
       
       // Determine app ID source
       const appIdSource: TTNConfigSource = rawUserTTN?.application_id ? 'user' : (rawOrgSettings?.application_id ? 'org' : 'not_set');

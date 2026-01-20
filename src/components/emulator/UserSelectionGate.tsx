@@ -320,7 +320,7 @@ export default function UserSelectionGate({
       const ttnConfig = orgState.ttn ? {
         enabled: orgState.ttn.enabled || false,
         applicationId: orgState.ttn.application_id || '',
-        cluster: orgState.ttn.cluster || 'eu1',
+        cluster: orgState.ttn.cluster || 'nam1',
         api_key_last4: orgState.ttn.api_key_last4 || null,
         webhook_secret_last4: orgState.ttn.webhook_secret_last4 || null,
         // Gateway owner config (new fields)

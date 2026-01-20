@@ -1081,7 +1081,7 @@ async function handleDiscoverGatewayOwner(
     }, 200, requestId);
   }
 
-  const ttnCluster = cluster || 'eu1';
+  const ttnCluster = cluster || 'nam1';
   const result = await discoverGatewayOwnerInternal(apiKey, ttnCluster, requestId);
 
   return buildResponse({
@@ -1109,7 +1109,7 @@ async function handleCheckGatewayPermissions(
   // Load settings including gateway owner config AND gateway-specific API key
   let gatewayApiKey: string | null = null;
   let appApiKey: string | null = null;
-  let ttnCluster = cluster || 'eu1';
+  let ttnCluster = cluster || 'nam1';
   let gatewayOwnerType: 'user' | 'organization' = 'user';
   let gatewayOwnerId: string | null = null;
 
@@ -1122,7 +1122,7 @@ async function handleCheckGatewayPermissions(
 
     gatewayApiKey = data?.gateway_api_key || null;
     appApiKey = data?.api_key || null;
-    ttnCluster = cluster || data?.cluster || 'eu1';
+    ttnCluster = cluster || data?.cluster || 'nam1';
     gatewayOwnerType = data?.gateway_owner_type || 'user';
     gatewayOwnerId = data?.gateway_owner_id || null;
   }
