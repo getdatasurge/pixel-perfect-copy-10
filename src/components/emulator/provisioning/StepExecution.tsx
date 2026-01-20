@@ -78,7 +78,7 @@ export default function StepExecution({
   const items = isGatewayMode ? gateways : devices;
   const entityLabel = isGatewayMode ? 'gateway' : 'device';
   const entityLabelPlural = isGatewayMode ? 'gateways' : 'devices';
-  const cluster = ttnConfig?.cluster || 'eu1';
+  const cluster = ttnConfig?.cluster || 'nam1';
 
   // Validate gateway permissions before provisioning
   const validateGatewayPermissions = async (): Promise<boolean> => {

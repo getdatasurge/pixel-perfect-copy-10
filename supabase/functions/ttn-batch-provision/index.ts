@@ -175,7 +175,7 @@ Deno.serve(async (req) => {
 
     // Get API key from settings or environment
     const apiKey = ttnSettings?.api_key || Deno.env.get('TTN_API_KEY');
-    const cluster = ttnSettings?.cluster || 'eu1';
+    const cluster = ttnSettings?.cluster || 'nam1';
     const applicationId = ttnSettings?.application_id;
 
     console.log(`[${requestId}] PROVISIONING_TARGET`, {

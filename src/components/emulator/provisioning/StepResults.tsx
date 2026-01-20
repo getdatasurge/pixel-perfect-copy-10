@@ -63,7 +63,7 @@ export default function StepResults({
   summary,
   onRetryFailed,
   mode = 'devices',
-  cluster = 'eu1',
+  cluster = 'nam1',
   onOpenSettings,
 }: StepResultsProps) {
   const [expandedErrors, setExpandedErrors] = useState<string[]>([]);

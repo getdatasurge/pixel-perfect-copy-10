@@ -433,7 +433,7 @@ Deno.serve(async (req) => {
     }
 
     // Use user's cluster if available, otherwise org's
-    const cluster = userSettings?.cluster || ttnSettings?.cluster || 'eu1';
+    const cluster = userSettings?.cluster || ttnSettings?.cluster || 'nam1';
     
     // For gateway operations, prefer gateway_api_key (Personal/Org key with gateway rights)
     // Fall back to api_key (Application key) only if gateway_api_key not set
