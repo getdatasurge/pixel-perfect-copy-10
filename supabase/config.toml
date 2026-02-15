@@ -59,6 +59,11 @@ verify_jwt = false
 
 [functions.ttn-delete-device]
 verify_jwt = false
-
 [functions.frostguard-delete-device]
+verify_jwt = false
+
+[functions.export-sync]
+verify_jwt = false
+
+[functions.export-readings]
 verify_jwt = false

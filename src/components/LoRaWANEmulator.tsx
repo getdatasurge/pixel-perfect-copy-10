@@ -13,7 +13,7 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { 
   Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, 
   Radio, Settings, Activity, FileText, Webhook, FlaskConical,
-  ClipboardList, Info, AlertTriangle
+  ClipboardList, Info, AlertTriangle, Upload
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -31,6 +31,7 @@ import TTNProvisioningWizard from './emulator/TTNProvisioningWizard';
 import UserSelectionGate, { STORAGE_KEY_USER_CONTEXT } from './emulator/UserSelectionGate';
 import UserContextBar from './emulator/UserContextBar';
 import DebugTerminal from './emulator/DebugTerminal';
+import ExportPanel from './emulator/ExportPanel';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -2089,7 +2090,7 @@ export default function LoRaWANEmulator() {
           />
 
           <Tabs defaultValue="sensors" className="w-full">
-            <TabsList className="grid w-full grid-cols-7 mb-6">
+            <TabsList className="grid w-full grid-cols-8 mb-6">
               <TabsTrigger value="sensors" className="gap-2">
                 <Thermometer className="h-4 w-4" />
                 <span className="hidden sm:inline">Sensors</span>
@@ -2113,6 +2114,10 @@ export default function LoRaWANEmulator() {
               <TabsTrigger value="monitor" className="gap-2">
                 <Activity className="h-4 w-4" />
                 <span className="hidden sm:inline">Monitor</span>
+              </TabsTrigger>
+              <TabsTrigger value="export" className="gap-2">
+                <Upload className="h-4 w-4" />
+                <span className="hidden sm:inline">Export</span>
               </TabsTrigger>
               <TabsTrigger value="logs" className="gap-2">
                 <FileText className="h-4 w-4" />
@@ -2595,6 +2600,16 @@ export default function LoRaWANEmulator() {
                 Set an Org ID in the Testing tab to see database values. Door and temperature events sent through TTN or the local webhook will update both views.
               </AlertDescription>
             </Alert>
+          </TabsContent>
+
+          {/* Export Tab */}
+          <TabsContent value="export">
+            <ExportPanel
+              devices={devices}
+              gateways={gateways}
+              sensorStates={sensorStates}
+              webhookConfig={webhookConfig}
+            />
           </TabsContent>
 
           {/* Logs Tab */}
