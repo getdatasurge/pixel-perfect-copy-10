@@ -7,6 +7,13 @@ import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Upload, RefreshCw, CheckCircle, XCircle, AlertTriangle,
   Loader2, Clock, Wifi, WifiOff, Send, ArrowUpFromLine,
 } from 'lucide-react';
@@ -20,7 +27,10 @@ import {
   ExportReadingsResult,
 } from '@/lib/freshtrackExport';
 import { loadExportConfig, saveExportConfig, ExportConfig } from '@/lib/exportConfigStore';
+import { getEffectiveConfig } from '@/lib/freshtrackConnectionStore';
 import { toast } from '@/hooks/use-toast';
+import ExportConnectionSettings from './ExportConnectionSettings';
+import OrgStateViewer from './OrgStateViewer';
 
 interface ExportPanelProps {
   devices: LoRaWANDevice[];
@@ -37,6 +47,19 @@ interface LogEntry {
   status: 'success' | 'warning' | 'error';
 }
 
+interface ReadingFeedEntry {
+  id: string;
+  timestamp: Date;
+  unitId: string;
+  deviceName?: string;
+  temperature?: number;
+  humidity?: number;
+  doorOpen?: boolean;
+  battery?: number;
+  signal?: number;
+  status: 'sent' | 'failed';
+}
+
 export default function ExportPanel({ devices, gateways, sensorStates, webhookConfig }: ExportPanelProps) {
   const [config, setConfig] = useState<ExportConfig>(loadExportConfig);
   const [connectionStatus, setConnectionStatus] = useState<'unknown' | 'testing' | 'connected' | 'failed'>('unknown');
@@ -44,11 +67,14 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSendingReadings, setIsSendingReadings] = useState(false);
   const [exportLog, setExportLog] = useState<LogEntry[]>([]);
+  const [readingsFeed, setReadingsFeed] = useState<ReadingFeedEntry[]>([]);
   const [nextSyncIn, setNextSyncIn] = useState<number | null>(null);
   const autoSyncRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
-  const orgId = webhookConfig.testOrgId;
+  // Resolve org ID: prefer connection settings over webhook config
+  const connectionConfig = getEffectiveConfig();
+  const effectiveOrgId = connectionConfig.freshtrackOrgId || webhookConfig.testOrgId;
 
   // Persist config changes
   useEffect(() => {
@@ -65,36 +91,60 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
     }, ...prev].slice(0, 50));
   }, []);
 
+  const addReadingsFeed = useCallback((devicesList: LoRaWANDevice[], states: Record<string, SensorState>) => {
+    const entries: ReadingFeedEntry[] = devicesList
+      .filter(dev => dev.unitId)
+      .map(dev => {
+        const state = states[dev.id];
+        if (!state) return null;
+        return {
+          id: crypto.randomUUID(),
+          timestamp: new Date(),
+          unitId: dev.unitId!,
+          deviceName: dev.name,
+          temperature: state.type === 'temperature' ? state.tempF : undefined,
+          humidity: state.type === 'temperature' ? Math.round(state.humidity) : undefined,
+          doorOpen: state.type === 'door' ? state.doorOpen : undefined,
+          battery: Math.round(state.batteryPct),
+          signal: Math.round(state.signalStrength),
+          status: 'sent' as const,
+        };
+      })
+      .filter(Boolean) as ReadingFeedEntry[];
+
+    setReadingsFeed(prev => [...entries, ...prev].slice(0, 200));
+  }, []);
+
   // Test connection
   const handleTestConnection = useCallback(async () => {
-    if (!orgId) {
-      toast({ title: 'No Org Selected', description: 'Set Organization ID in Testing tab first.', variant: 'destructive' });
+    if (!effectiveOrgId) {
+      toast({ title: 'No Org Selected', description: 'Set Organization ID in Export Settings or Testing tab.', variant: 'destructive' });
       return;
     }
     setConnectionStatus('testing');
-    const result = await testFreshTrackConnection(orgId);
+    const result = await testFreshTrackConnection(effectiveOrgId);
     if (result.ok) {
       setConnectionStatus('connected');
       setConnectionInfo({ orgName: result.orgName, syncVersion: result.syncVersion });
-      addLog('connection', `Connected to FreshTrack: ${result.orgName || orgId.slice(0, 8)}`, 'success');
+      addLog('connection', `Connected to FreshTrack: ${result.orgName || effectiveOrgId.slice(0, 8)}`, 'success');
     } else {
       setConnectionStatus('failed');
       addLog('connection', `Connection failed: ${result.error}`, 'error');
       toast({ title: 'Connection Failed', description: result.hint || result.error, variant: 'destructive' });
     }
-  }, [orgId, addLog]);
+  }, [effectiveOrgId, addLog]);
 
   // Auto-test on mount if org is set
   useEffect(() => {
-    if (orgId && connectionStatus === 'unknown') {
+    if (effectiveOrgId && connectionStatus === 'unknown') {
       handleTestConnection();
     }
-  }, [orgId]);
+  }, [effectiveOrgId]);
 
   // Sync devices
   const handleSyncDevices = useCallback(async () => {
     setIsSyncing(true);
-    const result: ExportSyncResult = await syncDevicesToFreshTrack(devices, gateways, sensorStates, webhookConfig);
+    const result: ExportSyncResult = await syncDevicesToFreshTrack(devices, gateways, sensorStates, webhookConfig, effectiveOrgId);
 
     if (result.success) {
       setConfig(prev => ({
@@ -118,12 +168,12 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       toast({ title: 'Sync Failed', description: errorMsg, variant: 'destructive' });
     }
     setIsSyncing(false);
-  }, [devices, gateways, sensorStates, webhookConfig, addLog]);
+  }, [devices, gateways, sensorStates, webhookConfig, effectiveOrgId, addLog]);
 
   // Send readings
   const handleSendReadings = useCallback(async () => {
     setIsSendingReadings(true);
-    const result: ExportReadingsResult = await sendReadingsToFreshTrack(devices, sensorStates, webhookConfig);
+    const result: ExportReadingsResult = await sendReadingsToFreshTrack(devices, sensorStates, webhookConfig, effectiveOrgId);
 
     if (result.success) {
       setConfig(prev => ({
@@ -133,6 +183,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
         lastReadingsIngested: result.ingested ?? 0,
         lastReadingsFailed: result.failed ?? 0,
       }));
+      addReadingsFeed(devices, sensorStates);
       addLog('readings', `Sent ${result.ingested} readings (${result.failed} failed)`, (result.failed ?? 0) > 0 ? 'warning' : 'success');
       toast({ title: 'Readings Sent', description: `${result.ingested} ingested, ${result.failed} failed` });
     } else {
@@ -147,7 +198,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       toast({ title: 'Send Failed', description: result.error, variant: 'destructive' });
     }
     setIsSendingReadings(false);
-  }, [devices, sensorStates, webhookConfig, addLog]);
+  }, [devices, sensorStates, webhookConfig, effectiveOrgId, addLog, addReadingsFeed]);
 
   // Auto-sync
   useEffect(() => {
@@ -160,7 +211,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       countdownRef.current = null;
     }
 
-    if (config.autoSyncEnabled && orgId) {
+    if (config.autoSyncEnabled && effectiveOrgId) {
       const intervalMs = config.autoSyncIntervalSec * 1000;
       setNextSyncIn(config.autoSyncIntervalSec);
 
@@ -185,12 +236,20 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       if (autoSyncRef.current) clearInterval(autoSyncRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  }, [config.autoSyncEnabled, config.autoSyncIntervalSec, orgId]);
+  }, [config.autoSyncEnabled, config.autoSyncIntervalSec, effectiveOrgId]);
 
   const devicesWithUnit = devices.filter(d => d.unitId).length;
 
   return (
     <div className="space-y-6">
+      {/* Connection Settings */}
+      <ExportConnectionSettings
+        onConfigChange={() => {
+          // Re-test connection when settings change
+          setConnectionStatus('unknown');
+        }}
+      />
+
       {/* Connection Status */}
       <Card>
         <CardHeader className="pb-3">
@@ -209,7 +268,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
               variant="outline"
               size="sm"
               onClick={handleTestConnection}
-              disabled={!orgId || connectionStatus === 'testing'}
+              disabled={!effectiveOrgId || connectionStatus === 'testing'}
             >
               {connectionStatus === 'testing' ? (
                 <Loader2 className="h-4 w-4 animate-spin mr-1" />
@@ -221,16 +280,16 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           </div>
         </CardHeader>
         <CardContent>
-          {!orgId ? (
+          {!effectiveOrgId ? (
             <Alert>
               <AlertTriangle className="h-4 w-4" />
-              <AlertDescription>No organization selected. Set Org ID in the Testing tab.</AlertDescription>
+              <AlertDescription>No organization selected. Set Org ID in Export Settings or Testing tab.</AlertDescription>
             </Alert>
           ) : connectionStatus === 'connected' ? (
             <div className="flex items-center gap-4 text-sm">
               <Badge variant="outline" className="border-green-500/30 text-green-600">Connected</Badge>
               {connectionInfo.orgName && <span className="text-muted-foreground">Org: {connectionInfo.orgName}</span>}
-              {connectionInfo.syncVersion && <span className="text-muted-foreground">v{connectionInfo.syncVersion}</span>}
+              {connectionInfo.syncVersion != null && <span className="text-muted-foreground">v{connectionInfo.syncVersion}</span>}
             </div>
           ) : connectionStatus === 'failed' ? (
             <Badge variant="destructive">Connection Failed</Badge>
@@ -239,6 +298,11 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           )}
         </CardContent>
       </Card>
+
+      {/* Organization State Viewer */}
+      {effectiveOrgId && connectionStatus === 'connected' && (
+        <OrgStateViewer orgId={effectiveOrgId} />
+      )}
 
       {/* Sync Devices */}
       <Card>
@@ -254,7 +318,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           </p>
           <Button
             onClick={handleSyncDevices}
-            disabled={isSyncing || !orgId || devices.length === 0}
+            disabled={isSyncing || !effectiveOrgId || devices.length === 0}
             className="w-full"
           >
             {isSyncing ? (
@@ -305,12 +369,29 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
               Send Readings
             </CardTitle>
             <div className="flex items-center gap-2">
+              {config.autoSyncEnabled && (
+                <Select
+                  value={String(config.autoSyncIntervalSec)}
+                  onValueChange={v => setConfig(prev => ({ ...prev, autoSyncIntervalSec: Number(v) }))}
+                >
+                  <SelectTrigger className="h-7 w-24 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="60">1 min</SelectItem>
+                    <SelectItem value="120">2 min</SelectItem>
+                    <SelectItem value="300">5 min</SelectItem>
+                    <SelectItem value="600">10 min</SelectItem>
+                    <SelectItem value="900">15 min</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
               <Label htmlFor="auto-sync" className="text-xs text-muted-foreground">Auto-sync</Label>
               <Switch
                 id="auto-sync"
                 checked={config.autoSyncEnabled}
                 onCheckedChange={v => setConfig(prev => ({ ...prev, autoSyncEnabled: v }))}
-                disabled={!orgId || devicesWithUnit === 0}
+                disabled={!effectiveOrgId || devicesWithUnit === 0}
               />
             </div>
           </div>
@@ -329,7 +410,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           )}
           <Button
             onClick={handleSendReadings}
-            disabled={isSendingReadings || !orgId || devicesWithUnit === 0}
+            disabled={isSendingReadings || !effectiveOrgId || devicesWithUnit === 0}
             variant="secondary"
             className="w-full"
           >
@@ -352,6 +433,40 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           )}
         </CardContent>
       </Card>
+
+      {/* Reading Stream */}
+      {readingsFeed.length > 0 && (
+        <Card>
+          <CardHeader className="pb-3">
+            <div className="flex items-center justify-between">
+              <CardTitle className="text-sm">Reading Stream</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setReadingsFeed([])}>Clear</Button>
+            </div>
+          </CardHeader>
+          <CardContent>
+            <ScrollArea className="h-48">
+              <div className="space-y-1">
+                {readingsFeed.map(entry => (
+                  <div key={entry.id} className="flex items-start gap-2 py-1 text-xs border-b border-border/30 last:border-0">
+                    <span className="text-muted-foreground font-mono w-16 shrink-0">
+                      {entry.timestamp.toLocaleTimeString()}
+                    </span>
+                    <ArrowUpFromLine className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />
+                    <span className="font-mono break-all">
+                      {entry.deviceName || entry.unitId.slice(0, 8)}:
+                      {entry.temperature !== undefined && ` ${entry.temperature}°F`}
+                      {entry.humidity !== undefined && `, ${entry.humidity}% RH`}
+                      {entry.doorOpen !== undefined && (entry.doorOpen ? ' OPEN' : ' CLOSED')}
+                      {entry.battery !== undefined && `, bat ${entry.battery}%`}
+                      {entry.signal !== undefined && `, ${entry.signal}dBm`}
+                    </span>
+                  </div>
+                ))}
+              </div>
+            </ScrollArea>
+          </CardContent>
+        </Card>
+      )}
 
       {/* Export Log */}
       {exportLog.length > 0 && (
