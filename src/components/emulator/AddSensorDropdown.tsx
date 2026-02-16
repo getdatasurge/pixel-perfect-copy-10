@@ -49,7 +49,9 @@ function useDebouncedValue<T>(value: T, delayMs: number): T {
 
 const CATEGORY_ICONS: Record<DeviceCategory, React.ComponentType<{ className?: string }>> = {
   temperature: Thermometer,
+  temperature_humidity: Thermometer,
   door: DoorOpen,
+  contact: DoorOpen,
   co2: Wind,
   leak: Droplet,
   motion: Activity,
@@ -57,11 +59,14 @@ const CATEGORY_ICONS: Record<DeviceCategory, React.ComponentType<{ className?: s
   gps: MapPin,
   meter: Gauge,
   combo: Zap,
+  multi_sensor: Zap,
 };
 
 const CATEGORY_LABELS: Record<DeviceCategory, string> = {
   temperature: 'Temperature',
+  temperature_humidity: 'Temp + Humidity',
   door: 'Door/Contact',
+  contact: 'Contact',
   co2: 'CO2',
   leak: 'Leak Detection',
   motion: 'Motion',
@@ -69,6 +74,7 @@ const CATEGORY_LABELS: Record<DeviceCategory, string> = {
   gps: 'GPS/Location',
   meter: 'Metering',
   combo: 'Multi-Sensor',
+  multi_sensor: 'Multi-Sensor',
 };
 
 function getCategoryLabel(category: DeviceCategory): string {
