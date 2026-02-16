@@ -640,7 +640,37 @@ async function handleTest(
   }
 
   if (status === 404) {
-    // Application not found - could be wrong cluster
+    // Application not found - try eu1 Identity Server fallback for Community accounts
+    if (cluster !== 'eu1') {
+      console.log(`[${requestId}] App not found on ${cluster}, trying eu1 Identity Server`);
+      try {
+        const eu1Response = await fetch(
+          `https://eu1.cloud.thethings.network/api/v3/applications/${application_id}`,
+          {
+            method: 'GET',
+            headers: { 'Authorization': `Bearer ${api_key}`, 'Accept': 'application/json' },
+          }
+        );
+        if (eu1Response.status === 200) {
+          await eu1Response.text();
+          console.log(`[${requestId}] App found on eu1 Identity Server, devices operate on ${cluster}`);
+          return buildResponse({
+            ok: true,
+            connected: true,
+            baseUrl,
+            application_id,
+            cluster,
+            identity_server: 'eu1',
+            message: 'Connected to The Things Network',
+            required_permissions: REQUIRED_PERMISSIONS,
+          }, 200, requestId);
+        }
+        await eu1Response.text();
+      } catch (e) {
+        console.warn(`[${requestId}] eu1 fallback fetch failed:`, e);
+      }
+    }
+
     return buildResponse({
       ok: false,
       error: `Application "${application_id}" not found in ${cluster} cluster`,
