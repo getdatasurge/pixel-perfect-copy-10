@@ -6,6 +6,7 @@ import { Label } from '@/components/ui/label';
 import { Copy, Download } from 'lucide-react';
 import { LoRaWANDevice, buildQRCodeData } from '@/lib/ttn-payload';
 import { toast } from '@/hooks/use-toast';
+import QRCode from 'qrcode';
 
 interface QRCodeModalProps {
   device: LoRaWANDevice | null;
@@ -20,59 +21,23 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
     if (!device || !open || !canvasRef.current) return;
 
     const qrData = buildQRCodeData(device);
-    
-    // Simple QR-like visual representation (not a real QR code)
-    // In production, use a library like 'qrcode' 
-    const canvas = canvasRef.current;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) return;
 
-    const size = 200;
-    canvas.width = size;
-    canvas.height = size;
-
-    // White background
-    ctx.fillStyle = '#ffffff';
-    ctx.fillRect(0, 0, size, size);
-
-    // Generate pattern from data hash
-    ctx.fillStyle = '#000000';
-    const blockSize = 8;
-    const blocks = size / blockSize;
-    
-    // Create deterministic pattern from qrData
-    let hash = 0;
-    for (let i = 0; i < qrData.length; i++) {
-      hash = ((hash << 5) - hash + qrData.charCodeAt(i)) | 0;
-    }
-    
-    for (let y = 0; y < blocks; y++) {
-      for (let x = 0; x < blocks; x++) {
-        // Corner patterns (finder patterns)
-        const isCorner = 
-          (x < 3 && y < 3) || 
-          (x >= blocks - 3 && y < 3) || 
-          (x < 3 && y >= blocks - 3);
-        
-        if (isCorner) {
-          const inOuter = x < 3 ? x : blocks - 1 - x;
-          const inY = y < 3 ? y : blocks - 1 - y;
-          const isOuter = inOuter === 0 || inOuter === 2 || inY === 0 || inY === 2;
-          const isInner = inOuter === 1 && inY === 1;
-          if (isOuter || isInner) {
-            ctx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
-          }
-          continue;
-        }
-        
-        // Data pattern
-        const idx = y * blocks + x;
-        const bit = ((hash >> (idx % 32)) ^ (hash >> ((idx + 7) % 32))) & 1;
-        if (bit) {
-          ctx.fillRect(x * blockSize, y * blockSize, blockSize, blockSize);
-        }
-      }
-    }
+    QRCode.toCanvas(canvasRef.current, qrData, {
+      width: 200,
+      margin: 2,
+      color: {
+        dark: '#000000',
+        light: '#ffffff',
+      },
+      errorCorrectionLevel: 'M',
+    }).catch((err: Error) => {
+      console.error('Failed to generate QR code:', err);
+      toast({
+        title: 'QR Error',
+        description: 'Failed to generate QR code',
+        variant: 'destructive',
+      });
+    });
   }, [device, open]);
 
   if (!device) return null;
@@ -107,10 +72,6 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
           <div className="bg-white p-4 rounded-lg shadow-inner">
             <canvas ref={canvasRef} className="w-48 h-48" />
           </div>
-          
-          <p className="text-xs text-muted-foreground text-center max-w-xs">
-            Note: This is a visual placeholder. In production, use a QR library for scannable codes.
-          </p>
         </div>
 
         <div className="space-y-3">
