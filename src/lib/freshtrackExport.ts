@@ -147,7 +147,9 @@ function getDeviceModelInfo(sensor: SensorState): { model: string; manufacturer:
 function mapCategory(category: string): string {
   const map: Record<string, string> = {
     temperature: 'temperature',
+    temperature_humidity: 'temperature_humidity',
     door: 'door',
+    contact: 'contact',
     co2: 'air_quality',
     leak: 'leak',
     gps: 'gps',
@@ -155,8 +157,154 @@ function mapCategory(category: string): string {
     motion: 'motion',
     air_quality: 'air_quality',
     combo: 'combo',
+    multi_sensor: 'multi_sensor',
   };
   return map[category] || 'temperature';
+}
+
+// ============================================
+// Battery Voltage Estimation
+// ============================================
+
+/**
+ * Estimate battery voltage from percentage using Li-SOCl2 chemistry curve.
+ * Li-SOCl2 (3.6V nominal): ~3.6V @ 100%, ~2.4V @ 0%
+ */
+function estimateBatteryVoltage(batteryPct: number): number {
+  const voltage = 2.4 + (Math.max(0, Math.min(100, batteryPct)) / 100) * 1.2;
+  return Math.round(voltage * 100) / 100;
+}
+
+// ============================================
+// Sensor Status Calculation
+// ============================================
+
+/**
+ * Calculate sensor status from emulator state.
+ * Priority chain: fault(0) → pending(1) → joining(2) → offline(3) → active(4)
+ */
+function calculateSensorStatus(state: SensorState): 'active' | 'offline' | 'fault' | 'pending' {
+  if (!state.isOnline) return 'offline';
+  if (state.batteryPct <= 5) return 'fault';
+  return 'active';
+}
+
+/**
+ * Calculate gateway status.
+ */
+function calculateGatewayStatus(gw: GatewayConfig): 'online' | 'offline' | 'pending' | 'maintenance' {
+  if (gw.provisioningStatus === 'pending') return 'pending';
+  if (gw.provisioningStatus === 'failed') return 'maintenance';
+  return gw.isOnline ? 'online' : 'offline';
+}
+
+// ============================================
+// Decoded Payload Builder (library-aware)
+// ============================================
+
+/**
+ * Build decoded_payload using the device library's field definitions.
+ * Maps emulator state values to canonical field names from the library,
+ * and generates realistic simulated values for fields not in emulator state.
+ */
+function buildDecodedPayload(
+  state: SensorState,
+  devType: 'temperature' | 'door',
+): Record<string, unknown> {
+  const payload: Record<string, unknown> = {};
+
+  // Try library-aware path
+  if (state.libraryDeviceId) {
+    const libDevice = getDevice(state.libraryDeviceId);
+    if (libDevice) {
+      const fields = libDevice.simulation_profile.fields;
+      for (const [fieldName, fieldConfig] of Object.entries(fields)) {
+        payload[fieldName] = resolveFieldValue(fieldName, fieldConfig, state, libDevice.examples?.normal);
+      }
+      return payload;
+    }
+  }
+
+  // Legacy fallback: map from emulator state based on device type
+  const tempC = Math.round(((state.tempF - 32) * 5 / 9) * 10) / 10;
+
+  if (devType === 'temperature') {
+    payload.temperature = tempC;
+    payload.humidity = Math.round(state.humidity);
+    payload.battery_level = Math.round(state.batteryPct);
+    payload.battery_voltage = estimateBatteryVoltage(state.batteryPct);
+  } else {
+    payload.door_status = state.doorOpen ? 'open' : 'closed';
+    payload.door_open = state.doorOpen;
+    payload.battery_level = Math.round(state.batteryPct);
+    payload.battery_voltage = estimateBatteryVoltage(state.batteryPct);
+  }
+
+  return payload;
+}
+
+/**
+ * Resolve a single field value from emulator state or field config.
+ */
+function resolveFieldValue(
+  fieldName: string,
+  fieldConfig: { type: string; min?: number; max?: number; precision?: number; values?: string[] },
+  state: SensorState,
+  normalExample?: Record<string, unknown>,
+): unknown {
+  // Map well-known canonical field names to emulator state
+  switch (fieldName) {
+    case 'temperature':
+    case 'ext_temperature':
+    case 'soil_temperature':
+      return Math.round(((state.tempF - 32) * 5 / 9) * 10) / 10;
+    case 'humidity':
+      return Math.round(state.humidity);
+    case 'battery_level':
+      return Math.round(state.batteryPct);
+    case 'battery_voltage':
+      return estimateBatteryVoltage(state.batteryPct);
+    case 'door_status':
+      return state.doorOpen ? 'open' : 'closed';
+    case 'door_open':
+    case 'contact':
+      return state.doorOpen;
+    case 'water_leak':
+    case 'sensor_flag':
+      return false;
+    case 'motion_detected':
+      return false;
+    case 'gps_fix':
+      return true;
+    case 'signal_strength':
+    case 'rssi':
+      return Math.round(state.signalStrength);
+    default:
+      break;
+  }
+
+  // Use normal example value if available
+  if (normalExample && fieldName in normalExample) {
+    return normalExample[fieldName];
+  }
+
+  // Generate from field config
+  if (fieldConfig.type === 'float' && fieldConfig.min != null && fieldConfig.max != null) {
+    const mid = (fieldConfig.min + fieldConfig.max) / 2;
+    const precision = fieldConfig.precision ?? 1;
+    return parseFloat(mid.toFixed(precision));
+  }
+  if (fieldConfig.type === 'int' && fieldConfig.min != null && fieldConfig.max != null) {
+    return Math.round((fieldConfig.min + fieldConfig.max) / 2);
+  }
+  if (fieldConfig.type === 'bool') {
+    return false;
+  }
+  if (fieldConfig.type === 'enum' && fieldConfig.values && fieldConfig.values.length > 0) {
+    return fieldConfig.values[0];
+  }
+
+  return null;
 }
 
 // ============================================
@@ -179,7 +327,7 @@ export async function syncDevicesToFreshTrack(
   const gatewayPayload = gateways.map(gw => ({
     gateway_eui: gw.eui,
     name: gw.name,
-    status: gw.isOnline ? 'online' : 'offline',
+    status: calculateGatewayStatus(gw),
     site_id: webhookConfig.testSiteId || null,
   }));
 
@@ -192,23 +340,15 @@ export async function syncDevicesToFreshTrack(
       intervalSec: 60, lastSentAt: null, isOnline: true,
     });
 
-    // Build a sample decoded_payload for type inference
-    const decodedPayload: Record<string, unknown> = {};
-    if (state) {
-      if (dev.type === 'temperature') {
-        decodedPayload.temperature = Math.round(((state.tempF - 32) * 5 / 9) * 10) / 10;
-        decodedPayload.humidity = state.humidity;
-        decodedPayload.battery_level = state.batteryPct;
-      } else {
-        decodedPayload.door_status = state.doorOpen ? 'open' : 'closed';
-        decodedPayload.battery_level = state.batteryPct;
-      }
-    }
+    // Build decoded_payload using library-aware builder
+    const decodedPayload = state
+      ? buildDecodedPayload(state, dev.type)
+      : {};
 
     return {
       serial_number: dev.devEui,
       unit_id: dev.unitId || null,
-      status: 'active' as const,
+      status: state ? calculateSensorStatus(state) : 'active',
       dev_eui: dev.devEui,
       sensor_type: modelInfo.sensorType,
       name: dev.name,
@@ -231,7 +371,7 @@ export async function syncDevicesToFreshTrack(
       dev_eui: dev.devEui,
       name: dev.name,
       sensor_type: modelInfo.sensorType,
-      status: 'active' as const,
+      status: state ? calculateSensorStatus(state) : 'active',
       unit_id: dev.unitId || null,
       site_id: dev.siteId || webhookConfig.testSiteId || null,
       manufacturer: modelInfo.manufacturer,
@@ -317,6 +457,8 @@ export async function sendReadingsToFreshTrack(
       if (!state) return null;
 
       const modelInfo = getDeviceModelInfo(state);
+
+      // Core reading fields
       const reading: Record<string, unknown> = {
         unit_id: dev.unitId,
         temperature: state.tempF,
@@ -331,14 +473,32 @@ export async function sendReadingsToFreshTrack(
         },
       };
 
-      if (state.type === 'temperature') {
+      // Type-specific fields
+      if (state.type === 'temperature' || dev.type === 'temperature') {
         reading.humidity = Math.round(state.humidity);
       }
-      if (state.type === 'door') {
+      if (state.type === 'door' || dev.type === 'door') {
         reading.door_open = state.doorOpen;
       }
+
+      // Library-aware: include decoded_payload fields
+      const decodedPayload = buildDecodedPayload(state, dev.type);
+      reading.decoded_payload = decodedPayload;
+
+      // Battery & signal
       reading.battery_level = Math.round(state.batteryPct);
+      reading.battery_voltage = estimateBatteryVoltage(state.batteryPct);
       reading.signal_strength = Math.round(state.signalStrength);
+
+      // Source metadata
+      reading.source_metadata = {
+        emulator_version: '1.0.0',
+        library_device_id: state.libraryDeviceId || null,
+        device_model: modelInfo.model,
+        manufacturer: modelInfo.manufacturer,
+        sensor_type: modelInfo.sensorType,
+        emission_mode: 'simulated',
+      };
 
       return reading;
     })

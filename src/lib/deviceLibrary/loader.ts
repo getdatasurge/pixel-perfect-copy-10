@@ -207,13 +207,13 @@ export function getLibraryMetadata(): { version: string; lastUpdated: string; de
  */
 export function findMatchingDevices(sensorKind: 'temp' | 'door' | 'combo'): DeviceDefinition[] {
   const categoryMap: Record<string, DeviceCategory[]> = {
-    temp: ['temperature', 'combo'],
-    door: ['door', 'combo'],
-    combo: ['combo', 'temperature', 'door'],
+    temp: ['temperature', 'temperature_humidity', 'combo', 'multi_sensor'],
+    door: ['door', 'contact', 'combo'],
+    combo: ['combo', 'temperature', 'temperature_humidity', 'door', 'contact', 'multi_sensor'],
   };
-  
+
   const categories = categoryMap[sensorKind] || ['temperature'];
-  
+
   return listDevices().filter(d => categories.includes(d.category));
 }
 

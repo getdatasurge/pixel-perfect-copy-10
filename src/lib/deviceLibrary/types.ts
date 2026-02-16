@@ -84,16 +84,19 @@ export interface DeviceDefinition {
   model?: string;
 }
 
-export type DeviceCategory = 
+export type DeviceCategory =
   | 'temperature'
+  | 'temperature_humidity'
   | 'door'
+  | 'contact'
   | 'co2'
   | 'leak'
   | 'gps'
   | 'meter'
   | 'motion'
   | 'air_quality'
-  | 'combo';
+  | 'combo'
+  | 'multi_sensor';
 
 // ============================================
 // Device Library Metadata
