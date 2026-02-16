@@ -15,8 +15,11 @@ import { setCanonicalConfig, clearCanonicalConfig } from '@/lib/ttnConfigStore';
 import { findDeviceByName, setDeviceModel, isLibraryLoaded, initializeDeviceLibrary, type DeviceCategory } from '@/lib/deviceLibrary';
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
+// Bump this version to invalidate stale session caches after code fixes
+const CONTEXT_VERSION = 2;
 
 interface StoredUserContext {
+  _contextVersion?: number;
   selectedUserId: string;
   selectedUserDisplayName: string;
   testOrgId: string;
@@ -92,7 +95,15 @@ export default function UserSelectionGate({
     const stored = sessionStorage.getItem(STORAGE_KEY_USER_CONTEXT);
     if (stored) {
       try {
-        const context: StoredUserContext = JSON.parse(stored);
+        const context = JSON.parse(stored) as StoredUserContext & { _contextVersion?: number };
+        
+        // Discard stale cache from before code fixes
+        if (context._contextVersion !== CONTEXT_VERSION) {
+          console.log('[UserSelectionGate] Cache version mismatch, discarding stale context');
+          sessionStorage.removeItem(STORAGE_KEY_USER_CONTEXT);
+          return;
+        }
+        
         const syncedAt = new Date(context.syncedAt);
         const fifteenMinAgo = new Date(Date.now() - 15 * 60 * 1000);
 
@@ -242,6 +253,7 @@ export default function UserSelectionGate({
         // emulator uses ('temperature'|'door'). Map 'temp' → 'temperature'.
         const frostguardType: 'temperature' | 'door' =
           s.sensor_kind === 'door' ? 'door' : 'temperature';
+        console.log(`[UserSelectionGate] Sensor "${s.name}" sensor_kind=${s.sensor_kind} → deviceType=${frostguardType}`);
 
         let deviceType: 'temperature' | 'door' = frostguardType;
         let assignedLibraryId: string | null = null;
@@ -428,6 +440,7 @@ export default function UserSelectionGate({
         syncVersion: orgState.sync_version,
         pulledGateways,
         pulledDevices,
+        _contextVersion: CONTEXT_VERSION,
       };
       sessionStorage.setItem(STORAGE_KEY_USER_CONTEXT, JSON.stringify(storedContext));
 
