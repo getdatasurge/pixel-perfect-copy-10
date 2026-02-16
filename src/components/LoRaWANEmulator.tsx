@@ -1549,6 +1549,7 @@ export default function LoRaWANEmulator() {
         body: {
           selected_user_id: webhookConfig.selectedUserId,
           org_id: webhookConfig.testOrgId,
+          application_id: webhookConfig.ttnConfig?.applicationId,
           devices: devicesToCheck,
         },
       });

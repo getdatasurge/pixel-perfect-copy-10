@@ -11,6 +11,7 @@ const corsHeaders = {
 interface PreflightRequest {
   selected_user_id: string;
   org_id?: string;
+  application_id?: string; // Frontend-provided, takes precedence over DB mirror
   devices?: Array<{ dev_eui: string; name?: string }>;
   detect_cluster_from_url?: string; // If provided, parse cluster from TTN console URL
 }
@@ -297,6 +298,12 @@ serve(async (req) => {
         }),
         { status: 400, headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
       );
+    }
+
+    // Override application_id if frontend provides one (it has fresher data from FrostGuard pull)
+    if (body.application_id && settings.application_id !== body.application_id) {
+      console.warn(`[preflight] App ID override: DB has ${settings.application_id}, frontend sent ${body.application_id}`);
+      settings.application_id = body.application_id;
     }
 
     const { api_key, application_id, cluster } = settings;
