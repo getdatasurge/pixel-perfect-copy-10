@@ -216,14 +216,17 @@ export default function UserSelectionGate({
       // Category to emulator type mapping
       const categoryToType: Record<DeviceCategory, 'temperature' | 'door'> = {
         'temperature': 'temperature',
+        'temperature_humidity': 'temperature',
         'door': 'door',
+        'contact': 'door',       // Contact sensors are door/open-close sensors
         'co2': 'temperature',
-        'leak': 'door',         // Leak/distance sensors → door (event-based)
-        'motion': 'door',       // Motion sensors → door (event-based)
+        'leak': 'door',          // Leak/distance sensors → door (event-based)
+        'motion': 'door',        // Motion sensors → door (event-based)
         'air_quality': 'temperature',
         'gps': 'temperature',
         'meter': 'temperature',
         'combo': 'temperature',
+        'multi_sensor': 'temperature',
       };
 
       const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => {
@@ -239,7 +242,13 @@ export default function UserSelectionGate({
         let assignedLibraryId: string | null = null;
         
         if (libraryDevice) {
-          deviceType = categoryToType[libraryDevice.category];
+          const mappedType = categoryToType[libraryDevice.category];
+          if (mappedType) {
+            deviceType = mappedType;
+          } else {
+            // Unknown library category — fall back to FrostGuard type
+            deviceType = s.type === 'door' ? 'door' : 'temperature';
+          }
           assignedLibraryId = libraryDevice.id;
           console.log(`[UserSelectionGate] Matched "${s.name}" → ${libraryDevice.id} (${libraryDevice.category} → ${deviceType})`);
         } else {

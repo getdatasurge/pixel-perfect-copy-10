@@ -348,7 +348,9 @@ export default function DeviceManager({
     // Map library category to emulator type
     const categoryToType: Record<DeviceCategory, 'temperature' | 'door'> = {
       'temperature': 'temperature',
+      'temperature_humidity': 'temperature',
       'door': 'door',
+      'contact': 'door',       // Contact sensors are door/open-close sensors
       'co2': 'temperature',
       'leak': 'door',
       'motion': 'door',
@@ -356,6 +358,7 @@ export default function DeviceManager({
       'gps': 'temperature',
       'meter': 'temperature',
       'combo': 'temperature',
+      'multi_sensor': 'temperature',
     };
     
     const deviceType = categoryToType[libraryDevice.category] || 'temperature';
