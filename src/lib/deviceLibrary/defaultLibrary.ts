@@ -17,7 +17,7 @@ export const defaultDeviceLibrary: DeviceLibrary = {
     last_updated: '2026-02-16',
     categories: [
       'temperature', 'temperature_humidity', 'door', 'contact',
-      'co2', 'leak', 'gps', 'meter', 'motion', 'air_quality',
+      'leak', 'gps', 'meter', 'motion', 'air_quality',
       'multi_sensor',
     ],
     manufacturers: ['Milesight', 'Dragino', 'Tektelic', 'Netvox', 'Elsys', 'Browan'],
@@ -378,7 +378,7 @@ export const defaultDeviceLibrary: DeviceLibrary = {
       id: 'elsys-ers-co2',
       name: 'ERS CO2',
       manufacturer: 'Elsys',
-      category: 'co2',
+      category: 'air_quality',
       model: 'ERS-CO2',
       description: 'Indoor CO2 sensor with temperature and humidity',
       firmware_version: 'v5.0',
@@ -846,9 +846,9 @@ export const defaultDeviceLibrary: DeviceLibrary = {
     // Motion / Occupancy Sensors
     // ============================================
     {
-      id: 'browan-tbms100',
+      id: 'milesight-tbms100',
       name: 'TBMS100',
-      manufacturer: 'Browan',
+      manufacturer: 'Milesight',
       category: 'motion',
       model: 'TBMS100',
       description: 'PIR Motion Sensor',

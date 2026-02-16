@@ -156,7 +156,6 @@ function mapCategory(category: string): string {
     meter: 'metering',
     motion: 'motion',
     air_quality: 'air_quality',
-    combo: 'combo',
     multi_sensor: 'multi_sensor',
   };
   return map[category] || 'temperature';
