@@ -115,7 +115,7 @@ Deno.serve(async (req) => {
       const updateData: Record<string, unknown> = {
         org_id,
         enabled: enabled ?? true,
-        cluster: cluster || 'eu1',
+        cluster: cluster || 'nam1',
         application_id,
         updated_at: updatedAt,
       };
@@ -175,11 +175,11 @@ Deno.serve(async (req) => {
         }
 
         const existingTtn = (existingUser?.ttn as Record<string, unknown>) || {};
-        
+
         const ttnJsonData: Record<string, unknown> = {
           ...existingTtn,
           enabled: enabled ?? true,
-          cluster: cluster || 'eu1',
+          cluster: cluster || 'nam1',
           application_id,
           updated_at: updatedAt,
         };

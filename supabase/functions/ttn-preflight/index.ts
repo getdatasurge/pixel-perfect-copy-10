@@ -121,7 +121,7 @@ async function loadUserSettings(userId: string): Promise<TTNSettings | null> {
     return {
       api_key: ttn.api_key || null,
       application_id: ttn.application_id || null,
-      cluster: ttn.cluster || 'eu1',
+      cluster: ttn.cluster || 'nam1',
       enabled: ttn.enabled || false,
     };
   } catch (err) {
