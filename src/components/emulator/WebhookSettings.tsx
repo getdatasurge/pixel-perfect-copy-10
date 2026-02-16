@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Card, CardContent } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -251,6 +251,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   const [isTestingTTN, setIsTestingTTN] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
   const [isLoading, setIsLoading] = useState(false);
+  const autoSyncDoneRef = useRef(false);
   const [copied, setCopied] = useState(false);
   const [copiedDevEui, setCopiedDevEui] = useState(false);
   const [showWizard, setShowWizard] = useState(false);
@@ -659,49 +660,19 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
   };
 
   // Load settings from config or database on mount or org/user change
+  // Load settings from database on mount or when org/user changes
+  // NOTE: Do NOT include config.ttnConfig in deps - loadSettings() updates ttnConfig via updateTTN,
+  // which would cause an infinite loop.
   useEffect(() => {
-    // ALWAYS load from database to get authoritative values.
-    // Props from localStorage may be stale (e.g., applicationId changed in FrostGuard).
     if (orgId) {
-      // If TTN config is in props, use it for immediate display while we verify
-      if (config.ttnConfig?.applicationId) {
-        console.log('[WebhookSettings] Using TTN config from props (will verify against DB):', config.ttnConfig);
-        setTtnEnabled(config.ttnConfig.enabled || false);
-        setTtnCluster(config.ttnConfig.cluster || 'nam1');
-        setTtnApplicationId(config.ttnConfig.applicationId || '');
-        setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
-        setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
-        setTtnWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
-        const gwKeyLast4 = (config.ttnConfig as any).gateway_api_key_last4;
-        setGatewayApiKeyPreview(gwKeyLast4 ? `****${gwKeyLast4}` : null);
-        setGatewayApiKeySet(!!gwKeyLast4);
-        const ownerType = (config.ttnConfig as any).gateway_owner_type;
-        const ownerId = (config.ttnConfig as any).gateway_owner_id;
-        if (ownerType) setGatewayOwnerType(ownerType);
-        if (ownerId) setGatewayOwnerId(ownerId);
-        setTtnApiKey('');
-        setTtnWebhookSecret('');
-        setGatewayApiKey('');
-        setCanonicalCluster(config.ttnConfig.cluster || null);
-        setCanonicalApplicationId(config.ttnConfig.applicationId || null);
-        setCanonicalApiKeyLast4(config.ttnConfig.api_key_last4 || null);
-        setCanonicalOwnerType(ownerType || null);
-        setCanonicalOwnerId(ownerId || null);
-        setCanonicalWebhookSecretLast4(config.ttnConfig.webhook_secret_last4 || null);
-        setCanonicalGatewayApiKeyLast4(gwKeyLast4 || null);
-        setCanonicalLastSyncAt(config.contextSetAt || config.lastSyncAt || null);
-        if (config.ttnConfig.lastTestAt) {
-          setLastTestAt(config.ttnConfig.lastTestAt);
-          setLastTestSuccess(config.ttnConfig.lastTestSuccess ?? null);
-        }
-        setIsLoading(false);
-      }
-      // Always load from database to verify/correct stale props
+      // Always load from database to get authoritative values
+      // This corrects any stale applicationId from localStorage
       loadSettings();
     } else {
       setIsLoading(false);
     }
-  }, [orgId, config.selectedUserId, config.ttnConfig]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orgId, config.selectedUserId]);
 
   const loadSettings = async () => {
     if (!orgId) return;
@@ -958,7 +929,8 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       // ====== STEP 6: Auto-sync FrostGuard data to ttn_settings ======
       // This ensures ttn_settings stays in sync with FrostGuard-pushed values
       // IMPORTANT: Only sync if we're actually using the selected user's data (not org fallback)
-      if (orgId && rawUserTTN && usingSelectedUser) {
+      // Only auto-sync once per component mount to prevent repeated toasts
+      if (orgId && rawUserTTN && usingSelectedUser && !autoSyncDoneRef.current) {
         const updatePayload: Record<string, unknown> = {
           action: 'save',
           org_id: orgId,
@@ -1031,6 +1003,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
             console.error('[WebhookSettings] Exception auto-syncing:', autoSaveErr);
           }
         }
+        autoSyncDoneRef.current = true;
       }
 
       // Load connection status
