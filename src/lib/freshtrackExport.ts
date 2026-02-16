@@ -1,14 +1,18 @@
 /**
  * FreshTrack Pro Export Service
- * 
- * Business logic for exporting emulator state to FreshTrack Pro
- * via proxy edge functions (export-sync, export-readings).
+ *
+ * Business logic for exporting emulator state to FreshTrack Pro.
+ * Supports two modes:
+ *   - Direct: fetch() to FreshTrack endpoints using client-side API keys
+ *   - Proxy: supabase.functions.invoke() through edge function proxies
  */
 
 import { supabase } from '@/integrations/supabase/client';
 import { GatewayConfig, LoRaWANDevice, WebhookConfig } from './ttn-payload';
 import { SensorState } from './emulatorSensorState';
 import { getDevice } from './deviceLibrary';
+import { getEffectiveConfig, isDirectModeAvailable } from './freshtrackConnectionStore';
+import type { FreshTrackOrgState } from './freshtrackOrgStateStore';
 
 // ============================================
 // Types
@@ -59,6 +63,64 @@ export interface ConnectionTestResult {
   hint?: string;
 }
 
+export interface HealthCheckResult {
+  ok: boolean;
+  version?: string;
+  timestamp?: string;
+  error?: string;
+}
+
+export interface PullOrgStateResult {
+  ok: boolean;
+  orgState?: FreshTrackOrgState;
+  error?: string;
+  hint?: string;
+}
+
+// ============================================
+// Direct Fetch Helper
+// ============================================
+
+async function directFetch(
+  endpoint: string,
+  method: 'GET' | 'POST',
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<{ data: Record<string, unknown> | null; error: Error | null }> {
+  const config = getEffectiveConfig();
+  if (!config.freshtrackUrl) {
+    return { data: null, error: new Error('FreshTrack URL not configured') };
+  }
+
+  const url = `${config.freshtrackUrl}/functions/v1/${endpoint}`;
+  try {
+    const response = await fetch(url, {
+      method,
+      headers: {
+        'Content-Type': 'application/json',
+        ...headers,
+      },
+      body: body ? JSON.stringify(body) : undefined,
+    });
+
+    const text = await response.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw_response: text.slice(0, 2048) };
+    }
+
+    if (!response.ok && !data.success) {
+      data._http_status = response.status;
+    }
+
+    return { data, error: null };
+  } catch (err) {
+    return { data: null, error: err instanceof Error ? err : new Error('Network error') };
+  }
+}
+
 // ============================================
 // Device Model Inference
 // ============================================
@@ -106,10 +168,11 @@ export async function syncDevicesToFreshTrack(
   gateways: GatewayConfig[],
   sensorStates: Record<string, SensorState>,
   webhookConfig: WebhookConfig,
+  orgIdOverride?: string,
 ): Promise<ExportSyncResult> {
-  const orgId = webhookConfig.testOrgId;
+  const orgId = orgIdOverride || webhookConfig.testOrgId;
   if (!orgId) {
-    return { success: false, error: 'No organization selected. Set Org ID in Testing tab.' };
+    return { success: false, error: 'No organization selected. Set Org ID in Export Settings or Testing tab.' };
   }
 
   // Build gateways payload
@@ -180,39 +243,52 @@ export async function syncDevicesToFreshTrack(
     };
   });
 
-  try {
-    const { data, error } = await supabase.functions.invoke('export-sync', {
-      body: {
-        org_id: orgId,
-        sync_id: `emu-export-${Date.now()}`,
-        synced_at: new Date().toISOString(),
-        gateways: gatewayPayload,
-        devices: devicePayload,
-        sensors: sensorPayload,
-      },
-    });
+  const payload = {
+    org_id: orgId,
+    sync_id: `emu-export-${Date.now()}`,
+    synced_at: new Date().toISOString(),
+    gateways: gatewayPayload,
+    devices: devicePayload,
+    sensors: sensorPayload,
+  };
 
-    if (error) {
-      return { success: false, error: error.message, error_code: 'INVOKE_ERROR' };
+  try {
+    let data: Record<string, unknown> | null;
+    let fetchError: Error | null;
+
+    if (isDirectModeAvailable()) {
+      const cfg = getEffectiveConfig();
+      ({ data, error: fetchError } = await directFetch('emulator-sync', 'POST', {
+        'Authorization': `Bearer ${cfg.emulatorSyncApiKey}`,
+        'X-Emulator-Sync-Key': cfg.emulatorSyncApiKey,
+      }, payload));
+    } else {
+      const result = await supabase.functions.invoke('export-sync', { body: payload });
+      data = result.data;
+      fetchError = result.error;
+    }
+
+    if (fetchError) {
+      return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR' };
     }
 
     // Handle validation errors (400)
     if (data?.error && data?.details) {
       return {
         success: false,
-        error: data.error,
-        error_code: data.error_code || 'VALIDATION_ERROR',
-        details: data.details,
+        error: data.error as string,
+        error_code: (data.error_code as string) || 'VALIDATION_ERROR',
+        details: data.details as Array<{ path: string; message: string }>,
       };
     }
 
     return {
-      success: data?.success ?? false,
-      sync_run_id: data?.sync_run_id,
-      counts: data?.counts,
-      warnings: data?.warnings || [],
-      errors: data?.errors || [],
-      error: data?.success ? undefined : (data?.error || 'Unknown error'),
+      success: (data?.success as boolean) ?? false,
+      sync_run_id: data?.sync_run_id as string | undefined,
+      counts: data?.counts as ExportSyncResult['counts'],
+      warnings: (data?.warnings as string[]) || [],
+      errors: (data?.errors as string[]) || [],
+      error: data?.success ? undefined : ((data?.error as string) || 'Unknown error'),
     };
   } catch (err) {
     return {
@@ -231,6 +307,7 @@ export async function sendReadingsToFreshTrack(
   devices: LoRaWANDevice[],
   sensorStates: Record<string, SensorState>,
   webhookConfig: WebhookConfig,
+  orgIdOverride?: string,
 ): Promise<ExportReadingsResult> {
   // Build readings from all devices that have a unit_id
   const readings = devices
@@ -277,21 +354,30 @@ export async function sendReadingsToFreshTrack(
   }
 
   try {
-    const { data, error } = await supabase.functions.invoke('export-readings', {
-      body: { readings },
-    });
+    let data: Record<string, unknown> | null;
+    let fetchError: Error | null;
 
-    if (error) {
-      return { success: false, error: error.message, error_code: 'INVOKE_ERROR', ingested: 0, failed: readings.length };
+    if (isDirectModeAvailable()) {
+      const cfg = getEffectiveConfig();
+      ({ data, error: fetchError } = await directFetch('ingest-readings', 'POST', {
+        'X-Device-API-Key': cfg.deviceIngestApiKey,
+      }, { readings }));
+    } else {
+      const result = await supabase.functions.invoke('export-readings', { body: { readings } });
+      data = result.data;
+      fetchError = result.error;
+    }
+
+    if (fetchError) {
+      return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR', ingested: 0, failed: readings.length };
     }
 
     return {
-      success: data?.success ?? false,
-      ingested: data?.ingested ?? 0,
-      failed: data?.failed ?? 0,
-      results: data?.results,
-      error: data?.success ? undefined : (data?.error || 'Unknown error'),
-      sentReadings: readings as Array<Record<string, unknown>>,
+      success: (data?.success as boolean) ?? false,
+      ingested: (data?.ingested as number) ?? 0,
+      failed: (data?.failed as number) ?? 0,
+      results: data?.results as ExportReadingsResult['results'],
+      error: data?.success ? undefined : ((data?.error as string) || 'Unknown error'),
     };
   } catch (err) {
     return {
@@ -312,27 +398,144 @@ export async function testFreshTrackConnection(
   orgId: string,
 ): Promise<ConnectionTestResult> {
   try {
-    const { data, error } = await supabase.functions.invoke('fetch-org-state', {
-      body: { org_id: orgId },
-    });
+    let data: Record<string, unknown> | null;
+    let fetchError: Error | null;
 
-    if (error) {
-      return { ok: false, error: error.message, hint: 'Failed to reach FreshTrack via fetch-org-state proxy.' };
+    if (isDirectModeAvailable()) {
+      const cfg = getEffectiveConfig();
+      ({ data, error: fetchError } = await directFetch(
+        `org-state-api?org_id=${encodeURIComponent(orgId)}`,
+        'GET',
+        { 'Authorization': `Bearer ${cfg.orgStateSyncApiKey}` },
+      ));
+    } else {
+      const result = await supabase.functions.invoke('fetch-org-state', {
+        body: { org_id: orgId },
+      });
+      data = result.data;
+      fetchError = result.error;
+    }
+
+    if (fetchError) {
+      return { ok: false, error: fetchError.message, hint: 'Failed to reach FreshTrack.' };
     }
 
     if (data?.ok === false) {
       return {
         ok: false,
-        error: data.error || 'FreshTrack returned failure',
-        hint: data.hint || 'Check API keys and org ID.',
+        error: (data.error as string) || 'FreshTrack returned failure',
+        hint: (data.hint as string) || 'Check API keys and org ID.',
       };
     }
 
     return {
       ok: true,
-      orgName: data?.organization_name || data?.org_name || `Org ${orgId.slice(0, 8)}...`,
-      syncVersion: data?.sync_version,
+      orgName: (data?.organization_name || data?.org_name || `Org ${orgId.slice(0, 8)}...`) as string,
+      syncVersion: data?.sync_version as number | undefined,
     };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Network error',
+      hint: 'Check your network connection.',
+    };
+  }
+}
+
+// ============================================
+// Health Check (direct mode only, no auth)
+// ============================================
+
+export async function testFreshTrackHealth(): Promise<HealthCheckResult> {
+  const cfg = getEffectiveConfig();
+  if (!cfg.freshtrackUrl) {
+    return { ok: false, error: 'FreshTrack URL not configured.' };
+  }
+
+  try {
+    const url = `${cfg.freshtrackUrl}/functions/v1/org-state-api?action=health`;
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    const text = await response.text();
+    let data: Record<string, unknown>;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      return { ok: false, error: `Unexpected response: ${text.slice(0, 200)}` };
+    }
+
+    if (data.ok) {
+      return {
+        ok: true,
+        version: data.version as string | undefined,
+        timestamp: data.timestamp as string | undefined,
+      };
+    }
+
+    return { ok: false, error: (data.error as string) || 'Health check failed' };
+  } catch (err) {
+    return {
+      ok: false,
+      error: err instanceof Error ? err.message : 'Network error',
+    };
+  }
+}
+
+// ============================================
+// Pull Org State
+// ============================================
+
+export async function pullFreshTrackOrgState(
+  orgId: string,
+): Promise<PullOrgStateResult> {
+  try {
+    let data: Record<string, unknown> | null;
+    let fetchError: Error | null;
+
+    if (isDirectModeAvailable()) {
+      const cfg = getEffectiveConfig();
+      ({ data, error: fetchError } = await directFetch(
+        `org-state-api?org_id=${encodeURIComponent(orgId)}`,
+        'GET',
+        { 'Authorization': `Bearer ${cfg.orgStateSyncApiKey}` },
+      ));
+    } else {
+      const result = await supabase.functions.invoke('fetch-org-state', {
+        body: { org_id: orgId },
+      });
+      data = result.data;
+      fetchError = result.error;
+    }
+
+    if (fetchError) {
+      return { ok: false, error: fetchError.message, hint: 'Failed to reach FreshTrack.' };
+    }
+
+    if (!data || data.ok === false) {
+      return {
+        ok: false,
+        error: (data?.error as string) || 'FreshTrack returned failure',
+        hint: (data?.hint as string) || 'Check API keys and org ID.',
+      };
+    }
+
+    const orgState: FreshTrackOrgState = {
+      pulledAt: new Date().toISOString(),
+      orgId,
+      syncVersion: (data.sync_version as number) || 0,
+      updatedAt: data.updated_at as string | undefined,
+      sites: (data.sites as FreshTrackOrgState['sites']) || [],
+      areas: (data.areas as FreshTrackOrgState['areas']) || [],
+      units: (data.units as FreshTrackOrgState['units']) || [],
+      sensors: (data.sensors as FreshTrackOrgState['sensors']) || [],
+      gateways: (data.gateways as FreshTrackOrgState['gateways']) || [],
+      ttn: (data.ttn as FreshTrackOrgState['ttn']) || null,
+    };
+
+    return { ok: true, orgState };
   } catch (err) {
     return {
       ok: false,

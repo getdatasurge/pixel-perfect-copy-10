@@ -9,6 +9,13 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import {
   Upload, RefreshCw, CheckCircle, XCircle, AlertTriangle,
   Loader2, Clock, Wifi, WifiOff, Send, ArrowUpFromLine,
   Download, ChevronDown, ArrowUp,
@@ -25,7 +32,10 @@ import {
   OrgStateResult,
 } from '@/lib/freshtrackExport';
 import { loadExportConfig, saveExportConfig, ExportConfig } from '@/lib/exportConfigStore';
+import { getEffectiveConfig } from '@/lib/freshtrackConnectionStore';
 import { toast } from '@/hooks/use-toast';
+import ExportConnectionSettings from './ExportConnectionSettings';
+import OrgStateViewer from './OrgStateViewer';
 
 interface ExportPanelProps {
   devices: LoRaWANDevice[];
@@ -46,22 +56,14 @@ interface ReadingFeedEntry {
   id: string;
   timestamp: Date;
   unitId: string;
-  unitName?: string;
-  temperature: number;
-  temperatureUnit: string;
+  deviceName?: string;
+  temperature?: number;
   humidity?: number;
-  batteryLevel?: number;
-  signalStrength?: number;
   doorOpen?: boolean;
+  battery?: number;
+  signal?: number;
+  status: 'sent' | 'failed';
 }
-
-const AUTO_SYNC_INTERVALS = [
-  { value: '15', label: '15s' },
-  { value: '60', label: '1 min' },
-  { value: '120', label: '2 min' },
-  { value: '300', label: '5 min' },
-  { value: '900', label: '15 min' },
-];
 
 export default function ExportPanel({ devices, gateways, sensorStates, webhookConfig }: ExportPanelProps) {
   const [config, setConfig] = useState<ExportConfig>(loadExportConfig);
@@ -71,6 +73,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const [isSendingReadings, setIsSendingReadings] = useState(false);
   const [isPulling, setIsPulling] = useState(false);
   const [exportLog, setExportLog] = useState<LogEntry[]>([]);
+  const [readingsFeed, setReadingsFeed] = useState<ReadingFeedEntry[]>([]);
   const [nextSyncIn, setNextSyncIn] = useState<number | null>(null);
   const [orgState, setOrgState] = useState<OrgStateResult | null>(null);
   const [orgStateOpen, setOrgStateOpen] = useState(false);
@@ -78,7 +81,9 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const autoSyncRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
-  const orgId = webhookConfig.testOrgId;
+  // Resolve org ID: prefer connection settings over webhook config
+  const connectionConfig = getEffectiveConfig();
+  const effectiveOrgId = connectionConfig.freshtrackOrgId || webhookConfig.testOrgId;
 
   useEffect(() => { saveExportConfig(config); }, [config]);
 
@@ -90,28 +95,54 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
     }, ...prev].slice(0, 50));
   }, []);
 
+  const addReadingsFeed = useCallback((devicesList: LoRaWANDevice[], states: Record<string, SensorState>) => {
+    const entries: ReadingFeedEntry[] = devicesList
+      .filter(dev => dev.unitId)
+      .map(dev => {
+        const state = states[dev.id];
+        if (!state) return null;
+        return {
+          id: crypto.randomUUID(),
+          timestamp: new Date(),
+          unitId: dev.unitId!,
+          deviceName: dev.name,
+          temperature: state.type === 'temperature' ? state.tempF : undefined,
+          humidity: state.type === 'temperature' ? Math.round(state.humidity) : undefined,
+          doorOpen: state.type === 'door' ? state.doorOpen : undefined,
+          battery: Math.round(state.batteryPct),
+          signal: Math.round(state.signalStrength),
+          status: 'sent' as const,
+        };
+      })
+      .filter(Boolean) as ReadingFeedEntry[];
+
+    setReadingsFeed(prev => [...entries, ...prev].slice(0, 200));
+  }, []);
+
   // Test connection
   const handleTestConnection = useCallback(async () => {
-    if (!orgId) {
-      toast({ title: 'No Org Selected', description: 'Set Organization ID in Testing tab first.', variant: 'destructive' });
+    if (!effectiveOrgId) {
+      toast({ title: 'No Org Selected', description: 'Set Organization ID in Export Settings or Testing tab.', variant: 'destructive' });
       return;
     }
     setConnectionStatus('testing');
-    const result = await testFreshTrackConnection(orgId);
+    const result = await testFreshTrackConnection(effectiveOrgId);
     if (result.ok) {
       setConnectionStatus('connected');
       setConnectionInfo({ orgName: result.orgName, syncVersion: result.syncVersion });
-      addLog('connection', `Connected to FreshTrack: ${result.orgName || orgId.slice(0, 8)}`, 'success');
+      addLog('connection', `Connected to FreshTrack: ${result.orgName || effectiveOrgId.slice(0, 8)}`, 'success');
     } else {
       setConnectionStatus('failed');
       addLog('connection', `Connection failed: ${result.error}`, 'error');
       toast({ title: 'Connection Failed', description: result.hint || result.error, variant: 'destructive' });
     }
-  }, [orgId, addLog]);
+  }, [effectiveOrgId, addLog]);
 
   useEffect(() => {
-    if (orgId && connectionStatus === 'unknown') handleTestConnection();
-  }, [orgId]);
+    if (effectiveOrgId && connectionStatus === 'unknown') {
+      handleTestConnection();
+    }
+  }, [effectiveOrgId]);
 
   // Pull org state
   const handlePullState = useCallback(async () => {
@@ -132,7 +163,8 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   // Sync devices
   const handleSyncDevices = useCallback(async () => {
     setIsSyncing(true);
-    const result: ExportSyncResult = await syncDevicesToFreshTrack(devices, gateways, sensorStates, webhookConfig);
+    const result: ExportSyncResult = await syncDevicesToFreshTrack(devices, gateways, sensorStates, webhookConfig, effectiveOrgId);
+
     if (result.success) {
       setConfig(prev => ({
         ...prev,
@@ -155,12 +187,12 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       toast({ title: 'Sync Failed', description: errorMsg, variant: 'destructive' });
     }
     setIsSyncing(false);
-  }, [devices, gateways, sensorStates, webhookConfig, addLog]);
+  }, [devices, gateways, sensorStates, webhookConfig, effectiveOrgId, addLog]);
 
   // Send readings
   const handleSendReadings = useCallback(async () => {
     setIsSendingReadings(true);
-    const result: ExportReadingsResult = await sendReadingsToFreshTrack(devices, sensorStates, webhookConfig);
+    const result: ExportReadingsResult = await sendReadingsToFreshTrack(devices, sensorStates, webhookConfig, effectiveOrgId);
 
     // Populate live feed from sent readings
     if (result.sentReadings) {
@@ -191,6 +223,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
         lastReadingsIngested: result.ingested ?? 0,
         lastReadingsFailed: result.failed ?? 0,
       }));
+      addReadingsFeed(devices, sensorStates);
       addLog('readings', `Sent ${result.ingested} readings (${result.failed} failed)`, (result.failed ?? 0) > 0 ? 'warning' : 'success');
     } else {
       setConfig(prev => ({
@@ -204,14 +237,14 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       toast({ title: 'Send Failed', description: result.error, variant: 'destructive' });
     }
     setIsSendingReadings(false);
-  }, [devices, sensorStates, webhookConfig, orgState, addLog]);
+  }, [devices, sensorStates, webhookConfig, effectiveOrgId, addLog, addReadingsFeed]);
 
   // Auto-sync
   useEffect(() => {
     if (autoSyncRef.current) { clearInterval(autoSyncRef.current); autoSyncRef.current = null; }
     if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
 
-    if (config.autoSyncEnabled && orgId) {
+    if (config.autoSyncEnabled && effectiveOrgId) {
       const intervalMs = config.autoSyncIntervalSec * 1000;
       setNextSyncIn(config.autoSyncIntervalSec);
 
@@ -235,12 +268,20 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       if (autoSyncRef.current) clearInterval(autoSyncRef.current);
       if (countdownRef.current) clearInterval(countdownRef.current);
     };
-  }, [config.autoSyncEnabled, config.autoSyncIntervalSec, orgId]);
+  }, [config.autoSyncEnabled, config.autoSyncIntervalSec, effectiveOrgId]);
 
   const devicesWithUnit = devices.filter(d => d.unitId).length;
 
   return (
     <div className="space-y-6">
+      {/* Connection Settings */}
+      <ExportConnectionSettings
+        onConfigChange={() => {
+          // Re-test connection when settings change
+          setConnectionStatus('unknown');
+        }}
+      />
+
       {/* Connection Status */}
       <Card>
         <CardHeader className="pb-3">
@@ -255,20 +296,32 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
               )}
               FreshTrack Pro Connection
             </CardTitle>
-            <Button variant="outline" size="sm" onClick={handleTestConnection} disabled={!orgId || connectionStatus === 'testing'}>
-              {connectionStatus === 'testing' ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <RefreshCw className="h-4 w-4 mr-1" />}
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={handleTestConnection}
+              disabled={!effectiveOrgId || connectionStatus === 'testing'}
+            >
+              {connectionStatus === 'testing' ? (
+                <Loader2 className="h-4 w-4 animate-spin mr-1" />
+              ) : (
+                <RefreshCw className="h-4 w-4 mr-1" />
+              )}
               Test
             </Button>
           </div>
         </CardHeader>
         <CardContent>
-          {!orgId ? (
-            <Alert><AlertTriangle className="h-4 w-4" /><AlertDescription>No organization selected. Set Org ID in the Testing tab.</AlertDescription></Alert>
+          {!effectiveOrgId ? (
+            <Alert>
+              <AlertTriangle className="h-4 w-4" />
+              <AlertDescription>No organization selected. Set Org ID in Export Settings or Testing tab.</AlertDescription>
+            </Alert>
           ) : connectionStatus === 'connected' ? (
             <div className="flex items-center gap-4 text-sm">
               <Badge variant="outline" className="border-green-500/30 text-green-600">Connected</Badge>
               {connectionInfo.orgName && <span className="text-muted-foreground">Org: {connectionInfo.orgName}</span>}
-              {connectionInfo.syncVersion && <span className="text-muted-foreground">v{connectionInfo.syncVersion}</span>}
+              {connectionInfo.syncVersion != null && <span className="text-muted-foreground">v{connectionInfo.syncVersion}</span>}
             </div>
           ) : connectionStatus === 'failed' ? (
             <Badge variant="destructive">Connection Failed</Badge>
@@ -278,55 +331,10 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
         </CardContent>
       </Card>
 
-      {/* Pull State */}
-      <Card>
-        <CardHeader className="pb-3">
-          <div className="flex items-center justify-between">
-            <CardTitle className="text-base flex items-center gap-2">
-              <Download className="h-4 w-4" />
-              Pull Org State
-            </CardTitle>
-            <Button variant="outline" size="sm" onClick={handlePullState} disabled={!orgId || isPulling}>
-              {isPulling ? <Loader2 className="h-4 w-4 animate-spin mr-1" /> : <Download className="h-4 w-4 mr-1" />}
-              Pull
-            </Button>
-          </div>
-        </CardHeader>
-        <CardContent>
-          {orgState?.ok ? (
-            <Collapsible open={orgStateOpen} onOpenChange={setOrgStateOpen}>
-              <div className="flex items-center gap-4 text-sm mb-2">
-                <Badge variant="outline">{orgState.sites?.length ?? 0} Sites</Badge>
-                <Badge variant="outline">{orgState.units?.length ?? 0} Units</Badge>
-                <Badge variant="outline">{orgState.sensors?.length ?? 0} Sensors</Badge>
-                <Badge variant="outline">{orgState.gateways?.length ?? 0} Gateways</Badge>
-              </div>
-              <CollapsibleTrigger asChild>
-                <Button variant="ghost" size="sm" className="text-xs gap-1">
-                  <ChevronDown className={`h-3 w-3 transition-transform ${orgStateOpen ? 'rotate-180' : ''}`} />
-                  {orgStateOpen ? 'Hide' : 'Show'} details
-                </Button>
-              </CollapsibleTrigger>
-              <CollapsibleContent>
-                <ScrollArea className="h-40 mt-2">
-                  <div className="space-y-2 text-xs font-mono">
-                    {orgState.units?.map(u => (
-                      <div key={u.id} className="flex items-center gap-2 py-0.5 border-b border-border/30">
-                        <span className="text-muted-foreground w-20 truncate">{u.id.slice(0, 8)}</span>
-                        <span className="font-medium">{u.name}</span>
-                        <Badge variant="outline" className="text-[10px]">{u.unit_type}</Badge>
-                        <Badge variant={u.status === 'ok' ? 'outline' : 'secondary'} className="text-[10px]">{u.status}</Badge>
-                      </div>
-                    ))}
-                  </div>
-                </ScrollArea>
-              </CollapsibleContent>
-            </Collapsible>
-          ) : (
-            <p className="text-sm text-muted-foreground">Pull org state to see available sites, units, and sensors.</p>
-          )}
-        </CardContent>
-      </Card>
+      {/* Organization State Viewer */}
+      {effectiveOrgId && connectionStatus === 'connected' && (
+        <OrgStateViewer orgId={effectiveOrgId} />
+      )}
 
       {/* Sync Devices */}
       <Card>
@@ -340,8 +348,16 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           <p className="text-sm text-muted-foreground">
             Push {gateways.length} gateway(s), {devices.length} device(s) to FreshTrack Pro.
           </p>
-          <Button onClick={handleSyncDevices} disabled={isSyncing || !orgId || devices.length === 0} className="w-full">
-            {isSyncing ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Syncing...</> : <><ArrowUpFromLine className="h-4 w-4 mr-2" /> Sync Devices & Sensors</>}
+          <Button
+            onClick={handleSyncDevices}
+            disabled={isSyncing || !effectiveOrgId || devices.length === 0}
+            className="w-full"
+          >
+            {isSyncing ? (
+              <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Syncing...</>
+            ) : (
+              <><ArrowUpFromLine className="h-4 w-4 mr-2" /> Sync Devices & Sensors</>
+            )}
           </Button>
           {config.lastSyncCounts && (
             <div className="grid grid-cols-3 gap-2 text-xs">
@@ -370,26 +386,29 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
               Send Readings
             </CardTitle>
             <div className="flex items-center gap-2">
-              <Select
-                value={String(config.autoSyncIntervalSec)}
-                onValueChange={v => setConfig(prev => ({ ...prev, autoSyncIntervalSec: Number(v) }))}
-                disabled={!orgId || devicesWithUnit === 0}
-              >
-                <SelectTrigger className="w-20 h-7 text-xs">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {AUTO_SYNC_INTERVALS.map(i => (
-                    <SelectItem key={i.value} value={i.value}>{i.label}</SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-              <Label htmlFor="auto-sync" className="text-xs text-muted-foreground">Auto</Label>
+              {config.autoSyncEnabled && (
+                <Select
+                  value={String(config.autoSyncIntervalSec)}
+                  onValueChange={v => setConfig(prev => ({ ...prev, autoSyncIntervalSec: Number(v) }))}
+                >
+                  <SelectTrigger className="h-7 w-24 text-xs">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="60">1 min</SelectItem>
+                    <SelectItem value="120">2 min</SelectItem>
+                    <SelectItem value="300">5 min</SelectItem>
+                    <SelectItem value="600">10 min</SelectItem>
+                    <SelectItem value="900">15 min</SelectItem>
+                  </SelectContent>
+                </Select>
+              )}
+              <Label htmlFor="auto-sync" className="text-xs text-muted-foreground">Auto-sync</Label>
               <Switch
                 id="auto-sync"
                 checked={config.autoSyncEnabled}
                 onCheckedChange={v => setConfig(prev => ({ ...prev, autoSyncEnabled: v }))}
-                disabled={!orgId || devicesWithUnit === 0}
+                disabled={!effectiveOrgId || devicesWithUnit === 0}
               />
             </div>
           </div>
@@ -401,8 +420,17 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           {devicesWithUnit === 0 && (
             <Alert><AlertTriangle className="h-4 w-4" /><AlertDescription>No devices have unit_id assignments. Assign devices to units in the Devices tab first.</AlertDescription></Alert>
           )}
-          <Button onClick={handleSendReadings} disabled={isSendingReadings || !orgId || devicesWithUnit === 0} variant="secondary" className="w-full">
-            {isSendingReadings ? <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Sending...</> : <><Send className="h-4 w-4 mr-2" /> Send Current Readings</>}
+          <Button
+            onClick={handleSendReadings}
+            disabled={isSendingReadings || !effectiveOrgId || devicesWithUnit === 0}
+            variant="secondary"
+            className="w-full"
+          >
+            {isSendingReadings ? (
+              <><Loader2 className="h-4 w-4 animate-spin mr-2" /> Sending...</>
+            ) : (
+              <><Send className="h-4 w-4 mr-2" /> Send Current Readings</>
+            )}
           </Button>
           {config.autoSyncEnabled && nextSyncIn !== null && (
             <div className="flex items-center gap-2 text-xs text-muted-foreground">
@@ -418,31 +446,32 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
         </CardContent>
       </Card>
 
-      {/* Live Reading Feed */}
-      {readingFeed.length > 0 && (
+      {/* Reading Stream */}
+      {readingsFeed.length > 0 && (
         <Card>
           <CardHeader className="pb-3">
             <div className="flex items-center justify-between">
-              <CardTitle className="text-sm flex items-center gap-2">
-                <ArrowUp className="h-3 w-3" />
-                Live Reading Feed
-              </CardTitle>
-              <Button variant="ghost" size="sm" onClick={() => setReadingFeed([])}>Clear</Button>
+              <CardTitle className="text-sm">Reading Stream</CardTitle>
+              <Button variant="ghost" size="sm" onClick={() => setReadingsFeed([])}>Clear</Button>
             </div>
           </CardHeader>
           <CardContent>
-            <ScrollArea className="h-36">
+            <ScrollArea className="h-48">
               <div className="space-y-1">
-                {readingFeed.map(entry => (
-                  <div key={entry.id} className="flex items-center gap-2 py-0.5 text-xs font-mono border-b border-border/30 last:border-0">
-                    <ArrowUp className="h-3 w-3 text-primary shrink-0" />
-                    <span className="text-muted-foreground w-14 shrink-0">{entry.timestamp.toLocaleTimeString()}</span>
-                    <span className="font-medium truncate max-w-[140px]">{entry.unitName || entry.unitId.slice(0, 8)}</span>
-                    <span>{entry.temperature}°{entry.temperatureUnit}</span>
-                    {entry.humidity != null && <span className="text-muted-foreground">{entry.humidity}%rh</span>}
-                    {entry.batteryLevel != null && <span className="text-muted-foreground">bat:{entry.batteryLevel}%</span>}
-                    {entry.signalStrength != null && <span className="text-muted-foreground">{entry.signalStrength}dBm</span>}
-                    {entry.doorOpen != null && <Badge variant={entry.doorOpen ? 'destructive' : 'outline'} className="text-[10px]">{entry.doorOpen ? 'OPEN' : 'closed'}</Badge>}
+                {readingsFeed.map(entry => (
+                  <div key={entry.id} className="flex items-start gap-2 py-1 text-xs border-b border-border/30 last:border-0">
+                    <span className="text-muted-foreground font-mono w-16 shrink-0">
+                      {entry.timestamp.toLocaleTimeString()}
+                    </span>
+                    <ArrowUpFromLine className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />
+                    <span className="font-mono break-all">
+                      {entry.deviceName || entry.unitId.slice(0, 8)}:
+                      {entry.temperature !== undefined && ` ${entry.temperature}°F`}
+                      {entry.humidity !== undefined && `, ${entry.humidity}% RH`}
+                      {entry.doorOpen !== undefined && (entry.doorOpen ? ' OPEN' : ' CLOSED')}
+                      {entry.battery !== undefined && `, bat ${entry.battery}%`}
+                      {entry.signal !== undefined && `, ${entry.signal}dBm`}
+                    </span>
                   </div>
                 ))}
               </div>
