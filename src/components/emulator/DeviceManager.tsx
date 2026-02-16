@@ -350,7 +350,7 @@ export default function DeviceManager({
       'temperature': 'temperature',
       'temperature_humidity': 'temperature',
       'door': 'door',
-      'contact': 'door',
+      'contact': 'door',       // Contact sensors are door/open-close sensors
       'co2': 'temperature',
       'leak': 'door',
       'motion': 'door',
