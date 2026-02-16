@@ -149,7 +149,7 @@ function mapCategory(category: string): string {
     temperature: 'temperature',
     temperature_humidity: 'temperature_humidity',
     door: 'door',
-    contact: 'contact',
+    contact: 'door',
     co2: 'air_quality',
     leak: 'leak',
     gps: 'gps',
@@ -167,12 +167,26 @@ function mapCategory(category: string): string {
 // ============================================
 
 /**
- * Estimate battery voltage from percentage using Li-SOCl2 chemistry curve.
- * Li-SOCl2 (3.6V nominal): ~3.6V @ 100%, ~2.4V @ 0%
+ * Estimate battery voltage from percentage using piecewise Li-SOCl2 chemistry curve.
+ * Reference points: 100%→3.6V, 80%→3.2V, 50%→2.8V, 20%→2.4V, 5%→2.0V, 0%→1.8V
  */
 function estimateBatteryVoltage(batteryPct: number): number {
-  const voltage = 2.4 + (Math.max(0, Math.min(100, batteryPct)) / 100) * 1.2;
-  return Math.round(voltage * 100) / 100;
+  const pct = Math.max(0, Math.min(100, batteryPct));
+  // Piecewise linear interpolation between reference points
+  const points: [number, number][] = [
+    [0, 1.8], [5, 2.0], [20, 2.4], [50, 2.8], [80, 3.2], [100, 3.6],
+  ];
+  // Find the two surrounding points
+  for (let i = 0; i < points.length - 1; i++) {
+    const [p0, v0] = points[i];
+    const [p1, v1] = points[i + 1];
+    if (pct >= p0 && pct <= p1) {
+      const t = (pct - p0) / (p1 - p0);
+      const voltage = v0 + t * (v1 - v0);
+      return Math.round(voltage * 100) / 100;
+    }
+  }
+  return 3.6; // fallback
 }
 
 // ============================================
@@ -181,11 +195,12 @@ function estimateBatteryVoltage(batteryPct: number): number {
 
 /**
  * Calculate sensor status from emulator state.
- * Priority chain: fault(0) → pending(1) → joining(2) → offline(3) → active(4)
+ * Priority chain: fault(0) → pending(1) → joining(2) → inactive(3) → active(4)
  */
-function calculateSensorStatus(state: SensorState): 'active' | 'offline' | 'fault' | 'pending' {
-  if (!state.isOnline) return 'offline';
+function calculateSensorStatus(state: SensorState): 'active' | 'inactive' | 'fault' | 'pending' | 'joining' {
   if (state.batteryPct <= 5) return 'fault';
+  if (!state.isOnline) return 'inactive';
+  if (!state.lastSentAt) return 'joining';
   return 'active';
 }
 
@@ -253,20 +268,27 @@ function resolveFieldValue(
   normalExample?: Record<string, unknown>,
 ): unknown {
   // Map well-known canonical field names to emulator state
+  // Includes Dragino-specific aliases (TempC_SHT, TempC_DS, Hum_SHT, BatV, DOOR_OPEN_STATUS)
   switch (fieldName) {
     case 'temperature':
     case 'ext_temperature':
     case 'soil_temperature':
+    case 'TempC_SHT':
+    case 'TempC_DS':
       return Math.round(((state.tempF - 32) * 5 / 9) * 10) / 10;
     case 'humidity':
+    case 'Hum_SHT':
       return Math.round(state.humidity);
     case 'battery_level':
       return Math.round(state.batteryPct);
     case 'battery_voltage':
+    case 'BatV':
       return estimateBatteryVoltage(state.batteryPct);
     case 'door_status':
+    case 'DOOR_OPEN_STATUS':
       return state.doorOpen ? 'open' : 'closed';
     case 'door_open':
+    case 'door':
     case 'contact':
       return state.doorOpen;
     case 'water_leak':
@@ -412,6 +434,12 @@ export async function syncDevicesToFreshTrack(
       return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR' };
     }
 
+    // Handle 401/403 authentication errors
+    const httpStatus = data?._http_status as number | undefined;
+    if (httpStatus === 401 || httpStatus === 403) {
+      return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR' };
+    }
+
     // Handle validation errors (400)
     if (data?.error && data?.details) {
       return {
@@ -467,10 +495,6 @@ export async function sendReadingsToFreshTrack(
         device_serial: dev.devEui,
         device_model: modelInfo.model,
         recorded_at: new Date().toISOString(),
-        source_metadata: {
-          emulator_version: '2.0.0',
-          scenario: 'live_emulation',
-        },
       };
 
       // Type-specific fields
@@ -492,7 +516,7 @@ export async function sendReadingsToFreshTrack(
 
       // Source metadata
       reading.source_metadata = {
-        emulator_version: '1.0.0',
+        emulator_version: '2.0.0',
         library_device_id: state.libraryDeviceId || null,
         device_model: modelInfo.model,
         manufacturer: modelInfo.manufacturer,
@@ -529,7 +553,17 @@ export async function sendReadingsToFreshTrack(
     }
 
     if (fetchError) {
-      return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR', ingested: 0, failed: readings.length };
+      const httpStatus = (fetchError as Record<string, unknown>)?._http_status;
+      if (httpStatus === 401 || httpStatus === 403) {
+        return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
+      }
+      return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
+    }
+
+    // Handle 401/403 from directFetch
+    const httpStatus = data?._http_status as number | undefined;
+    if (httpStatus === 401 || httpStatus === 403) {
+      return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
     }
 
     return {
@@ -538,6 +572,7 @@ export async function sendReadingsToFreshTrack(
       failed: (data?.failed as number) ?? 0,
       results: data?.results as ExportReadingsResult['results'],
       error: data?.success ? undefined : ((data?.error as string) || 'Unknown error'),
+      sentReadings: readings as Array<Record<string, unknown>>,
     };
   } catch (err) {
     return {
@@ -546,6 +581,7 @@ export async function sendReadingsToFreshTrack(
       error_code: 'NETWORK_ERROR',
       ingested: 0,
       failed: readings.length,
+      sentReadings: readings as Array<Record<string, unknown>>,
     };
   }
 }
@@ -578,6 +614,12 @@ export async function testFreshTrackConnection(
 
     if (fetchError) {
       return { ok: false, error: fetchError.message, hint: 'Failed to reach FreshTrack.' };
+    }
+
+    // Handle 401/403
+    const httpStatus = data?._http_status as number | undefined;
+    if (httpStatus === 401 || httpStatus === 403) {
+      return { ok: false, error: `Authentication failed (${httpStatus}).`, hint: 'Check your Org State Sync API key.' };
     }
 
     if (data?.ok === false) {
@@ -705,34 +747,23 @@ export async function pullFreshTrackOrgState(
   }
 }
 
-// ============================================
-// Pull Org State
-// ============================================
-
+/**
+ * Legacy alias for pullFreshTrackOrgState — used by ExportPanel.
+ * Returns OrgStateResult shape for backward compatibility.
+ */
 export async function pullOrgState(orgId: string): Promise<OrgStateResult> {
-  try {
-    const { data, error } = await supabase.functions.invoke('fetch-org-state', {
-      body: { org_id: orgId },
-    });
-
-    if (error) {
-      return { ok: false, error: error.message };
-    }
-
-    if (data?.ok === false) {
-      return { ok: false, error: data.error || 'Failed to pull org state' };
-    }
-
-    return {
-      ok: true,
-      sites: data?.sites || [],
-      areas: data?.areas || [],
-      units: data?.units || [],
-      sensors: data?.sensors || [],
-      gateways: data?.gateways || [],
-      syncVersion: data?.sync_version,
-    };
-  } catch (err) {
-    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
+  const result = await pullFreshTrackOrgState(orgId);
+  if (!result.ok || !result.orgState) {
+    return { ok: false, error: result.error };
   }
+  const s = result.orgState;
+  return {
+    ok: true,
+    sites: s.sites,
+    areas: s.areas,
+    units: s.units.map(u => ({ id: u.id, name: u.name, unit_type: u.unit_type || '', site_id: u.site_id, area_id: u.area_id || '', status: u.status || 'active' })),
+    sensors: s.sensors.map(se => ({ id: se.id, name: se.name, dev_eui: se.dev_eui, sensor_type: se.sensor_type, unit_id: se.unit_id || null })),
+    gateways: s.gateways.map(g => ({ id: g.id, name: g.name, gateway_eui: g.gateway_eui, status: g.status })),
+    syncVersion: s.syncVersion,
+  };
 }
