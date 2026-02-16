@@ -697,7 +697,7 @@ export async function sendReadingsToFreshTrack(
       }
 
       if (fetchError) {
-        const httpStatus = (fetchError as Record<string, unknown>)?._http_status;
+        const httpStatus = (fetchError as unknown as Record<string, unknown>)?._http_status;
         if (httpStatus === 401 || httpStatus === 403) {
           return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: totalIngested, failed: totalFailed + batch.length, sentReadings: allReadings };
         }
