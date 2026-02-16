@@ -1,52 +1,50 @@
 
-# Fix: Door Sensors Show "Temp" Badge Despite Name Saying "Door"
+
+# Fix: Gateway Owner Auto-Discovery Fails (404) and eu1 Fallback
 
 ## Root Cause
 
-The issue is NOT stale cache or a field name mismatch. Both are already fixed. The real problem:
+Two bugs identified from the screenshots and edge function logs:
 
-1. FrostGuard's database has `sensor_kind = 'temp'` for the sensor named "Door Sensor 1" (a data quality issue on the FrostGuard side)
-2. The emulator tries `findDeviceByName("Door Sensor 1")` to get the correct type from the Device Library, but "Door Sensor 1" is a generic name -- not a known model name like "LDDS75" or "WS301" -- so it returns `null`
-3. With no library match, the code falls back to `sensor_kind` from FrostGuard, which is `'temp'`, so the device gets classified as `'temperature'`
+### Bug 1: Identity Server calls use wrong cluster (Critical)
+The `discoverGatewayOwnerInternal` function in `manage-ttn-settings` calls TTN's Identity Server endpoints (`/api/v3/organizations`, `/api/v3/auth_info`) using the regional cluster URL (e.g., `nam1.cloud.thethings.network`). However, TTN's Identity Server only runs on `eu1.cloud.thethings.network`. Both calls return **404**, so the auto-discovery never resolves the FrostGuard placeholder ID `fg-org-7873654e-ir9` to the real TTN owner.
 
-The "Type Mismatch" badge visible in the screenshots actually confirms this: it detected that the name implies "door" but the assigned type is "temperature". However, it only warns -- it does not correct the type.
+Edge function logs confirm this:
+```
+Discovery: Checking organizations at https://nam1.cloud.thethings.network/api/v3/organizations?limit=10
+Discovery: Organizations check returned 404
+Discovery: Checking auth info at https://nam1.cloud.thethings.network/api/v3/auth_info
+Discovery: Auth info returned 404
+```
+
+### Bug 2: WebhookSettings eu1 fallback (Minor)
+Line 667 of `WebhookSettings.tsx` still uses `'eu1'` as the default cluster fallback instead of `'nam1'`, which caused the initial cluster mismatch visible in the first screenshot (UI showed eu1 but emulation tried nam1).
 
 ## Fix
 
-Add a **name-based heuristic fallback** in `UserSelectionGate.tsx`. When both the library match AND the `sensor_kind` fail to identify the correct type, check if the sensor name contains keywords like "door", "contact", "leak", or "motion" and override accordingly.
+### File 1: `supabase/functions/manage-ttn-settings/index.ts`
 
-### File: `src/components/emulator/UserSelectionGate.tsx`
-
-After the existing library match block (around line 271), add a name-based fallback:
+Modify `discoverGatewayOwnerInternal` (around line 975) to always use `eu1` for Identity Server calls, since TTN routes all identity/auth endpoints through `eu1` regardless of the user's regional cluster.
 
 ```typescript
-// Fallback: if no library match, infer type from sensor name
-// This handles generic names like "Door Sensor 1" where FrostGuard
-// may have an incorrect sensor_kind value
-if (!libraryDevice) {
-  const lowerName = s.name.toLowerCase();
-  if (lowerName.includes('door') || lowerName.includes('contact')) {
-    deviceType = 'door';
-  } else if (lowerName.includes('leak') || lowerName.includes('motion')) {
-    deviceType = 'door';
-  }
-}
+// Identity Server endpoints are ALWAYS on eu1, regardless of regional cluster
+const identityBaseUrl = 'https://eu1.cloud.thethings.network';
 ```
 
-This reuses the same logic that the "Type Mismatch" badge already uses to detect the problem -- but now it actually fixes the type instead of just warning about it.
+Use `identityBaseUrl` instead of `baseUrl` for the `/api/v3/organizations` and `/api/v3/auth_info` calls. Keep the existing `baseUrl` (regional cluster) for the gateway read/write permission checks in `handleCheckGatewayPermissions`, since those are Application/Network Server endpoints.
 
-### Also: Bump cache version
+### File 2: `src/components/emulator/WebhookSettings.tsx`
 
-Change `CONTEXT_VERSION` from `2` to `3` to force a re-pull with the new name-based heuristic, ensuring any cached devices get reclassified.
+Change line 667 from:
+```typescript
+setTtnCluster(config.ttnConfig.cluster || 'eu1');
+```
+To:
+```typescript
+setTtnCluster(config.ttnConfig.cluster || 'nam1');
+```
 
-### Summary of changes
-
-- **`src/components/emulator/UserSelectionGate.tsx`**: Add name-based type inference fallback after the library match block; bump `CONTEXT_VERSION` to `3`
-- No other files need changes
-
-### Expected result
-
-After this fix, "Door Sensor 1" will:
-- Show a **Door** badge (not Temp)
-- Show **"1 door sensor selected"** in the status bar
-- The "Type Mismatch" warning will disappear since the name and type now agree
+### Expected Result
+- Auto-discovery will successfully resolve `fg-org-7873654e-ir9` to the real TTN username/organization
+- The "Gateway Owner ID not found" error will be replaced with a successful permission check
+- No more eu1/nam1 cluster mismatch on initial load
