@@ -237,23 +237,25 @@ export default function UserSelectionGate({
         
         // Determine device type:
         // 1. If library match found, use library category
-        // 2. Else fall back to FrostGuard type
-        let deviceType: 'temperature' | 'door' = 'temperature';
+        // 2. Else fall back to FrostGuard sensor_kind
+        // Note: FrostGuard DB uses sensor_kind enum ('temp'|'door'|'combo'),
+        // emulator uses ('temperature'|'door'). Map 'temp' → 'temperature'.
+        const frostguardType: 'temperature' | 'door' =
+          s.sensor_kind === 'door' ? 'door' : 'temperature';
+
+        let deviceType: 'temperature' | 'door' = frostguardType;
         let assignedLibraryId: string | null = null;
-        
+
         if (libraryDevice) {
           const mappedType = categoryToType[libraryDevice.category];
           if (mappedType) {
             deviceType = mappedType;
           } else {
-            // Unknown library category — fall back to FrostGuard type
-            deviceType = s.type === 'door' ? 'door' : 'temperature';
+            // Unknown library category — keep FrostGuard type
+            deviceType = frostguardType;
           }
           assignedLibraryId = libraryDevice.id;
           console.log(`[UserSelectionGate] Matched "${s.name}" → ${libraryDevice.id} (${libraryDevice.category} → ${deviceType})`);
-        } else {
-          // Fall back to FrostGuard type
-          deviceType = s.type === 'door' ? 'door' : 'temperature';
         }
         
         // Persist library assignment for payload generation

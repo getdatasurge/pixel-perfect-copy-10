@@ -19,7 +19,7 @@ export interface OrgStateSensor {
   dev_eui: string;
   join_eui: string;
   app_key: string;
-  type: 'temp' | 'door' | 'combo';
+  sensor_kind: 'temp' | 'door' | 'combo';
   gateway_id?: string;
   site_id?: string;
   unit_id?: string;
