@@ -972,11 +972,12 @@ async function discoverGatewayOwnerInternal(
   cluster: string,
   requestId: string
 ): Promise<{ ok: boolean; owner_type?: 'user' | 'organization'; owner_id?: string; all_organizations?: string[]; hint?: string }> {
-  const baseUrl = getBaseUrl(cluster);
+  // Identity Server endpoints are ALWAYS on eu1, regardless of regional cluster
+  const identityBaseUrl = 'https://eu1.cloud.thethings.network';
 
   // Try organizations first - most common for gateway management
   try {
-    const orgsUrl = `${baseUrl}/api/v3/organizations?limit=10`;
+    const orgsUrl = `${identityBaseUrl}/api/v3/organizations?limit=10`;
     console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
     const orgsResponse = await fetch(orgsUrl, {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
@@ -1004,7 +1005,7 @@ async function discoverGatewayOwnerInternal(
   // Try user info for personal API keys, or org info for org API keys
   try {
     // The /api/v3/auth_info endpoint returns info about the current auth context
-    const authInfoUrl = `${baseUrl}/api/v3/auth_info`;
+    const authInfoUrl = `${identityBaseUrl}/api/v3/auth_info`;
     console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
     const authInfoResponse = await fetch(authInfoUrl, {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
