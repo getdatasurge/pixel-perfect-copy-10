@@ -1,76 +1,93 @@
 
-
-# Fix: Stale API Key in synced_users (Last Synced Jan 20)
+# Fix: TTN Identity Server is on eu1, Not nam1
 
 ## Problem
 
-The emulator's database has **month-old credentials** for user `sustainablerealestatefl@gmail.com`:
+TTN Community/Sandbox has a split architecture:
+- **Identity Server** (application registry, user accounts): Always on `eu1`
+- **Network Server + Application Server** (device traffic, uplinks): On `nam1` for your devices
 
-```text
-Field              Database (Jan 20)      FrostGuard (Current)
------------------------------------------------------------------
-Application ID     fg-7873654e-si         fg-7873654e-yq
-API Key            ****JLCQ               ****GA0A
-Last Synced        2026-01-20             Never re-synced
-```
+Your application `fg-7873654e-yq` is registered on `eu1`'s Identity Server, and your devices operate on `nam1`'s Network/Application Server. This is normal TTN behavior -- notice the devices show "Other cluster" when viewed from `eu1`.
 
-The previous fix patches the Application ID on-the-fly (since the fresh pull provides it), but the **full API key** cannot be corrected client-side because FrostGuard's live pull only returns the last 4 characters for security. The full key is only sent through the `user-sync` pipeline, which last ran on Jan 20.
+The connection test calls `GET /api/v3/applications/{id}` which only works on the Identity Server (`eu1`). When the emulator sends this to `nam1`, it gets a 404 because `nam1` doesn't host the Identity Server for your account.
 
-## Solution: Two-Part Fix
+## Solution: eu1 Identity Server Fallback
 
-### Part 1: Trigger a Re-Sync from FrostGuard (Immediate)
+When an application lookup returns 404 on the configured cluster, automatically retry on `eu1` (the centralized Identity Server). If found on `eu1`, report success and note the split-cluster setup.
 
-The user-sync pipeline needs to run again from FrostGuard to push the updated credentials. This can be triggered by:
+### Change 1: Connection Test fallback (`manage-ttn-settings`)
 
-- Logging into the FrostGuard app (which triggers user-sync-emitter)
-- OR manually calling the sync endpoint with the updated credentials
+**File: `supabase/functions/manage-ttn-settings/index.ts`**
 
-### Part 2: Add "Stale Credentials" Detection and Warning (Code Change)
+In `handleTest()` (line 518), when `status === 404` and `cluster !== 'eu1'`:
+- Retry the same `GET /api/v3/applications/{id}` call against `eu1.cloud.thethings.network`
+- If `eu1` returns 200, report "Connected Successfully" with a note that the Identity Server is on `eu1` while devices operate on the configured cluster
 
-Add a visual indicator in the Webhook Settings when the API key in the database (`synced_users.ttn.api_key_last4`) doesn't match the fresh FrostGuard pull (`config.ttnConfig.api_key_last4`). This tells the user exactly what's wrong.
+### Change 2: Preflight application check fallback (`ttn-preflight`)
 
-**File: `src/components/emulator/WebhookSettings.tsx`**
+**File: `supabase/functions/ttn-preflight/index.ts`**
 
-In the `loadSettings()` function, after the existing Application ID mismatch detection (around line 825):
+In `checkApplicationExists()` (line 164), when `status === 404` and `cluster !== 'eu1'`:
+- Retry on `eu1`
+- If found, mark `exists: true` so preflight passes
 
-1. Compare `config.ttnConfig.api_key_last4` (fresh from FrostGuard: `GA0A`) against `rawUserTTN.api_key_last4` (from DB: `JLCQ`)
-2. If they differ, set a new state variable `staleApiKey: true` with both values
-3. Show an alert in the UI: "Your API key has changed in FrostGuard (now ending in GA0A) but the emulator still has the old key (ending in JLCQ). Please re-sync from FrostGuard to update credentials."
+### Change 3: Device checks stay on the configured cluster
 
-**Additionally**, in the auto-sync block (around line 1032), extend the `synced_users.ttn` mirror patch to also update `api_key_last4` when a mismatch is detected (though this alone won't fix the full key -- it helps with diagnostics).
-
-### Part 3: Add Manual API Key Override (Stretch Goal)
-
-Since the user has access to the full Application API Secret in FrostGuard's UI (ending `GA0A`), add a "Paste API Key" input field that allows manually updating the key in `synced_users.ttn.api_key` directly. This provides a workaround when the sync pipeline is broken or delayed.
+Device lookups (`GET /api/v3/applications/{id}/devices/{device_id}`) DO work on `nam1` because the Application Server is there. No change needed for device checks -- only the application-level lookup needs the Identity Server fallback.
 
 ## Technical Details
 
-### New State Variable
-```typescript
-const [staleApiKeyWarning, setStaleApiKeyWarning] = useState<{
-  dbLast4: string;
-  frostguardLast4: string;
-} | null>(null);
-```
+### handleTest fallback (manage-ttn-settings)
 
-### Detection Logic (in loadSettings, after line ~827)
 ```typescript
-const freshApiKeyLast4 = config.ttnConfig?.api_key_last4 || null;
-const mirrorApiKeyLast4 = rawUserTTN?.api_key_last4 as string | undefined;
-if (freshApiKeyLast4 && mirrorApiKeyLast4 && freshApiKeyLast4 !== mirrorApiKeyLast4) {
-  console.warn(`[WebhookSettings] API Key mismatch: FrostGuard=${freshApiKeyLast4}, DB=${mirrorApiKeyLast4}`);
-  setStaleApiKeyWarning({ dbLast4: mirrorApiKeyLast4, frostguardLast4: freshApiKeyLast4 });
+if (status === 404 && cluster !== 'eu1') {
+  // TTN Identity Server may be on eu1 for Community accounts
+  console.log(`[${requestId}] App not found on ${cluster}, trying eu1 Identity Server`);
+  const eu1Url = `https://eu1.cloud.thethings.network/api/v3/applications/${application_id}`;
+  
+  const eu1Response = await fetch(eu1Url, {
+    method: 'GET',
+    headers: { 'Authorization': `Bearer ${api_key}`, 'Accept': 'application/json' },
+  });
+  
+  if (eu1Response.status === 200) {
+    return buildResponse({
+      ok: true,
+      connected: true,
+      baseUrl: getBaseUrl(cluster),    // Keep operational cluster
+      application_id,
+      cluster,                          // Keep nam1 as the operational cluster
+      identity_server: 'eu1',           // Note where IS lives
+      message: 'Connected to The Things Network',
+      required_permissions: REQUIRED_PERMISSIONS,
+    }, 200, requestId);
+  }
 }
 ```
 
-### Warning UI (in the Application API Secret section)
-An amber alert that reads:
-"API key has changed in FrostGuard (now ****GA0A) but the emulator still has an older key (****JLCQ). Either re-sync from FrostGuard or paste the new key below."
+### checkApplicationExists fallback (ttn-preflight)
 
-### Manual Key Override Input
-A conditional text input that appears when `staleApiKeyWarning` is set, allowing the user to paste the full API key from FrostGuard's UI. On submit, it updates `synced_users.ttn.api_key` and `synced_users.ttn.api_key_last4` directly.
+```typescript
+if (response.status === 404 && cluster !== 'eu1') {
+  console.log(`[preflight] App not found on ${cluster}, trying eu1 Identity Server`);
+  const eu1Response = await fetch(
+    `https://eu1.cloud.thethings.network/api/v3/applications/${applicationId}`,
+    { method: 'GET', headers: { 'Authorization': `Bearer ${apiKey}` } }
+  );
+  if (eu1Response.ok) {
+    return { exists: true };
+  }
+}
+```
 
-## Immediate Action Required
+## Files to Change
 
-Before the code fix, the quickest resolution is to **trigger a user re-sync from FrostGuard** for the Orlando Burgers organization. This will push the new API key (****GA0A) and Application ID (fg-7873654e-yq) to the emulator's database.
+1. `supabase/functions/manage-ttn-settings/index.ts` -- Add eu1 fallback in `handleTest()` (around line 642)
+2. `supabase/functions/ttn-preflight/index.ts` -- Add eu1 fallback in `checkApplicationExists()` (around line 180)
 
+## Expected Result
+
+- Connection test with cluster=`nam1` will succeed (finds app on eu1 Identity Server)
+- Preflight check will pass
+- Emulation will start successfully
+- Device operations (simulate uplink, etc.) continue to use `nam1` as before
