@@ -660,57 +660,45 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
 
   // Load settings from config or database on mount or org/user change
   useEffect(() => {
-    // If TTN config is already in the config prop (from Testing page), use it directly
-    if (config.ttnConfig?.applicationId) {
-      console.log('[WebhookSettings] Using TTN config from props:', config.ttnConfig);
-      setTtnEnabled(config.ttnConfig.enabled || false);
-      setTtnCluster(config.ttnConfig.cluster || 'nam1');
-      setTtnApplicationId(config.ttnConfig.applicationId || '');
-      setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
-      setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
-      setTtnWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
-      // Load gateway API key if available
-      const gwKeyLast4 = (config.ttnConfig as any).gateway_api_key_last4;
-      setGatewayApiKeyPreview(gwKeyLast4 ? `****${gwKeyLast4}` : null);
-      setGatewayApiKeySet(!!gwKeyLast4);
-      // Load gateway owner config
-      const ownerType = (config.ttnConfig as any).gateway_owner_type;
-      const ownerId = (config.ttnConfig as any).gateway_owner_id;
-      if (ownerType) setGatewayOwnerType(ownerType);
-      if (ownerId) setGatewayOwnerId(ownerId);
-      // Don't load actual secrets from config
-      setTtnApiKey('');
-      setTtnWebhookSecret('');
-      setGatewayApiKey('');
-      
-      // Set canonical values for "Current:" display from props first
-      setCanonicalCluster(config.ttnConfig.cluster || null);
-      setCanonicalApplicationId(config.ttnConfig.applicationId || null);
-      setCanonicalApiKeyLast4(config.ttnConfig.api_key_last4 || null);
-      setCanonicalOwnerType(ownerType || null);
-      setCanonicalOwnerId(ownerId || null);
-      setCanonicalWebhookSecretLast4(config.ttnConfig.webhook_secret_last4 || null);
-      setCanonicalGatewayApiKeyLast4(gwKeyLast4 || null);
-      setCanonicalLastSyncAt(config.contextSetAt || config.lastSyncAt || null);
-
-      // Update connection status if available
-      if (config.ttnConfig.lastTestAt) {
-        setLastTestAt(config.ttnConfig.lastTestAt);
-        setLastTestSuccess(config.ttnConfig.lastTestSuccess ?? null);
+    // ALWAYS load from database to get authoritative values.
+    // Props from localStorage may be stale (e.g., applicationId changed in FrostGuard).
+    if (orgId) {
+      // If TTN config is in props, use it for immediate display while we verify
+      if (config.ttnConfig?.applicationId) {
+        console.log('[WebhookSettings] Using TTN config from props (will verify against DB):', config.ttnConfig);
+        setTtnEnabled(config.ttnConfig.enabled || false);
+        setTtnCluster(config.ttnConfig.cluster || 'nam1');
+        setTtnApplicationId(config.ttnConfig.applicationId || '');
+        setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
+        setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
+        setTtnWebhookSecretSet(!!(config.ttnConfig.webhook_secret_last4));
+        const gwKeyLast4 = (config.ttnConfig as any).gateway_api_key_last4;
+        setGatewayApiKeyPreview(gwKeyLast4 ? `****${gwKeyLast4}` : null);
+        setGatewayApiKeySet(!!gwKeyLast4);
+        const ownerType = (config.ttnConfig as any).gateway_owner_type;
+        const ownerId = (config.ttnConfig as any).gateway_owner_id;
+        if (ownerType) setGatewayOwnerType(ownerType);
+        if (ownerId) setGatewayOwnerId(ownerId);
+        setTtnApiKey('');
+        setTtnWebhookSecret('');
+        setGatewayApiKey('');
+        setCanonicalCluster(config.ttnConfig.cluster || null);
+        setCanonicalApplicationId(config.ttnConfig.applicationId || null);
+        setCanonicalApiKeyLast4(config.ttnConfig.api_key_last4 || null);
+        setCanonicalOwnerType(ownerType || null);
+        setCanonicalOwnerId(ownerId || null);
+        setCanonicalWebhookSecretLast4(config.ttnConfig.webhook_secret_last4 || null);
+        setCanonicalGatewayApiKeyLast4(gwKeyLast4 || null);
+        setCanonicalLastSyncAt(config.contextSetAt || config.lastSyncAt || null);
+        if (config.ttnConfig.lastTestAt) {
+          setLastTestAt(config.ttnConfig.lastTestAt);
+          setLastTestSuccess(config.ttnConfig.lastTestSuccess ?? null);
+        }
+        setIsLoading(false);
       }
-
-      setIsLoading(false);
-      
-      // IMPORTANT: Always fetch gateway settings from ttn_settings (source of truth for gateway config)
-      // since props may not include gateway-specific fields that are stored in ttn_settings
-      if (orgId) {
-        loadGatewaySettings();
-      }
-    } else if (orgId) {
-      // Fallback to database query (for backward compatibility)
+      // Always load from database to verify/correct stale props
       loadSettings();
     } else {
-      // No config and no orgId - just set loading to false
       setIsLoading(false);
     }
   }, [orgId, config.selectedUserId, config.ttnConfig]);
