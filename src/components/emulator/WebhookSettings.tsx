@@ -1028,6 +1028,29 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           } catch (autoSaveErr) {
             console.error('[WebhookSettings] Exception auto-syncing:', autoSaveErr);
           }
+          
+          // Also update the stale synced_users.ttn mirror so edge functions get the correct value
+          const freshPullAppId = config.ttnConfig?.applicationId || null;
+          const mirrorAppId = rawUserTTN?.application_id as string | undefined;
+          if (freshPullAppId && mirrorAppId && freshPullAppId !== mirrorAppId && userId) {
+            console.log(`[WebhookSettings] Correcting stale synced_users.ttn.application_id: ${mirrorAppId} → ${freshPullAppId}`);
+            try {
+              // Read current ttn JSONB, patch application_id, write back
+              const currentTtn = (syncedUser?.ttn || {}) as Record<string, unknown>;
+              const patchedTtn = { ...currentTtn, application_id: freshPullAppId };
+              const { error: mirrorErr } = await supabase
+                .from('synced_users')
+                .update({ ttn: patchedTtn as any })
+                .eq('source_user_id', userId);
+              if (mirrorErr) {
+                console.error('[WebhookSettings] Failed to correct synced_users.ttn mirror:', mirrorErr);
+              } else {
+                console.log('[WebhookSettings] Successfully corrected synced_users.ttn.application_id');
+              }
+            } catch (mirrorFixErr) {
+              console.error('[WebhookSettings] Exception correcting synced_users mirror:', mirrorFixErr);
+            }
+          }
         }
         autoSyncDoneRef.current = true;
       }
@@ -2409,23 +2432,22 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
               {/* Permission Status */}
               {renderPermissionStatus()}
 
-              {/* Application ID Mismatch Warning */}
-              {resolvedConfig?.raw_user_ttn?.application_id && 
+              {/* Application ID Mismatch Warning - only show when resolved effective ID differs from org setting */}
+              {resolvedConfig?.application_id && 
                resolvedConfig?.raw_org_settings?.application_id &&
-               resolvedConfig.raw_user_ttn.application_id !== (resolvedConfig.raw_org_settings as any).application_id && (
+               resolvedConfig.application_id !== (resolvedConfig.raw_org_settings as any).application_id && (
                 <Alert className="border-amber-500/50 bg-amber-500/10">
                   <AlertTriangle className="h-4 w-4 text-amber-600" />
                   <AlertTitle className="text-amber-700">Application ID Mismatch</AlertTitle>
                   <AlertDescription className="text-amber-600 text-xs">
                     <p className="mb-2">
-                      User config has "<span className="font-mono font-medium">{String(resolvedConfig.raw_user_ttn.application_id)}</span>" 
+                      FrostGuard source has "<span className="font-mono font-medium">{resolvedConfig.application_id}</span>" 
                       but local ttn_settings has "<span className="font-mono font-medium">{(resolvedConfig.raw_org_settings as any).application_id}</span>".
                     </p>
                     <p>
-                      Using <span className="font-medium">{resolvedConfig.application_id_source === 'user' ? 'User' : 'Org'}</span> value: 
+                      Using <span className="font-medium">{resolvedConfig.application_id_source === 'user' ? 'FrostGuard' : 'Org'}</span> value: 
                       "<span className="font-mono font-medium">{resolvedConfig.application_id}</span>".
-                      {resolvedConfig.application_id_source === 'org' && 
-                       " Click Refresh to reload local data."}
+                      Auto-sync will correct the local setting on next load.
                     </p>
                   </AlertDescription>
                 </Alert>
