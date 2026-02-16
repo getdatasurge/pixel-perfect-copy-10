@@ -178,6 +178,24 @@ async function checkApplicationExists(
     });
 
     if (response.status === 404) {
+      // Try eu1 Identity Server fallback for Community/Sandbox accounts
+      if (cluster !== 'eu1') {
+        console.log(`[preflight] App not found on ${cluster}, trying eu1 Identity Server`);
+        try {
+          const eu1Response = await fetch(
+            `https://eu1.cloud.thethings.network/api/v3/applications/${applicationId}`,
+            { method: 'GET', headers: { 'Authorization': `Bearer ${apiKey}` } }
+          );
+          if (eu1Response.ok) {
+            await eu1Response.text();
+            console.log(`[preflight] App found on eu1 Identity Server`);
+            return { exists: true };
+          }
+          await eu1Response.text();
+        } catch (e) {
+          console.warn(`[preflight] eu1 fallback failed:`, e);
+        }
+      }
       return { 
         exists: false, 
         error: `Application "${applicationId}" not found on cluster ${cluster}`,
