@@ -1,25 +1,28 @@
 
-# Fix: Default Device Library Validation Errors (3 errors)
+
+# Fix: Door Sensors Show "Temp" Badge Instead of "Door"
 
 ## Root Cause
+FrostGuard's API returns `sensor_kind` (values: `'temp'`, `'door'`, `'combo'`), but the `OrgStateSensor` interface declares the field as `type`. At runtime `s.type` is always `undefined`, so every sensor defaults to `'temperature'`.
 
-The default device library has 2 devices with `manufacturer: ''` (empty string):
-- `generic-tbs220` (TBS220 GPS Tracker)
-- `generic-ds3604` (DS3604 Door Sensor)
+## Changes
 
-The Zod schema requires `manufacturer: z.string().min(1)`, so empty strings fail validation. This produces 3 errors:
-1. `generic-tbs220.manufacturer` fails min(1)
-2. `generic-ds3604.manufacturer` fails min(1)
-3. The metadata refinement fails because `''` is not in `metadata.manufacturers`
+### 1. `src/lib/frostguardOrgSync.ts` (line 22)
+Rename the interface field from `type` to `sensor_kind`:
+```
+sensor_kind: 'temp' | 'door' | 'combo';
+```
 
-This is why the console shows `[DeviceLibraryStore] Default library invalid: Array(3)` and the Add Sensor dropdown is stuck on "Loading library..."
+### 2. `src/components/emulator/UserSelectionGate.tsx` (line 250)
+Update the fallback mapping from `s.type` to `s.sensor_kind`:
+```
+deviceType = s.sensor_kind === 'door' ? 'door' : 'temperature';
+```
 
-## Fix
+### 3. No changes needed to `categoryToType` maps
+Both `UserSelectionGate.tsx` and `DeviceManager.tsx` already have all 12 category entries including `contact`, `temperature_humidity`, and `multi_sensor` (fixed in a previous round).
 
-**File: `src/lib/deviceLibrary/defaultLibrary.ts`**
-
-1. Change `generic-tbs220` manufacturer from `''` to `'Generic'` (line 198)
-2. Change `generic-ds3604` manufacturer from `''` to `'Generic'` (line 355)
-3. Add `'Generic'` to `metadata.manufacturers` array (line 23)
-
-This satisfies both the field-level min(1) check and the metadata refinement that requires all device manufacturers to be listed in the metadata.
+## Result
+- Door sensors pulled from FrostGuard will correctly show a "Door" badge
+- The status bar will report the correct sensor type counts
+- `'temp'` and `'combo'` sensors continue to map to `'temperature'`
