@@ -316,6 +316,14 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     permissions?: { gateway_read: boolean; gateway_write: boolean };
   } | null>(null);
   
+  // Stale API key detection
+  const [staleApiKeyWarning, setStaleApiKeyWarning] = useState<{
+    dbLast4: string;
+    frostguardLast4: string;
+  } | null>(null);
+  const [manualApiKeyInput, setManualApiKeyInput] = useState('');
+  const [isSavingManualKey, setIsSavingManualKey] = useState(false);
+  
   
   // Config source tracking for badge display
   const [configSource, setConfigSource] = useState(() => getConfigSummary());
@@ -825,6 +833,15 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
         if (mirrorAppId && mirrorAppId !== freshPullAppId) {
           console.warn(`[WebhookSettings] Application ID mismatch: fresh pull=${freshPullAppId}, synced_users=${mirrorAppId}. Using fresh pull value.`);
         }
+        // Detect stale API key: compare fresh FrostGuard api_key_last4 vs synced_users mirror
+        const freshApiKeyLast4 = config.ttnConfig?.api_key_last4 || null;
+        const mirrorApiKeyLast4 = rawUserTTN?.api_key_last4 as string | undefined;
+        if (freshApiKeyLast4 && mirrorApiKeyLast4 && freshApiKeyLast4 !== mirrorApiKeyLast4) {
+          console.warn(`[WebhookSettings] API Key mismatch: FrostGuard=${freshApiKeyLast4}, DB=${mirrorApiKeyLast4}`);
+          setStaleApiKeyWarning({ dbLast4: mirrorApiKeyLast4, frostguardLast4: freshApiKeyLast4 });
+        } else {
+          setStaleApiKeyWarning(null);
+        }
       } else if (rawUserTTN?.application_id) {
         effectiveAppId = rawUserTTN.application_id as string;
         appIdSource = 'user';
@@ -1032,23 +1049,38 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           // Also update the stale synced_users.ttn mirror so edge functions get the correct value
           const freshPullAppId = config.ttnConfig?.applicationId || null;
           const mirrorAppId = rawUserTTN?.application_id as string | undefined;
-          if (freshPullAppId && mirrorAppId && freshPullAppId !== mirrorAppId && userId) {
-            console.log(`[WebhookSettings] Correcting stale synced_users.ttn.application_id: ${mirrorAppId} → ${freshPullAppId}`);
-            try {
-              // Read current ttn JSONB, patch application_id, write back
-              const currentTtn = (syncedUser?.ttn || {}) as Record<string, unknown>;
-              const patchedTtn = { ...currentTtn, application_id: freshPullAppId };
-              const { error: mirrorErr } = await supabase
-                .from('synced_users')
-                .update({ ttn: patchedTtn as any })
-                .eq('source_user_id', userId);
-              if (mirrorErr) {
-                console.error('[WebhookSettings] Failed to correct synced_users.ttn mirror:', mirrorErr);
-              } else {
-                console.log('[WebhookSettings] Successfully corrected synced_users.ttn.application_id');
+          if (userId) {
+            const currentTtn = (syncedUser?.ttn || {}) as Record<string, unknown>;
+            const patches: Record<string, unknown> = {};
+            
+            if (freshPullAppId && mirrorAppId && freshPullAppId !== mirrorAppId) {
+              console.log(`[WebhookSettings] Correcting stale synced_users.ttn.application_id: ${mirrorAppId} → ${freshPullAppId}`);
+              patches.application_id = freshPullAppId;
+            }
+            
+            // Also patch api_key_last4 if mismatched (helps diagnostics, doesn't fix the full key)
+            const freshApiKeyLast4 = config.ttnConfig?.api_key_last4 || null;
+            const mirrorApiKeyLast4 = rawUserTTN?.api_key_last4 as string | undefined;
+            if (freshApiKeyLast4 && mirrorApiKeyLast4 && freshApiKeyLast4 !== mirrorApiKeyLast4) {
+              console.log(`[WebhookSettings] Correcting stale synced_users.ttn.api_key_last4: ${mirrorApiKeyLast4} → ${freshApiKeyLast4}`);
+              patches.api_key_last4 = freshApiKeyLast4;
+            }
+            
+            if (Object.keys(patches).length > 0) {
+              try {
+                const patchedTtn = { ...currentTtn, ...patches };
+                const { error: mirrorErr } = await supabase
+                  .from('synced_users')
+                  .update({ ttn: patchedTtn as any })
+                  .eq('source_user_id', userId);
+                if (mirrorErr) {
+                  console.error('[WebhookSettings] Failed to correct synced_users.ttn mirror:', mirrorErr);
+                } else {
+                  console.log('[WebhookSettings] Successfully corrected synced_users.ttn mirror:', Object.keys(patches).join(', '));
+                }
+              } catch (mirrorFixErr) {
+                console.error('[WebhookSettings] Exception correcting synced_users mirror:', mirrorFixErr);
               }
-            } catch (mirrorFixErr) {
-              console.error('[WebhookSettings] Exception correcting synced_users mirror:', mirrorFixErr);
             }
           }
         }
@@ -2103,6 +2135,69 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
                   }
                   {ttnApiKeySet && !canonicalApiKeyLast4 && (
                     <p className="text-xs text-muted-foreground">Leave blank to keep, enter new to replace</p>
+                  )}
+                  
+                  {/* Stale API Key Warning */}
+                  {staleApiKeyWarning && (
+                    <div className="mt-2 space-y-2">
+                      <Alert className="border-amber-500/50 bg-amber-500/10">
+                        <AlertTriangle className="h-4 w-4 text-amber-600" />
+                        <AlertTitle className="text-amber-700 text-sm">Stale API Key Detected</AlertTitle>
+                        <AlertDescription className="text-xs text-amber-600">
+                          API key has changed in FrostGuard (now ****{staleApiKeyWarning.frostguardLast4}) but the emulator still has an older key (****{staleApiKeyWarning.dbLast4}). 
+                          Either re-sync from FrostGuard or paste the new key below.
+                        </AlertDescription>
+                      </Alert>
+                      <div className="flex gap-2">
+                        <Input
+                          type="password"
+                          placeholder="Paste full API key from FrostGuard (NNSXS.…)"
+                          value={manualApiKeyInput}
+                          onChange={e => setManualApiKeyInput(e.target.value)}
+                          className="text-xs"
+                          disabled={isSavingManualKey}
+                        />
+                        <Button
+                          size="sm"
+                          variant="outline"
+                          disabled={!manualApiKeyInput || isSavingManualKey || !manualApiKeyInput.startsWith('NNSXS.')}
+                          onClick={async () => {
+                            if (!config.selectedUserId) return;
+                            setIsSavingManualKey(true);
+                            try {
+                              const { data: currentRow } = await supabase
+                                .from('synced_users')
+                                .select('ttn')
+                                .eq('source_user_id', config.selectedUserId)
+                                .maybeSingle();
+                              const currentTtn = (currentRow?.ttn || {}) as Record<string, unknown>;
+                              const newLast4 = manualApiKeyInput.slice(-4);
+                              const patchedTtn = { 
+                                ...currentTtn, 
+                                api_key: manualApiKeyInput,
+                                api_key_last4: newLast4,
+                              };
+                              const { error } = await supabase
+                                .from('synced_users')
+                                .update({ ttn: patchedTtn as any })
+                                .eq('source_user_id', config.selectedUserId);
+                              if (error) throw error;
+                              setStaleApiKeyWarning(null);
+                              setManualApiKeyInput('');
+                              setCanonicalApiKeyLast4(newLast4);
+                              toast({ title: 'API Key Updated', description: `Key updated successfully (****${newLast4})` });
+                            } catch (err: any) {
+                              toast({ title: 'Update Failed', description: err.message, variant: 'destructive' });
+                            } finally {
+                              setIsSavingManualKey(false);
+                            }
+                          }}
+                        >
+                          {isSavingManualKey ? <Loader2 className="h-3 w-3 animate-spin" /> : <Save className="h-3 w-3" />}
+                          Save
+                        </Button>
+                      </div>
+                    </div>
                   )}
                 </div>
 
