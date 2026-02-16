@@ -20,7 +20,7 @@ export const defaultDeviceLibrary: DeviceLibrary = {
       'leak', 'gps', 'meter', 'motion', 'air_quality',
       'multi_sensor',
     ],
-    manufacturers: ['Milesight', 'Dragino', 'Tektelic', 'Netvox', 'Elsys', 'Browan'],
+    manufacturers: ['Milesight', 'Dragino', 'Tektelic', 'Netvox', 'Elsys', 'Browan', 'Generic'],
   },
   devices: [
     // ============================================
@@ -195,7 +195,7 @@ export const defaultDeviceLibrary: DeviceLibrary = {
     {
       id: 'generic-tbs220',
       name: 'TBS220',
-      manufacturer: '',
+      manufacturer: 'Generic',
       category: 'gps',
       model: 'TBS220',
       description: 'GPS Tracker',
@@ -352,7 +352,7 @@ export const defaultDeviceLibrary: DeviceLibrary = {
     {
       id: 'generic-ds3604',
       name: 'DS3604',
-      manufacturer: '',
+      manufacturer: 'Generic',
       category: 'door',
       model: 'DS3604',
       description: 'Door Contact Sensor',
