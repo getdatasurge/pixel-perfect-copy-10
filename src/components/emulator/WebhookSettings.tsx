@@ -664,7 +664,7 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
     if (config.ttnConfig?.applicationId) {
       console.log('[WebhookSettings] Using TTN config from props:', config.ttnConfig);
       setTtnEnabled(config.ttnConfig.enabled || false);
-      setTtnCluster(config.ttnConfig.cluster || 'eu1');
+      setTtnCluster(config.ttnConfig.cluster || 'nam1');
       setTtnApplicationId(config.ttnConfig.applicationId || '');
       setTtnApiKeyPreview(config.ttnConfig.api_key_last4 ? `****${config.ttnConfig.api_key_last4}` : null);
       setTtnApiKeySet(!!(config.ttnConfig.api_key_last4));
