@@ -1,92 +1,76 @@
 
 
-# Fix: Application ID Conflict Across Multiple Data Sources
+# Fix: Stale API Key in synced_users (Last Synced Jan 20)
 
-## Problem Summary
+## Problem
 
-The Application ID keeps flip-flopping between `fg-7873654e-yq` (correct, from FrostGuard live pull) and `fg-7873654e-si` (stale, from the `synced_users` database mirror). This causes the "Cannot Start Emulation" error because the preflight check reads the stale value from the database.
-
-## Root Cause
-
-There are 4 competing sources of the Application ID, and they're not kept in sync:
+The emulator's database has **month-old credentials** for user `sustainablerealestatefl@gmail.com`:
 
 ```text
-Source                          Value               Status
------------------------------------------------------------
-1. FrostGuard live pull         fg-7873654e-yq      Correct (authoritative)
-2. synced_users.ttn (DB)        fg-7873654e-si      STALE (never updated)
-3. ttn_settings (DB)            NULL                 Empty
-4. localStorage                 varies               Depends on last write
+Field              Database (Jan 20)      FrostGuard (Current)
+-----------------------------------------------------------------
+Application ID     fg-7873654e-si         fg-7873654e-yq
+API Key            ****JLCQ               ****GA0A
+Last Synced        2026-01-20             Never re-synced
 ```
 
-The critical issue: **Both `ttn-preflight` and `ttn-simulate` edge functions** read the Application ID from `synced_users.ttn` in the database, which contains the stale value. The frontend knows the correct value from the FrostGuard live pull, but the edge functions ignore it.
+The previous fix patches the Application ID on-the-fly (since the fresh pull provides it), but the **full API key** cannot be corrected client-side because FrostGuard's live pull only returns the last 4 characters for security. The full key is only sent through the `user-sync` pipeline, which last ran on Jan 20.
 
-## Fix Plan
+## Solution: Two-Part Fix
 
-### Change 1: Edge functions accept frontend-provided Application ID (Critical)
+### Part 1: Trigger a Re-Sync from FrostGuard (Immediate)
 
-**File: `supabase/functions/ttn-preflight/index.ts`**
+The user-sync pipeline needs to run again from FrostGuard to push the updated credentials. This can be triggered by:
 
-- Add `application_id` field to `PreflightRequest` interface
-- When the frontend sends `application_id`, use it instead of (or in preference to) the `synced_users.ttn` mirror value
-- Log a warning if there's a mismatch between the frontend value and the DB value
+- Logging into the FrostGuard app (which triggers user-sync-emitter)
+- OR manually calling the sync endpoint with the updated credentials
 
-This mirrors what `ttn-simulate` already does (line 381: `applicationId = requestApplicationId || userSettings.application_id`).
+### Part 2: Add "Stale Credentials" Detection and Warning (Code Change)
 
-### Change 2: Frontend sends Application ID to preflight check
-
-**File: `src/components/LoRaWANEmulator.tsx`**
-
-- In `runPreflightCheck()` (around line 1548), include the `applicationId` from `webhookConfig.ttnConfig.applicationId` in the request body sent to `ttn-preflight`
-- This ensures the preflight check uses the same Application ID that the emulation will use
-
-### Change 3: Auto-sync correct Application ID to `synced_users.ttn`
+Add a visual indicator in the Webhook Settings when the API key in the database (`synced_users.ttn.api_key_last4`) doesn't match the fresh FrostGuard pull (`config.ttnConfig.api_key_last4`). This tells the user exactly what's wrong.
 
 **File: `src/components/emulator/WebhookSettings.tsx`**
 
-- In `loadSettings()` Step 6 (auto-sync), when a fresh pull Application ID differs from the `synced_users.ttn` mirror, also update the `synced_users.ttn.application_id` directly (not just `ttn_settings`)
-- This prevents the stale value from persisting across sessions
+In the `loadSettings()` function, after the existing Application ID mismatch detection (around line 825):
 
-### Change 4: Suppress misleading "Application ID Mismatch" warning
+1. Compare `config.ttnConfig.api_key_last4` (fresh from FrostGuard: `GA0A`) against `rawUserTTN.api_key_last4` (from DB: `JLCQ`)
+2. If they differ, set a new state variable `staleApiKey: true` with both values
+3. Show an alert in the UI: "Your API key has changed in FrostGuard (now ending in GA0A) but the emulator still has the old key (ending in JLCQ). Please re-sync from FrostGuard to update credentials."
 
-**File: `src/components/emulator/WebhookSettings.tsx`**
+**Additionally**, in the auto-sync block (around line 1032), extend the `synced_users.ttn` mirror patch to also update `api_key_last4` when a mismatch is detected (though this alone won't fix the full key -- it helps with diagnostics).
 
-- The mismatch alert (showing "User config has `si` but local ttn_settings has `yq`") is confusing because it compares two wrong sources. After changes 1-3, this alert should only show when there's a genuine conflict between the user's FrostGuard config and the org-level setting, not between two stale mirrors.
-- Update the mismatch comparison to use the resolved `effectiveAppId` (which prioritizes the fresh pull) instead of `rawUserTTN.application_id` (which is the stale mirror).
+### Part 3: Add Manual API Key Override (Stretch Goal)
+
+Since the user has access to the full Application API Secret in FrostGuard's UI (ending `GA0A`), add a "Paste API Key" input field that allows manually updating the key in `synced_users.ttn.api_key` directly. This provides a workaround when the sync pipeline is broken or delayed.
 
 ## Technical Details
 
-### ttn-preflight change (most important)
-
+### New State Variable
 ```typescript
-// In PreflightRequest interface, add:
-application_id?: string;  // Frontend-provided, takes precedence over DB mirror
+const [staleApiKeyWarning, setStaleApiKeyWarning] = useState<{
+  dbLast4: string;
+  frostguardLast4: string;
+} | null>(null);
+```
 
-// In the handler, after loading settings:
-if (body.application_id && settings.application_id !== body.application_id) {
-  console.warn(`[preflight] App ID override: DB has ${settings.application_id}, frontend sent ${body.application_id}`);
-  settings.application_id = body.application_id;
+### Detection Logic (in loadSettings, after line ~827)
+```typescript
+const freshApiKeyLast4 = config.ttnConfig?.api_key_last4 || null;
+const mirrorApiKeyLast4 = rawUserTTN?.api_key_last4 as string | undefined;
+if (freshApiKeyLast4 && mirrorApiKeyLast4 && freshApiKeyLast4 !== mirrorApiKeyLast4) {
+  console.warn(`[WebhookSettings] API Key mismatch: FrostGuard=${freshApiKeyLast4}, DB=${mirrorApiKeyLast4}`);
+  setStaleApiKeyWarning({ dbLast4: mirrorApiKeyLast4, frostguardLast4: freshApiKeyLast4 });
 }
 ```
 
-### LoRaWANEmulator preflight call change
+### Warning UI (in the Application API Secret section)
+An amber alert that reads:
+"API key has changed in FrostGuard (now ****GA0A) but the emulator still has an older key (****JLCQ). Either re-sync from FrostGuard or paste the new key below."
 
-```typescript
-// In runPreflightCheck, add application_id to the body:
-const { data, error } = await supabase.functions.invoke('ttn-preflight', {
-  body: {
-    selected_user_id: webhookConfig.selectedUserId,
-    org_id: webhookConfig.testOrgId,
-    application_id: webhookConfig.ttnConfig?.applicationId,  // NEW
-    devices: devicesToCheck,
-  },
-});
-```
+### Manual Key Override Input
+A conditional text input that appears when `staleApiKeyWarning` is set, allowing the user to paste the full API key from FrostGuard's UI. On submit, it updates `synced_users.ttn.api_key` and `synced_users.ttn.api_key_last4` directly.
 
-### Expected Result
+## Immediate Action Required
 
-- The preflight check will use `fg-7873654e-yq` (from the frontend's FrostGuard pull) instead of `fg-7873654e-si` (from the stale DB mirror)
-- Emulation will start successfully without the "Application not found" error
-- The mismatch warning will no longer appear since the effective Application ID will be consistent
-- The stale `synced_users.ttn.application_id` will be corrected on the next load
+Before the code fix, the quickest resolution is to **trigger a user re-sync from FrostGuard** for the Orlando Burgers organization. This will push the new API key (****GA0A) and Application ID (fg-7873654e-yq) to the emulator's database.
 
