@@ -40,6 +40,19 @@ export interface ExportReadingsResult {
   results?: Array<{ unit_id: string; success: boolean; error?: string }>;
   error?: string;
   error_code?: string;
+  /** The readings payload that was sent, for live feed display */
+  sentReadings?: Array<Record<string, unknown>>;
+}
+
+export interface OrgStateResult {
+  ok: boolean;
+  sites?: Array<{ id: string; name: string; is_active: boolean }>;
+  areas?: Array<{ id: string; name: string; site_id: string }>;
+  units?: Array<{ id: string; name: string; unit_type: string; site_id: string; area_id: string; status: string }>;
+  sensors?: Array<{ id: string; name: string; dev_eui: string; sensor_type: string; unit_id: string | null }>;
+  gateways?: Array<{ id: string; name: string; gateway_eui: string; status: string }>;
+  syncVersion?: number;
+  error?: string;
 }
 
 export interface ConnectionTestResult {
@@ -312,6 +325,10 @@ export async function sendReadingsToFreshTrack(
         device_serial: dev.devEui,
         device_model: modelInfo.model,
         recorded_at: new Date().toISOString(),
+        source_metadata: {
+          emulator_version: '2.0.0',
+          scenario: 'live_emulation',
+        },
       };
 
       if (state.type === 'temperature') {
@@ -525,5 +542,37 @@ export async function pullFreshTrackOrgState(
       error: err instanceof Error ? err.message : 'Network error',
       hint: 'Check your network connection.',
     };
+  }
+}
+
+// ============================================
+// Pull Org State
+// ============================================
+
+export async function pullOrgState(orgId: string): Promise<OrgStateResult> {
+  try {
+    const { data, error } = await supabase.functions.invoke('fetch-org-state', {
+      body: { org_id: orgId },
+    });
+
+    if (error) {
+      return { ok: false, error: error.message };
+    }
+
+    if (data?.ok === false) {
+      return { ok: false, error: data.error || 'Failed to pull org state' };
+    }
+
+    return {
+      ok: true,
+      sites: data?.sites || [],
+      areas: data?.areas || [],
+      units: data?.units || [],
+      sensors: data?.sensors || [],
+      gateways: data?.gateways || [],
+      syncVersion: data?.sync_version,
+    };
+  } catch (err) {
+    return { ok: false, error: err instanceof Error ? err.message : 'Network error' };
   }
 }

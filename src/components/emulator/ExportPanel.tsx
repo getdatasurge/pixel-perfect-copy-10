@@ -6,6 +6,8 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Select,
   SelectContent,
@@ -16,6 +18,7 @@ import {
 import {
   Upload, RefreshCw, CheckCircle, XCircle, AlertTriangle,
   Loader2, Clock, Wifi, WifiOff, Send, ArrowUpFromLine,
+  Download, ChevronDown, ArrowUp,
 } from 'lucide-react';
 import { GatewayConfig, LoRaWANDevice, WebhookConfig } from '@/lib/ttn-payload';
 import { SensorState } from '@/lib/emulatorSensorState';
@@ -23,8 +26,10 @@ import {
   syncDevicesToFreshTrack,
   sendReadingsToFreshTrack,
   testFreshTrackConnection,
+  pullOrgState,
   ExportSyncResult,
   ExportReadingsResult,
+  OrgStateResult,
 } from '@/lib/freshtrackExport';
 import { loadExportConfig, saveExportConfig, ExportConfig } from '@/lib/exportConfigStore';
 import { getEffectiveConfig } from '@/lib/freshtrackConnectionStore';
@@ -42,7 +47,7 @@ interface ExportPanelProps {
 interface LogEntry {
   id: string;
   timestamp: Date;
-  type: 'sync' | 'readings' | 'connection' | 'error';
+  type: 'sync' | 'readings' | 'connection' | 'error' | 'pull';
   message: string;
   status: 'success' | 'warning' | 'error';
 }
@@ -66,9 +71,13 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const [connectionInfo, setConnectionInfo] = useState<{ orgName?: string; syncVersion?: number }>({});
   const [isSyncing, setIsSyncing] = useState(false);
   const [isSendingReadings, setIsSendingReadings] = useState(false);
+  const [isPulling, setIsPulling] = useState(false);
   const [exportLog, setExportLog] = useState<LogEntry[]>([]);
   const [readingsFeed, setReadingsFeed] = useState<ReadingFeedEntry[]>([]);
   const [nextSyncIn, setNextSyncIn] = useState<number | null>(null);
+  const [orgState, setOrgState] = useState<OrgStateResult | null>(null);
+  const [orgStateOpen, setOrgStateOpen] = useState(false);
+  const [readingFeed, setReadingFeed] = useState<ReadingFeedEntry[]>([]);
   const autoSyncRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -76,18 +85,13 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const connectionConfig = getEffectiveConfig();
   const effectiveOrgId = connectionConfig.freshtrackOrgId || webhookConfig.testOrgId;
 
-  // Persist config changes
-  useEffect(() => {
-    saveExportConfig(config);
-  }, [config]);
+  useEffect(() => { saveExportConfig(config); }, [config]);
 
   const addLog = useCallback((type: LogEntry['type'], message: string, status: LogEntry['status']) => {
     setExportLog(prev => [{
       id: crypto.randomUUID(),
       timestamp: new Date(),
-      type,
-      message,
-      status,
+      type, message, status,
     }, ...prev].slice(0, 50));
   }, []);
 
@@ -134,12 +138,27 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
     }
   }, [effectiveOrgId, addLog]);
 
-  // Auto-test on mount if org is set
   useEffect(() => {
     if (effectiveOrgId && connectionStatus === 'unknown') {
       handleTestConnection();
     }
   }, [effectiveOrgId]);
+
+  // Pull org state
+  const handlePullState = useCallback(async () => {
+    if (!orgId) return;
+    setIsPulling(true);
+    const result = await pullOrgState(orgId);
+    if (result.ok) {
+      setOrgState(result);
+      addLog('pull', `Pulled state: ${result.sites?.length ?? 0} sites, ${result.units?.length ?? 0} units, ${result.sensors?.length ?? 0} sensors, ${result.gateways?.length ?? 0} gateways`, 'success');
+      toast({ title: 'State Pulled', description: `${result.units?.length ?? 0} units, ${result.sensors?.length ?? 0} sensors` });
+    } else {
+      addLog('pull', `Pull failed: ${result.error}`, 'error');
+      toast({ title: 'Pull Failed', description: result.error, variant: 'destructive' });
+    }
+    setIsPulling(false);
+  }, [orgId, addLog]);
 
   // Sync devices
   const handleSyncDevices = useCallback(async () => {
@@ -175,6 +194,27 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
     setIsSendingReadings(true);
     const result: ExportReadingsResult = await sendReadingsToFreshTrack(devices, sensorStates, webhookConfig, effectiveOrgId);
 
+    // Populate live feed from sent readings
+    if (result.sentReadings) {
+      const unitMap = new Map<string, string>();
+      if (orgState?.units) {
+        orgState.units.forEach(u => unitMap.set(u.id, u.name));
+      }
+      const feedEntries: ReadingFeedEntry[] = result.sentReadings.map(r => ({
+        id: crypto.randomUUID(),
+        timestamp: new Date(),
+        unitId: r.unit_id as string,
+        unitName: unitMap.get(r.unit_id as string),
+        temperature: r.temperature as number,
+        temperatureUnit: (r.temperature_unit as string) || 'F',
+        humidity: r.humidity as number | undefined,
+        batteryLevel: r.battery_level as number | undefined,
+        signalStrength: r.signal_strength as number | undefined,
+        doorOpen: r.door_open as boolean | undefined,
+      }));
+      setReadingFeed(prev => [...feedEntries, ...prev].slice(0, 50));
+    }
+
     if (result.success) {
       setConfig(prev => ({
         ...prev,
@@ -185,7 +225,6 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       }));
       addReadingsFeed(devices, sensorStates);
       addLog('readings', `Sent ${result.ingested} readings (${result.failed} failed)`, (result.failed ?? 0) > 0 ? 'warning' : 'success');
-      toast({ title: 'Readings Sent', description: `${result.ingested} ingested, ${result.failed} failed` });
     } else {
       setConfig(prev => ({
         ...prev,
@@ -202,14 +241,8 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
 
   // Auto-sync
   useEffect(() => {
-    if (autoSyncRef.current) {
-      clearInterval(autoSyncRef.current);
-      autoSyncRef.current = null;
-    }
-    if (countdownRef.current) {
-      clearInterval(countdownRef.current);
-      countdownRef.current = null;
-    }
+    if (autoSyncRef.current) { clearInterval(autoSyncRef.current); autoSyncRef.current = null; }
+    if (countdownRef.current) { clearInterval(countdownRef.current); countdownRef.current = null; }
 
     if (config.autoSyncEnabled && effectiveOrgId) {
       const intervalMs = config.autoSyncIntervalSec * 1000;
@@ -220,7 +253,6 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       }, 1000);
 
       autoSyncRef.current = setInterval(() => {
-        // Don't hammer if last sync failed
         if (config.lastReadingsStatus === 'failed') {
           addLog('readings', 'Auto-sync paused: last attempt failed', 'warning');
           return;
@@ -329,32 +361,17 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
           </Button>
           {config.lastSyncCounts && (
             <div className="grid grid-cols-3 gap-2 text-xs">
-              <div className="bg-muted rounded p-2 text-center">
-                <div className="font-medium">Gateways</div>
-                <div className="text-muted-foreground">
-                  {config.lastSyncCounts.gateways.created}c / {config.lastSyncCounts.gateways.updated}u
+              {(['gateways', 'devices', 'sensors'] as const).map(key => (
+                <div key={key} className="bg-muted rounded p-2 text-center">
+                  <div className="font-medium capitalize">{key}</div>
+                  <div className="text-muted-foreground">{config.lastSyncCounts![key].created}c / {config.lastSyncCounts![key].updated}u</div>
                 </div>
-              </div>
-              <div className="bg-muted rounded p-2 text-center">
-                <div className="font-medium">Devices</div>
-                <div className="text-muted-foreground">
-                  {config.lastSyncCounts.devices.created}c / {config.lastSyncCounts.devices.updated}u
-                </div>
-              </div>
-              <div className="bg-muted rounded p-2 text-center">
-                <div className="font-medium">Sensors</div>
-                <div className="text-muted-foreground">
-                  {config.lastSyncCounts.sensors.created}c / {config.lastSyncCounts.sensors.updated}u
-                </div>
-              </div>
+              ))}
             </div>
           )}
           {config.lastSyncAt && (
             <p className="text-xs text-muted-foreground">
-              Last sync: {new Date(config.lastSyncAt).toLocaleString()} — {' '}
-              <Badge variant={config.lastSyncStatus === 'success' ? 'outline' : 'destructive'} className="text-xs">
-                {config.lastSyncStatus}
-              </Badge>
+              Last sync: {new Date(config.lastSyncAt).toLocaleString()} — <Badge variant={config.lastSyncStatus === 'success' ? 'outline' : 'destructive'} className="text-xs">{config.lastSyncStatus}</Badge>
             </p>
           )}
         </CardContent>
@@ -401,12 +418,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
             {devicesWithUnit} of {devices.length} device(s) have unit assignments and will send readings.
           </p>
           {devicesWithUnit === 0 && (
-            <Alert>
-              <AlertTriangle className="h-4 w-4" />
-              <AlertDescription>
-                No devices have unit_id assignments. Assign devices to units in the Devices tab first.
-              </AlertDescription>
-            </Alert>
+            <Alert><AlertTriangle className="h-4 w-4" /><AlertDescription>No devices have unit_id assignments. Assign devices to units in the Devices tab first.</AlertDescription></Alert>
           )}
           <Button
             onClick={handleSendReadings}
@@ -482,16 +494,10 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
               <div className="space-y-1">
                 {exportLog.map(entry => (
                   <div key={entry.id} className="flex items-start gap-2 py-1 text-xs border-b border-border/30 last:border-0">
-                    <span className="text-muted-foreground font-mono w-16 shrink-0">
-                      {entry.timestamp.toLocaleTimeString()}
-                    </span>
-                    {entry.status === 'success' ? (
-                      <CheckCircle className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />
-                    ) : entry.status === 'warning' ? (
-                      <AlertTriangle className="h-3 w-3 text-yellow-500 shrink-0 mt-0.5" />
-                    ) : (
-                      <XCircle className="h-3 w-3 text-destructive shrink-0 mt-0.5" />
-                    )}
+                    <span className="text-muted-foreground font-mono w-16 shrink-0">{entry.timestamp.toLocaleTimeString()}</span>
+                    {entry.status === 'success' ? <CheckCircle className="h-3 w-3 text-green-500 shrink-0 mt-0.5" />
+                      : entry.status === 'warning' ? <AlertTriangle className="h-3 w-3 text-yellow-500 shrink-0 mt-0.5" />
+                      : <XCircle className="h-3 w-3 text-destructive shrink-0 mt-0.5" />}
                     <span className="font-mono break-all">{entry.message}</span>
                   </div>
                 ))}
