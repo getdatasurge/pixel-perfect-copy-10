@@ -216,14 +216,17 @@ export default function UserSelectionGate({
       // Category to emulator type mapping
       const categoryToType: Record<DeviceCategory, 'temperature' | 'door'> = {
         'temperature': 'temperature',
+        'temperature_humidity': 'temperature',
         'door': 'door',
+        'contact': 'door',
         'co2': 'temperature',
-        'leak': 'door',         // Leak/distance sensors → door (event-based)
-        'motion': 'door',       // Motion sensors → door (event-based)
+        'leak': 'door',
+        'motion': 'door',
         'air_quality': 'temperature',
         'gps': 'temperature',
         'meter': 'temperature',
         'combo': 'temperature',
+        'multi_sensor': 'temperature',
       };
 
       const pulledDevices: LoRaWANDevice[] = (orgState.sensors || []).map(s => {
