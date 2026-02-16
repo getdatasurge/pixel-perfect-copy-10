@@ -6,8 +6,6 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from '@/components/ui/collapsible';
 import {
   Select,
   SelectContent,
@@ -18,7 +16,6 @@ import {
 import {
   Upload, RefreshCw, CheckCircle, XCircle, AlertTriangle,
   Loader2, Clock, Wifi, WifiOff, Send, ArrowUpFromLine,
-  Download, ChevronDown, ArrowUp,
 } from 'lucide-react';
 import { GatewayConfig, LoRaWANDevice, WebhookConfig } from '@/lib/ttn-payload';
 import { SensorState } from '@/lib/emulatorSensorState';
@@ -77,7 +74,6 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
   const [nextSyncIn, setNextSyncIn] = useState<number | null>(null);
   const [orgState, setOrgState] = useState<OrgStateResult | null>(null);
   const [orgStateOpen, setOrgStateOpen] = useState(false);
-  const [readingFeed, setReadingFeed] = useState<ReadingFeedEntry[]>([]);
   const autoSyncRef = useRef<NodeJS.Timeout | null>(null);
   const countdownRef = useRef<NodeJS.Timeout | null>(null);
 
@@ -146,9 +142,9 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
 
   // Pull org state
   const handlePullState = useCallback(async () => {
-    if (!orgId) return;
+    if (!effectiveOrgId) return;
     setIsPulling(true);
-    const result = await pullOrgState(orgId);
+    const result = await pullOrgState(effectiveOrgId);
     if (result.ok) {
       setOrgState(result);
       addLog('pull', `Pulled state: ${result.sites?.length ?? 0} sites, ${result.units?.length ?? 0} units, ${result.sensors?.length ?? 0} sensors, ${result.gateways?.length ?? 0} gateways`, 'success');
@@ -158,7 +154,7 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
       toast({ title: 'Pull Failed', description: result.error, variant: 'destructive' });
     }
     setIsPulling(false);
-  }, [orgId, addLog]);
+  }, [effectiveOrgId, addLog]);
 
   // Sync devices
   const handleSyncDevices = useCallback(async () => {
@@ -196,23 +192,19 @@ export default function ExportPanel({ devices, gateways, sensorStates, webhookCo
 
     // Populate live feed from sent readings
     if (result.sentReadings) {
-      const unitMap = new Map<string, string>();
-      if (orgState?.units) {
-        orgState.units.forEach(u => unitMap.set(u.id, u.name));
-      }
       const feedEntries: ReadingFeedEntry[] = result.sentReadings.map(r => ({
         id: crypto.randomUUID(),
         timestamp: new Date(),
         unitId: r.unit_id as string,
-        unitName: unitMap.get(r.unit_id as string),
-        temperature: r.temperature as number,
-        temperatureUnit: (r.temperature_unit as string) || 'F',
+        deviceName: r.device_model as string | undefined,
+        temperature: r.temperature as number | undefined,
         humidity: r.humidity as number | undefined,
-        batteryLevel: r.battery_level as number | undefined,
-        signalStrength: r.signal_strength as number | undefined,
         doorOpen: r.door_open as boolean | undefined,
+        battery: r.battery_level as number | undefined,
+        signal: r.signal_strength as number | undefined,
+        status: 'sent' as const,
       }));
-      setReadingFeed(prev => [...feedEntries, ...prev].slice(0, 50));
+      setReadingsFeed(prev => [...feedEntries, ...prev].slice(0, 200));
     }
 
     if (result.success) {

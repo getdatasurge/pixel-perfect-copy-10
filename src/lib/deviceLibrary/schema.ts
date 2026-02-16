@@ -94,7 +94,9 @@ const deviceExamplesSchema = z.object({
 
 const deviceCategorySchema = z.enum([
   'temperature',
+  'temperature_humidity',
   'door',
+  'contact',
   'co2',
   'leak',
   'gps',
@@ -102,6 +104,7 @@ const deviceCategorySchema = z.enum([
   'motion',
   'air_quality',
   'combo',
+  'multi_sensor',
 ]);
 
 // ============================================
