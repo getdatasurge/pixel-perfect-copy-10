@@ -50,7 +50,7 @@ export async function loadUserSettings(userId: string): Promise<TTNSettings | nu
     return {
       api_key: (ttn.api_key as string) || null,
       application_id: (ttn.application_id as string) || null,
-      cluster: (ttn.cluster as string) || 'eu1',
+      cluster: (ttn.cluster as string) || 'nam1',
       enabled: Boolean(ttn.enabled),
       webhook_secret: (ttn.webhook_secret as string) || null,
       gateway_owner_type: (ttn.gateway_owner_type as string) || null,

@@ -972,18 +972,20 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
           changes.push('gateway_api_key');
         }
         
-        // Check if application_id needs sync (user value differs from org)
-        const userAppId = rawUserTTN?.application_id as string;
+        // Check if application_id needs sync to org table
+        // Use effectiveAppId (which respects precedence: fresh FrostGuard pull > synced_users > org)
+        // instead of rawUserTTN.application_id which can be a stale mirror
+        const bestAppId = effectiveAppId;
         const orgAppId = rawOrgSettings?.application_id as string | undefined;
-        if (userAppId && orgAppId && userAppId !== orgAppId) {
-          updatePayload.application_id = userAppId;
+        if (bestAppId && orgAppId && bestAppId !== orgAppId) {
+          updatePayload.application_id = bestAppId;
           needsUpdate = true;
-          changes.push(`application_id: ${orgAppId} → ${userAppId}`);
-        } else if (userAppId && !orgAppId) {
-          // No org value yet, set it from user
-          updatePayload.application_id = userAppId;
+          changes.push(`application_id: ${orgAppId} → ${bestAppId}`);
+        } else if (bestAppId && !orgAppId) {
+          // No org value yet, set it from best available source
+          updatePayload.application_id = bestAppId;
           needsUpdate = true;
-          changes.push(`application_id: (empty) → ${userAppId}`);
+          changes.push(`application_id: (empty) → ${bestAppId}`);
         }
         
         // Check if cluster needs sync

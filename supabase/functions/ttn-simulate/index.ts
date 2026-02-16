@@ -223,7 +223,7 @@ async function loadUserSettings(userId: string): Promise<TTNSettings | null> {
     return {
       api_key: ttn.api_key ?? null,
       application_id: ttn.application_id ?? null,
-      cluster: ttn.cluster || 'eu1',
+      cluster: ttn.cluster || 'nam1',
       enabled: ttn.enabled ?? false,
     };
   } catch (err) {
@@ -330,8 +330,12 @@ serve(async (req) => {
     const body: SimulateUplinkRequest = await req.json();
     const { org_id, selected_user_id, decodedPayload, fPort } = body;
     let { deviceId } = body;
-    
-    console.log(`[ttn-simulate][${requestId}] Processing request`, { deviceId, org_id, selected_user_id });
+    // Capture applicationId from request body — the frontend sends the correct
+    // value from the FrostGuard live pull which takes precedence over the
+    // potentially-stale synced_users mirror.
+    const requestApplicationId = body.applicationId || undefined;
+
+    console.log(`[ttn-simulate][${requestId}] Processing request`, { deviceId, org_id, selected_user_id, requestApplicationId });
 
     // Load TTN credentials - prioritize user's full API key
     let apiKey: string | undefined;
@@ -372,9 +376,13 @@ serve(async (req) => {
       );
     }
 
-    // Get application_id and cluster from user settings
-    applicationId = userSettings.application_id || undefined;
+    // Get application_id: prefer the value sent by the frontend (from FrostGuard
+    // live pull) over the synced_users mirror which can be stale
+    applicationId = requestApplicationId || userSettings.application_id || undefined;
     cluster = userSettings.cluster;
+    if (requestApplicationId && userSettings.application_id && requestApplicationId !== userSettings.application_id) {
+      console.warn(`[ttn-simulate][${requestId}] application_id mismatch: request=${requestApplicationId}, synced_users=${userSettings.application_id}. Using request value.`);
+    }
 
     // Try to get API key from user settings first
     if (userSettings.api_key) {

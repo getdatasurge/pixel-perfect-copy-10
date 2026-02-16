@@ -401,7 +401,7 @@ async function handleTestStored(
       const ttn = data.ttn as any;
       settings = {
         enabled: ttn.enabled || false,
-        cluster: ttn.cluster || 'eu1',
+        cluster: ttn.cluster || 'nam1',
         application_id: ttn.application_id || null,
         api_key: null, // API key is not stored in synced_users, only last4
       };
@@ -972,70 +972,67 @@ async function discoverGatewayOwnerInternal(
   cluster: string,
   requestId: string
 ): Promise<{ ok: boolean; owner_type?: 'user' | 'organization'; owner_id?: string; all_organizations?: string[]; hint?: string }> {
-  // Try multiple base URLs: user's cluster first, then eu1 as fallback (for TTN Cloud shared IS)
+  // TTN Identity Server endpoints (/api/v3/auth_info, /api/v3/organizations)
+  // are ONLY served by eu1.cloud.thethings.network, regardless of the user's
+  // regional cluster. All other API calls use the user's cluster.
+  const identityBaseUrl = 'https://eu1.cloud.thethings.network';
   const clusterBaseUrl = getBaseUrl(cluster);
-  const baseUrls = [clusterBaseUrl];
-  if (cluster !== 'eu1') {
-    baseUrls.push('https://eu1.cloud.thethings.network');
+
+  console.log(`[${requestId}] Discovery: Using Identity Server at ${identityBaseUrl}`);
+
+  // Try /api/v3/auth_info first - works with any valid API key
+  try {
+    const authInfoUrl = `${identityBaseUrl}/api/v3/auth_info`;
+    console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
+    const authInfoResponse = await fetch(authInfoUrl, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+    });
+
+    if (authInfoResponse.ok) {
+      const authInfo = await authInfoResponse.json();
+      console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
+
+      const orgId = authInfo.api_key?.entity_ids?.organization_ids?.organization_id;
+      if (orgId) {
+        console.log(`[${requestId}] Discovery: Found organization ID from API key: ${orgId}`);
+        return { ok: true, owner_type: 'organization', owner_id: orgId };
+      }
+
+      const userId = authInfo.oauth_access_token?.user_ids?.user_id ||
+                     authInfo.user?.ids?.user_id ||
+                     authInfo.api_key?.entity_ids?.user_ids?.user_id ||
+                     authInfo.user_id;
+      if (userId) {
+        console.log(`[${requestId}] Discovery: Found user ID: ${userId}`);
+        return { ok: true, owner_type: 'user', owner_id: userId };
+      }
+    } else {
+      console.log(`[${requestId}] Discovery: Auth info at ${identityBaseUrl} returned ${authInfoResponse.status}`);
+    }
+  } catch (e) {
+    console.log(`[${requestId}] Discovery: Auth info check at ${identityBaseUrl} failed:`, e);
   }
 
-  for (const baseUrl of baseUrls) {
-    console.log(`[${requestId}] Discovery: Trying base URL ${baseUrl}`);
+  // Try /api/v3/organizations
+  try {
+    const orgsUrl = `${identityBaseUrl}/api/v3/organizations?limit=10`;
+    console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
+    const orgsResponse = await fetch(orgsUrl, {
+      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+    });
 
-    // Try /api/v3/auth_info first - works with any valid API key
-    try {
-      const authInfoUrl = `${baseUrl}/api/v3/auth_info`;
-      console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
-      const authInfoResponse = await fetch(authInfoUrl, {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
-      });
-
-      if (authInfoResponse.ok) {
-        const authInfo = await authInfoResponse.json();
-        console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
-
-        const orgId = authInfo.api_key?.entity_ids?.organization_ids?.organization_id;
-        if (orgId) {
-          console.log(`[${requestId}] Discovery: Found organization ID from API key: ${orgId}`);
-          return { ok: true, owner_type: 'organization', owner_id: orgId };
-        }
-
-        const userId = authInfo.oauth_access_token?.user_ids?.user_id ||
-                       authInfo.user?.ids?.user_id ||
-                       authInfo.api_key?.entity_ids?.user_ids?.user_id ||
-                       authInfo.user_id;
-        if (userId) {
-          console.log(`[${requestId}] Discovery: Found user ID: ${userId}`);
-          return { ok: true, owner_type: 'user', owner_id: userId };
-        }
-      } else {
-        console.log(`[${requestId}] Discovery: Auth info at ${baseUrl} returned ${authInfoResponse.status}`);
+    if (orgsResponse.ok) {
+      const orgsData = await orgsResponse.json();
+      if (orgsData.organizations?.length > 0) {
+        const orgIds = orgsData.organizations.map((o: any) => o.ids?.organization_id).filter(Boolean);
+        console.log(`[${requestId}] Discovery: Found ${orgIds.length} organizations: ${orgIds.join(', ')}`);
+        return { ok: true, owner_type: 'organization', owner_id: orgIds[0], all_organizations: orgIds };
       }
-    } catch (e) {
-      console.log(`[${requestId}] Discovery: Auth info check at ${baseUrl} failed:`, e);
+    } else {
+      console.log(`[${requestId}] Discovery: Organizations at ${identityBaseUrl} returned ${orgsResponse.status}`);
     }
-
-    // Try /api/v3/organizations
-    try {
-      const orgsUrl = `${baseUrl}/api/v3/organizations?limit=10`;
-      console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
-      const orgsResponse = await fetch(orgsUrl, {
-        headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
-      });
-
-      if (orgsResponse.ok) {
-        const orgsData = await orgsResponse.json();
-        if (orgsData.organizations?.length > 0) {
-          const orgIds = orgsData.organizations.map((o: any) => o.ids?.organization_id).filter(Boolean);
-          console.log(`[${requestId}] Discovery: Found ${orgIds.length} organizations: ${orgIds.join(', ')}`);
-          return { ok: true, owner_type: 'organization', owner_id: orgIds[0], all_organizations: orgIds };
-        }
-      } else {
-        console.log(`[${requestId}] Discovery: Organizations at ${baseUrl} returned ${orgsResponse.status}`);
-      }
-    } catch (e) {
-      console.log(`[${requestId}] Discovery: Organizations check at ${baseUrl} failed:`, e);
-    }
+  } catch (e) {
+    console.log(`[${requestId}] Discovery: Organizations check at ${identityBaseUrl} failed:`, e);
   }
 
   // Last resort: try listing gateways directly (un-scoped) to extract owner from gateway metadata
