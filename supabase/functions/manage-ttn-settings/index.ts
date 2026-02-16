@@ -972,79 +972,115 @@ async function discoverGatewayOwnerInternal(
   cluster: string,
   requestId: string
 ): Promise<{ ok: boolean; owner_type?: 'user' | 'organization'; owner_id?: string; all_organizations?: string[]; hint?: string }> {
-  // Identity Server endpoints are ALWAYS on eu1, regardless of regional cluster
-  const identityBaseUrl = 'https://eu1.cloud.thethings.network';
-
-  // Try organizations first - most common for gateway management
-  try {
-    const orgsUrl = `${identityBaseUrl}/api/v3/organizations?limit=10`;
-    console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
-    const orgsResponse = await fetch(orgsUrl, {
-      headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
-    });
-
-    if (orgsResponse.ok) {
-      const orgsData = await orgsResponse.json();
-      if (orgsData.organizations?.length > 0) {
-        const orgIds = orgsData.organizations.map((o: any) => o.ids?.organization_id).filter(Boolean);
-        console.log(`[${requestId}] Discovery: Found ${orgIds.length} organizations: ${orgIds.join(', ')}`);
-        return {
-          ok: true,
-          owner_type: 'organization',
-          owner_id: orgIds[0],
-          all_organizations: orgIds,
-        };
-      }
-    } else {
-      console.log(`[${requestId}] Discovery: Organizations check returned ${orgsResponse.status}`);
-    }
-  } catch (e) {
-    console.log(`[${requestId}] Discovery: Organizations check failed:`, e);
+  // Try multiple base URLs: user's cluster first, then eu1 as fallback (for TTN Cloud shared IS)
+  const clusterBaseUrl = getBaseUrl(cluster);
+  const baseUrls = [clusterBaseUrl];
+  if (cluster !== 'eu1') {
+    baseUrls.push('https://eu1.cloud.thethings.network');
   }
 
-  // Try user info for personal API keys, or org info for org API keys
+  for (const baseUrl of baseUrls) {
+    console.log(`[${requestId}] Discovery: Trying base URL ${baseUrl}`);
+
+    // Try /api/v3/auth_info first - works with any valid API key
+    try {
+      const authInfoUrl = `${baseUrl}/api/v3/auth_info`;
+      console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
+      const authInfoResponse = await fetch(authInfoUrl, {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      });
+
+      if (authInfoResponse.ok) {
+        const authInfo = await authInfoResponse.json();
+        console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
+
+        const orgId = authInfo.api_key?.entity_ids?.organization_ids?.organization_id;
+        if (orgId) {
+          console.log(`[${requestId}] Discovery: Found organization ID from API key: ${orgId}`);
+          return { ok: true, owner_type: 'organization', owner_id: orgId };
+        }
+
+        const userId = authInfo.oauth_access_token?.user_ids?.user_id ||
+                       authInfo.user?.ids?.user_id ||
+                       authInfo.api_key?.entity_ids?.user_ids?.user_id ||
+                       authInfo.user_id;
+        if (userId) {
+          console.log(`[${requestId}] Discovery: Found user ID: ${userId}`);
+          return { ok: true, owner_type: 'user', owner_id: userId };
+        }
+      } else {
+        console.log(`[${requestId}] Discovery: Auth info at ${baseUrl} returned ${authInfoResponse.status}`);
+      }
+    } catch (e) {
+      console.log(`[${requestId}] Discovery: Auth info check at ${baseUrl} failed:`, e);
+    }
+
+    // Try /api/v3/organizations
+    try {
+      const orgsUrl = `${baseUrl}/api/v3/organizations?limit=10`;
+      console.log(`[${requestId}] Discovery: Checking organizations at ${orgsUrl}`);
+      const orgsResponse = await fetch(orgsUrl, {
+        headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
+      });
+
+      if (orgsResponse.ok) {
+        const orgsData = await orgsResponse.json();
+        if (orgsData.organizations?.length > 0) {
+          const orgIds = orgsData.organizations.map((o: any) => o.ids?.organization_id).filter(Boolean);
+          console.log(`[${requestId}] Discovery: Found ${orgIds.length} organizations: ${orgIds.join(', ')}`);
+          return { ok: true, owner_type: 'organization', owner_id: orgIds[0], all_organizations: orgIds };
+        }
+      } else {
+        console.log(`[${requestId}] Discovery: Organizations at ${baseUrl} returned ${orgsResponse.status}`);
+      }
+    } catch (e) {
+      console.log(`[${requestId}] Discovery: Organizations check at ${baseUrl} failed:`, e);
+    }
+  }
+
+  // Last resort: try listing gateways directly (un-scoped) to extract owner from gateway metadata
   try {
-    // The /api/v3/auth_info endpoint returns info about the current auth context
-    const authInfoUrl = `${identityBaseUrl}/api/v3/auth_info`;
-    console.log(`[${requestId}] Discovery: Checking auth info at ${authInfoUrl}`);
-    const authInfoResponse = await fetch(authInfoUrl, {
+    const gatewaysUrl = `${clusterBaseUrl}/api/v3/gateways?limit=1&field_mask=ids,administrative_contact,technical_contact`;
+    console.log(`[${requestId}] Discovery: Trying direct gateway list at ${gatewaysUrl}`);
+    const gwResponse = await fetch(gatewaysUrl, {
       headers: { 'Authorization': `Bearer ${apiKey}`, 'Accept': 'application/json' },
     });
 
-    if (authInfoResponse.ok) {
-      const authInfo = await authInfoResponse.json();
-      console.log(`[${requestId}] Discovery: Auth info response:`, JSON.stringify(authInfo));
-      
-      // Check for organization API key (entity_ids.organization_ids.organization_id)
-      const orgId = authInfo.api_key?.entity_ids?.organization_ids?.organization_id;
-      if (orgId) {
-        console.log(`[${requestId}] Discovery: Found organization ID from API key: ${orgId}`);
-        return {
-          ok: true,
-          owner_type: 'organization',
-          owner_id: orgId,
-        };
+    if (gwResponse.ok) {
+      const gwData = await gwResponse.json();
+      console.log(`[${requestId}] Discovery: Gateway list response:`, JSON.stringify(gwData));
+      if (gwData.gateways?.length > 0) {
+        const gw = gwData.gateways[0];
+        // Try to extract owner from administrative_contact or technical_contact
+        const adminOrgId = gw.administrative_contact?.organization_ids?.organization_id;
+        const adminUserId = gw.administrative_contact?.user_ids?.user_id;
+        const techOrgId = gw.technical_contact?.organization_ids?.organization_id;
+        const techUserId = gw.technical_contact?.user_ids?.user_id;
+
+        if (adminOrgId) {
+          console.log(`[${requestId}] Discovery: Found org from gateway admin contact: ${adminOrgId}`);
+          return { ok: true, owner_type: 'organization', owner_id: adminOrgId };
+        }
+        if (techOrgId) {
+          console.log(`[${requestId}] Discovery: Found org from gateway tech contact: ${techOrgId}`);
+          return { ok: true, owner_type: 'organization', owner_id: techOrgId };
+        }
+        if (adminUserId) {
+          console.log(`[${requestId}] Discovery: Found user from gateway admin contact: ${adminUserId}`);
+          return { ok: true, owner_type: 'user', owner_id: adminUserId };
+        }
+        if (techUserId) {
+          console.log(`[${requestId}] Discovery: Found user from gateway tech contact: ${techUserId}`);
+          return { ok: true, owner_type: 'user', owner_id: techUserId };
+        }
       }
-      
-      // Check for user API key
-      const userId = authInfo.oauth_access_token?.user_ids?.user_id || 
-                     authInfo.user?.ids?.user_id ||
-                     authInfo.api_key?.entity_ids?.user_ids?.user_id ||
-                     authInfo.user_id;
-      
-      if (userId) {
-        console.log(`[${requestId}] Discovery: Found user ID: ${userId}`);
-        return {
-          ok: true,
-          owner_type: 'user',
-          owner_id: userId,
-        };
-      }
+      // Key can list gateways but no owner info - mark as gateway-capable
+      console.log(`[${requestId}] Discovery: Key can list gateways but no owner info found`);
     } else {
-      console.log(`[${requestId}] Discovery: Auth info returned ${authInfoResponse.status}`);
+      console.log(`[${requestId}] Discovery: Gateway list returned ${gwResponse.status}`);
     }
   } catch (e) {
-    console.log(`[${requestId}] Discovery: Auth info check failed:`, e);
+    console.log(`[${requestId}] Discovery: Gateway list failed:`, e);
   }
 
   return {
@@ -1180,19 +1216,25 @@ async function handleCheckGatewayPermissions(
 
   const baseUrl = getBaseUrl(ttnCluster);
   
+  // If owner ID is still an internal FG ID after failed discovery, use un-scoped endpoints
+  const ownerIsInvalid = looksLikeInternalId(gatewayOwnerId);
+  
   // Build the owner-scoped endpoint path (same path that provisioning will use)
   const ownerPath = gatewayOwnerType === 'organization'
     ? `organizations/${gatewayOwnerId}`
     : `users/${gatewayOwnerId}`;
 
-  console.log(`[${requestId}] Testing gateway permissions for ${gatewayOwnerType}/${gatewayOwnerId}`);
+  console.log(`[${requestId}] Testing gateway permissions for ${gatewayOwnerType}/${gatewayOwnerId} (invalid_id=${ownerIsInvalid})`);
 
-  // Test 1: Gateway list access (gateways:read) using owner-scoped endpoint
+  // Test 1: Gateway list access (gateways:read)
   let canReadGateways = false;
   let readError = '';
   let readStatus = 0;
   try {
-    const readUrl = `${baseUrl}/api/v3/${ownerPath}/gateways?limit=1`;
+    // Use un-scoped endpoint if owner ID is invalid, otherwise use owner-scoped
+    const readUrl = ownerIsInvalid
+      ? `${baseUrl}/api/v3/gateways?limit=1`
+      : `${baseUrl}/api/v3/${ownerPath}/gateways?limit=1`;
     console.log(`[${requestId}] Testing gateway read: ${readUrl}`);
     const listResponse = await fetch(readUrl, {
       headers: {
@@ -1205,7 +1247,6 @@ async function handleCheckGatewayPermissions(
     
     if (listResponse.status === 403) {
       const body = await listResponse.json().catch(() => ({}));
-      // Check if it's an application-scoped key
       if (body.message?.includes('no rights') || body.message?.includes('permission')) {
         readError = 'API key lacks gateways:read permission. You may be using an Application API key instead of a Personal/Organization API key.';
       } else {
@@ -1228,7 +1269,10 @@ async function handleCheckGatewayPermissions(
   let writeError = '';
   let writeStatus = 0;
   try {
-    const writeUrl = `${baseUrl}/api/v3/${ownerPath}/gateways`;
+    // Use un-scoped endpoint if owner ID is invalid
+    const writeUrl = ownerIsInvalid
+      ? `${baseUrl}/api/v3/gateways`
+      : `${baseUrl}/api/v3/${ownerPath}/gateways`;
     console.log(`[${requestId}] Testing gateway write: ${writeUrl}`);
     
     // POST with a test gateway ID - we expect:
