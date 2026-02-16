@@ -1,34 +1,25 @@
 
-# Fix Build Errors: Missing DeviceCategory Keys
+# Fix: Default Device Library Validation Errors (3 errors)
 
-## Problem
-The `DeviceCategory` type was expanded with 3 new values (`contact`, `multi_sensor`, `temperature_humidity`) to match the FreshTrack Pro spec, but 4 files that use `Record<DeviceCategory, ...>` were not updated. This causes TypeScript build errors and breaks the app.
+## Root Cause
 
-## Changes
+The default device library has 2 devices with `manufacturer: ''` (empty string):
+- `generic-tbs220` (TBS220 GPS Tracker)
+- `generic-ds3604` (DS3604 Door Sensor)
 
-### 1. `src/components/emulator/AddSensorDropdown.tsx` (2 fixes)
-Add the 3 missing categories to both `CATEGORY_ICONS` and `CATEGORY_LABELS`:
-- `contact` -> DoorOpen icon, "Contact"
-- `multi_sensor` -> Zap icon, "Multi-Sensor"  
-- `temperature_humidity` -> Thermometer icon, "Temp + Humidity"
+The Zod schema requires `manufacturer: z.string().min(1)`, so empty strings fail validation. This produces 3 errors:
+1. `generic-tbs220.manufacturer` fails min(1)
+2. `generic-ds3604.manufacturer` fails min(1)
+3. The metadata refinement fails because `''` is not in `metadata.manufacturers`
 
-### 2. `src/components/emulator/DeviceManager.tsx` (1 fix)
-Add missing categories to `categoryToType` map at line 349:
-- `contact` -> `'door'`
-- `multi_sensor` -> `'temperature'`
-- `temperature_humidity` -> `'temperature'`
+This is why the console shows `[DeviceLibraryStore] Default library invalid: Array(3)` and the Add Sensor dropdown is stuck on "Loading library..."
 
-### 3. `src/components/emulator/UserSelectionGate.tsx` (1 fix)
-Add same 3 missing categories to `categoryToType` map at line 217:
-- `contact` -> `'door'`
-- `multi_sensor` -> `'temperature'`
-- `temperature_humidity` -> `'temperature'`
+## Fix
 
-### 4. `src/lib/freshtrackExport.ts` (1 fix)
-Fix type cast at line 700: change `(fetchError as Record<string, unknown>)` to `(fetchError as unknown as Record<string, unknown>)` to satisfy TypeScript's type overlap check.
+**File: `src/lib/deviceLibrary/defaultLibrary.ts`**
 
-### 5. `src/lib/deviceLibrary/schema.ts` (1 fix)
-Add the 3 new categories to the Zod `deviceCategorySchema` enum at line 95 so library validation accepts devices with these categories.
+1. Change `generic-tbs220` manufacturer from `''` to `'Generic'` (line 198)
+2. Change `generic-ds3604` manufacturer from `''` to `'Generic'` (line 355)
+3. Add `'Generic'` to `metadata.manufacturers` array (line 23)
 
-## Result
-All 5 build errors resolved. The app will compile and the Add Sensor dropdown will work again.
+This satisfies both the field-level min(1) check and the metadata refinement that requires all device manufacturers to be listed in the metadata.
