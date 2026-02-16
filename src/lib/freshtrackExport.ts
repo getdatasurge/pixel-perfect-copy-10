@@ -330,6 +330,110 @@ function resolveFieldValue(
 }
 
 // ============================================
+// Pre-Send Validation
+// ============================================
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+interface ValidationIssue {
+  field: string;
+  message: string;
+}
+
+/**
+ * Validate the sync payload before sending to FreshTrack.
+ * Returns an array of issues; empty = valid.
+ */
+function validateSyncPayload(payload: {
+  org_id: string;
+  gateways: Array<Record<string, unknown>>;
+  devices: Array<Record<string, unknown>>;
+  sensors: Array<Record<string, unknown>>;
+}): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  if (!UUID_RE.test(payload.org_id)) {
+    issues.push({ field: 'org_id', message: `org_id must be UUID format, got "${payload.org_id}"` });
+  }
+
+  for (let i = 0; i < payload.gateways.length; i++) {
+    const gw = payload.gateways[i];
+    const eui = gw.gateway_eui as string || '';
+    if (eui.length < 1 || eui.length > 32) {
+      issues.push({ field: `gateways[${i}].gateway_eui`, message: `gateway_eui must be 1-32 chars, got ${eui.length}` });
+    }
+  }
+
+  for (let i = 0; i < payload.devices.length; i++) {
+    const dev = payload.devices[i];
+    const serial = dev.serial_number as string || '';
+    if (serial.length < 1 || serial.length > 100) {
+      issues.push({ field: `devices[${i}].serial_number`, message: `serial_number must be 1-100 chars, got ${serial.length}` });
+    }
+    const devEui = dev.dev_eui as string || '';
+    if (devEui.length < 1 || devEui.length > 32) {
+      issues.push({ field: `devices[${i}].dev_eui`, message: `dev_eui must be 1-32 chars, got ${devEui.length}` });
+    }
+    const name = dev.name as string || '';
+    if (name.length < 1 || name.length > 100) {
+      issues.push({ field: `devices[${i}].name`, message: `name must be 1-100 chars, got ${name.length}` });
+    }
+  }
+
+  for (let i = 0; i < payload.sensors.length; i++) {
+    const s = payload.sensors[i];
+    const devEui = s.dev_eui as string || '';
+    if (devEui.length < 1 || devEui.length > 32) {
+      issues.push({ field: `sensors[${i}].dev_eui`, message: `dev_eui must be 1-32 chars, got ${devEui.length}` });
+    }
+    const name = s.name as string || '';
+    if (name.length < 1 || name.length > 100) {
+      issues.push({ field: `sensors[${i}].name`, message: `name must be 1-100 chars, got ${name.length}` });
+    }
+  }
+
+  return issues;
+}
+
+/**
+ * Validate readings before sending to FreshTrack.
+ * Returns an array of issues; empty = valid.
+ */
+function validateReadings(readings: Array<Record<string, unknown>>): ValidationIssue[] {
+  const issues: ValidationIssue[] = [];
+
+  for (let i = 0; i < readings.length; i++) {
+    const r = readings[i];
+    const unitId = r.unit_id as string || '';
+    if (!UUID_RE.test(unitId)) {
+      issues.push({ field: `readings[${i}].unit_id`, message: `unit_id must be UUID format` });
+    }
+    const temp = r.temperature as number | undefined;
+    if (temp != null && (temp < -100 || temp > 300)) {
+      issues.push({ field: `readings[${i}].temperature`, message: `temperature ${temp} out of range [-100, 300]` });
+    }
+    const hum = r.humidity as number | undefined;
+    if (hum != null && (hum < 0 || hum > 100)) {
+      issues.push({ field: `readings[${i}].humidity`, message: `humidity ${hum} out of range [0, 100]` });
+    }
+    const bat = r.battery_level as number | undefined;
+    if (bat != null && (bat < 0 || bat > 100)) {
+      issues.push({ field: `readings[${i}].battery_level`, message: `battery_level ${bat} out of range [0, 100]` });
+    }
+    const batV = r.battery_voltage as number | undefined;
+    if (batV != null && (batV < 0 || batV > 10)) {
+      issues.push({ field: `readings[${i}].battery_voltage`, message: `battery_voltage ${batV} out of range [0, 10]` });
+    }
+    const sig = r.signal_strength as number | undefined;
+    if (sig != null && (sig < -150 || sig > 0)) {
+      issues.push({ field: `readings[${i}].signal_strength`, message: `signal_strength ${sig} out of range [-150, 0]` });
+    }
+  }
+
+  return issues;
+}
+
+// ============================================
 // Sync Devices
 // ============================================
 
@@ -414,6 +518,17 @@ export async function syncDevicesToFreshTrack(
     sensors: sensorPayload,
   };
 
+  // Pre-send validation
+  const validationIssues = validateSyncPayload(payload);
+  if (validationIssues.length > 0) {
+    return {
+      success: false,
+      error: `Validation failed: ${validationIssues[0].message}`,
+      error_code: 'CLIENT_VALIDATION',
+      details: validationIssues.map(v => ({ path: v.field, message: v.message })),
+    };
+  }
+
   try {
     let data: Record<string, unknown> | null;
     let fetchError: Error | null;
@@ -450,13 +565,21 @@ export async function syncDevicesToFreshTrack(
       };
     }
 
+    // Handle 207 partial success: body has both counts AND non-empty errors[]
+    const responseErrors = (data?.errors as string[]) || [];
+    const isPartial = httpStatus === 207 || (data?.success && responseErrors.length > 0);
+    const isSuccess = (data?.success as boolean) ?? false;
+
     return {
-      success: (data?.success as boolean) ?? false,
+      success: isSuccess || !!isPartial,
       sync_run_id: data?.sync_run_id as string | undefined,
       counts: data?.counts as ExportSyncResult['counts'],
       warnings: (data?.warnings as string[]) || [],
-      errors: (data?.errors as string[]) || [],
-      error: data?.success ? undefined : ((data?.error as string) || 'Unknown error'),
+      errors: responseErrors,
+      error: isPartial
+        ? `Partial sync (207): ${responseErrors.length} error(s)`
+        : (isSuccess ? undefined : ((data?.error as string) || 'Unknown error')),
+      error_code: isPartial ? 'PARTIAL_SUCCESS' : undefined,
     };
   } catch (err) {
     return {
@@ -537,53 +660,83 @@ export async function sendReadingsToFreshTrack(
     };
   }
 
-  try {
-    let data: Record<string, unknown> | null;
-    let fetchError: Error | null;
+  const allReadings = readings as Array<Record<string, unknown>>;
 
-    if (isDirectModeAvailable()) {
-      const cfg = getEffectiveConfig();
-      ({ data, error: fetchError } = await directFetch('ingest-readings', 'POST', {
-        'X-Device-API-Key': cfg.deviceIngestApiKey,
-      }, { readings }));
-    } else {
-      const result = await supabase.functions.invoke('export-readings', { body: { readings } });
-      data = result.data;
-      fetchError = result.error;
-    }
-
-    if (fetchError) {
-      const httpStatus = (fetchError as Record<string, unknown>)?._http_status;
-      if (httpStatus === 401 || httpStatus === 403) {
-        return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
-      }
-      return { success: false, error: fetchError.message, error_code: 'INVOKE_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
-    }
-
-    // Handle 401/403 from directFetch
-    const httpStatus = data?._http_status as number | undefined;
-    if (httpStatus === 401 || httpStatus === 403) {
-      return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: 0, failed: readings.length, sentReadings: readings as Array<Record<string, unknown>> };
-    }
-
-    return {
-      success: (data?.success as boolean) ?? false,
-      ingested: (data?.ingested as number) ?? 0,
-      failed: (data?.failed as number) ?? 0,
-      results: data?.results as ExportReadingsResult['results'],
-      error: data?.success ? undefined : ((data?.error as string) || 'Unknown error'),
-      sentReadings: readings as Array<Record<string, unknown>>,
-    };
-  } catch (err) {
-    return {
-      success: false,
-      error: err instanceof Error ? err.message : 'Network error',
-      error_code: 'NETWORK_ERROR',
-      ingested: 0,
-      failed: readings.length,
-      sentReadings: readings as Array<Record<string, unknown>>,
-    };
+  // Pre-send validation
+  const validationIssues = validateReadings(allReadings);
+  if (validationIssues.length > 0) {
+    console.warn('[FreshTrackExport] Reading validation warnings:', validationIssues);
+    // Log but don't block — server will enforce hard limits
   }
+
+  // Batch into chunks of 100
+  const BATCH_SIZE = 100;
+  const batches: Array<Array<Record<string, unknown>>> = [];
+  for (let i = 0; i < allReadings.length; i += BATCH_SIZE) {
+    batches.push(allReadings.slice(i, i + BATCH_SIZE));
+  }
+
+  let totalIngested = 0;
+  let totalFailed = 0;
+  const allResults: Array<{ unit_id: string; success: boolean; error?: string }> = [];
+  const errors: string[] = [];
+
+  for (const batch of batches) {
+    try {
+      let data: Record<string, unknown> | null;
+      let fetchError: Error | null;
+
+      if (isDirectModeAvailable()) {
+        const cfg = getEffectiveConfig();
+        ({ data, error: fetchError } = await directFetch('ingest-readings', 'POST', {
+          'X-Device-API-Key': cfg.deviceIngestApiKey,
+        }, { readings: batch }));
+      } else {
+        const result = await supabase.functions.invoke('export-readings', { body: { readings: batch } });
+        data = result.data;
+        fetchError = result.error;
+      }
+
+      if (fetchError) {
+        const httpStatus = (fetchError as Record<string, unknown>)?._http_status;
+        if (httpStatus === 401 || httpStatus === 403) {
+          return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: totalIngested, failed: totalFailed + batch.length, sentReadings: allReadings };
+        }
+        errors.push(fetchError.message);
+        totalFailed += batch.length;
+        continue;
+      }
+
+      // Handle 401/403 from directFetch
+      const httpStatus = data?._http_status as number | undefined;
+      if (httpStatus === 401 || httpStatus === 403) {
+        return { success: false, error: `Authentication failed (${httpStatus}). Check your API keys.`, error_code: 'AUTH_ERROR', ingested: totalIngested, failed: totalFailed + batch.length, sentReadings: allReadings };
+      }
+
+      totalIngested += (data?.ingested as number) ?? 0;
+      totalFailed += (data?.failed as number) ?? 0;
+      if (data?.results) {
+        allResults.push(...(data.results as Array<{ unit_id: string; success: boolean; error?: string }>));
+      }
+      if (!data?.success) {
+        errors.push((data?.error as string) || 'Batch failed');
+      }
+    } catch (err) {
+      errors.push(err instanceof Error ? err.message : 'Network error');
+      totalFailed += batch.length;
+    }
+  }
+
+  const hasErrors = errors.length > 0;
+  return {
+    success: totalIngested > 0 || !hasErrors,
+    ingested: totalIngested,
+    failed: totalFailed,
+    results: allResults.length > 0 ? allResults : undefined,
+    error: hasErrors ? errors.join('; ') : undefined,
+    error_code: hasErrors && totalIngested === 0 ? 'BATCH_FAILED' : undefined,
+    sentReadings: allReadings,
+  };
 }
 
 // ============================================
