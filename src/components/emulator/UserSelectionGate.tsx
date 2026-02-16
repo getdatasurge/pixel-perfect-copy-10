@@ -16,7 +16,7 @@ import { findDeviceByName, setDeviceModel, isLibraryLoaded, initializeDeviceLibr
 
 const STORAGE_KEY_USER_CONTEXT = 'lorawan-emulator-user-context';
 // Bump this version to invalidate stale session caches after code fixes
-const CONTEXT_VERSION = 2;
+const CONTEXT_VERSION = 3;
 
 interface StoredUserContext {
   _contextVersion?: number;
@@ -268,6 +268,18 @@ export default function UserSelectionGate({
           }
           assignedLibraryId = libraryDevice.id;
           console.log(`[UserSelectionGate] Matched "${s.name}" → ${libraryDevice.id} (${libraryDevice.category} → ${deviceType})`);
+        }
+
+        // Fallback: if no library match, infer type from sensor name
+        // This handles generic names like "Door Sensor 1" where FrostGuard
+        // may have an incorrect sensor_kind value
+        if (!libraryDevice) {
+          const lowerName = s.name.toLowerCase();
+          if (lowerName.includes('door') || lowerName.includes('contact')) {
+            deviceType = 'door';
+          } else if (lowerName.includes('leak') || lowerName.includes('motion')) {
+            deviceType = 'door';
+          }
         }
         
         // Persist library assignment for payload generation
