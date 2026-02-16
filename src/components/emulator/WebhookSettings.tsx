@@ -805,12 +805,36 @@ export default function WebhookSettings({ config, onConfigChange, disabled, curr
       }
       
       // Determine cluster source
-      const clusterSource: TTNConfigSource = rawUserTTN?.cluster ? 'user' : (rawOrgSettings?.cluster ? 'org' : 'not_set');
-      const effectiveCluster = (rawUserTTN?.cluster as string) || rawOrgSettings?.cluster || 'nam1';
+      // Cluster: prefer fresh pull > synced_users > ttn_settings > default
+      const freshPullCluster = config.ttnConfig?.cluster || null;
+      const clusterSource: TTNConfigSource = freshPullCluster ? 'user' : (rawUserTTN?.cluster ? 'user' : (rawOrgSettings?.cluster ? 'org' : 'not_set'));
+      const effectiveCluster = freshPullCluster || (rawUserTTN?.cluster as string) || rawOrgSettings?.cluster || 'nam1';
       
       // Determine app ID source
-      const appIdSource: TTNConfigSource = rawUserTTN?.application_id ? 'user' : (rawOrgSettings?.application_id ? 'org' : 'not_set');
-      const effectiveAppId = (rawUserTTN?.application_id as string) || rawOrgSettings?.application_id || '';
+      // Priority: fresh FrostGuard pull (config.ttnConfig) > synced_users.ttn > ttn_settings
+      // The synced_users mirror can be stale if the user-sync pipeline hasn't run recently
+      const freshPullAppId = config.ttnConfig?.applicationId || null;
+      let effectiveAppId: string;
+      let appIdSource: TTNConfigSource;
+      
+      if (freshPullAppId) {
+        effectiveAppId = freshPullAppId;
+        appIdSource = 'user';
+        // Log if there's a mismatch between fresh pull and synced_users mirror
+        const mirrorAppId = rawUserTTN?.application_id as string | undefined;
+        if (mirrorAppId && mirrorAppId !== freshPullAppId) {
+          console.warn(`[WebhookSettings] Application ID mismatch: fresh pull=${freshPullAppId}, synced_users=${mirrorAppId}. Using fresh pull value.`);
+        }
+      } else if (rawUserTTN?.application_id) {
+        effectiveAppId = rawUserTTN.application_id as string;
+        appIdSource = 'user';
+      } else if (rawOrgSettings?.application_id) {
+        effectiveAppId = rawOrgSettings.application_id;
+        appIdSource = 'org';
+      } else {
+        effectiveAppId = '';
+        appIdSource = 'not_set';
+      }
       
       const effectiveEnabled = !!(rawUserTTN?.enabled || rawOrgSettings?.enabled);
       
