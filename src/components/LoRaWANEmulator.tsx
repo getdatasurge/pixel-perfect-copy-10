@@ -41,9 +41,8 @@ import {
   createGateway, 
   createDevice,
   buildTTNPayload,
-  buildTempPayload,
-  buildDoorPayload,
 } from '@/lib/ttn-payload';
+import { buildDecodedPayload } from '@/lib/freshtrackExport';
 import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
@@ -64,6 +63,7 @@ import {
 } from '@/lib/emulatorSensorState';
 import { toCanonicalDoor, generateDoorTraceId, logDoorTrace } from '@/lib/doorStateCanonical';
 import { EmissionScheduler, createEmissionScheduler } from '@/lib/deviceLibrary/emissionScheduler';
+import { getDevice as getLibraryDevice } from '@/lib/deviceLibrary';
 
 interface LogEntry {
   id: string;
@@ -554,24 +554,19 @@ export default function LoRaWANEmulator() {
       return;
     }
 
-    // Build type-specific payload using per-device state
-    const orgContext = {
-      org_id: webhookConfig.testOrgId || null,
-      site_id: webhookConfig.testSiteId || null,
-      unit_id: webhookConfig.testUnitId || device.name,
-    };
-    
-    let payload: Record<string, unknown>;
+    // Build library-aware decoded payload (uses device library field names
+    // like TempC_SHT, BatV, DOOR_OPEN_STATUS when a library model is assigned)
+    const payload = buildDecodedPayload(sensorState, device.type);
+
+    // Use device library's default_fport when available, else legacy defaults
     let fPort: number;
-    const requestId = crypto.randomUUID().slice(0, 8);
-    
-    if (device.type === 'temperature') {
-      payload = buildTempPayload(sensorState, orgContext);
-      fPort = 1;
+    if (sensorState.libraryDeviceId) {
+      const libDev = getLibraryDevice(sensorState.libraryDeviceId);
+      fPort = libDev?.default_fport ?? (device.type === 'temperature' ? 1 : 2);
     } else {
-      payload = buildDoorPayload(sensorState, orgContext);
-      fPort = 2;
+      fPort = device.type === 'temperature' ? 1 : 2;
     }
+    const requestId = crypto.randomUUID().slice(0, 8);
 
     // Use canonical device_id format: sensor-{normalized_deveui}
     const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();

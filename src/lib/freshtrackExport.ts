@@ -221,7 +221,7 @@ function calculateGatewayStatus(gw: GatewayConfig): 'online' | 'offline' | 'pend
  * Maps emulator state values to canonical field names from the library,
  * and generates realistic simulated values for fields not in emulator state.
  */
-function buildDecodedPayload(
+export function buildDecodedPayload(
   state: SensorState,
   devType: 'temperature' | 'door',
 ): Record<string, unknown> {
