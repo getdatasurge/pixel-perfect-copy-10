@@ -218,8 +218,8 @@ export function buildLegacyEnvelope(
     ? new Date(serverTimestamp).getTime()
     : Date.now();
 
-  // Default f_port based on device type
-  const fPort = device.type === 'temperature' ? 1 : 2;
+  // Default f_port: 2 (Dragino default; overridden by library device when available)
+  const fPort = 2;
 
   // Get signal strength from payload if available
   const signalStrength = typeof decodedPayload.signal_strength === 'number' 

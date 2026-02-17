@@ -16,6 +16,8 @@ interface SimulateUplinkRequest {
   cluster?: string;
   decodedPayload: Record<string, unknown>;
   fPort: number;
+  gatewayId?: string;
+  gatewayEui?: string;
 }
 
 interface TTNSettings {
@@ -304,7 +306,7 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    const { org_id, selected_user_id, decodedPayload, fPort } = body;
+    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId, gatewayEui } = body;
     let { deviceId } = body;
     // Capture applicationId from request body — the frontend sends the correct
     // value from the FrostGuard live pull which takes precedence over the
@@ -467,6 +469,15 @@ serve(async (req) => {
     // testing mechanism and exactly what FrostGuard reads.
     // Also include frm_payload (Base64-encoded JSON) for TTN Console log realism.
     const rssi = (decodedPayload.signal_strength as number) ?? -70;
+    const now = new Date().toISOString();
+
+    // Build gateway_ids — include eui when the frontend provides it
+    const gatewayIds: Record<string, string> = {
+      gateway_id: gatewayId || "simulated-gateway",
+    };
+    if (gatewayEui) {
+      gatewayIds.eui = gatewayEui.toUpperCase();
+    }
 
     const simulatePayload = {
       downlinks: [],
@@ -476,12 +487,12 @@ serve(async (req) => {
         decoded_payload: decodedPayload,
         rx_metadata: [
           {
-            gateway_ids: {
-              gateway_id: "simulated-gateway",
-            },
+            gateway_ids: gatewayIds,
             rssi,
             channel_rssi: rssi,
             snr: 7.5,
+            channel_index: 0,
+            received_at: now,
           }
         ],
         settings: {
@@ -489,6 +500,7 @@ serve(async (req) => {
             lora: {
               bandwidth: 125000,
               spreading_factor: 7,
+              coding_rate: "4/5",
             }
           },
           frequency: "904300000",

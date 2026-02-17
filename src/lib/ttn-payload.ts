@@ -308,8 +308,8 @@ export function buildTTNPayload(
     ? new Date(serverTimestamp).getTime() 
     : Date.now();
   
-  // Use provided f_port, or default based on device type
-  const port = f_port ?? (device.type === 'temperature' ? 1 : 2);
+  // Use provided f_port, or default to 2 (Dragino default)
+  const port = f_port ?? 2;
   
   // Use provided f_cnt or generate a random one for backward compatibility
   const frameCount = f_cnt ?? Math.floor(Math.random() * 65535);
