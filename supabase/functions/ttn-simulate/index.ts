@@ -440,11 +440,15 @@ serve(async (req) => {
     console.log('Calling TTN API:', ttnUrl);
 
     // Build the simulate uplink payload
+    // Send frm_payload (Base64-encoded JSON) instead of decoded_payload so that
+    // TTN's payload formatter decodes it — matching real LoRaWAN device behavior.
+    const frmPayload = btoa(JSON.stringify(decodedPayload));
+
     const simulatePayload = {
       downlinks: [],
       uplink_message: {
         f_port: fPort,
-        decoded_payload: decodedPayload,
+        frm_payload: frmPayload,
         rx_metadata: [
           {
             gateway_ids: {

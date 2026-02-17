@@ -1699,10 +1699,14 @@ export default function LoRaWANEmulator() {
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
+    // Only schedule selected sensors — unselected devices should not emit
+    const devicesToSchedule = devices.filter(d => selectedSensorIds.includes(d.id));
+
     // Per-device scheduling using EmissionScheduler for drift-corrected timing
     console.log('[EMULATOR_SCHEDULE] Initializing drift-corrected scheduler:', {
-      deviceCount: devices.length,
-      devices: devices.map(d => ({
+      selectedCount: devicesToSchedule.length,
+      totalDevices: devices.length,
+      devices: devicesToSchedule.map(d => ({
         id: d.id,
         name: d.name,
         type: d.type,
@@ -1716,8 +1720,8 @@ export default function LoRaWANEmulator() {
     }
     const scheduler = schedulerRef.current;
 
-    // Register each device with the scheduler
-    for (const device of devices) {
+    // Register only selected devices with the scheduler
+    for (const device of devicesToSchedule) {
       const sensorState = sensorStates[device.id];
       if (!sensorState) continue;
 
@@ -1738,7 +1742,12 @@ export default function LoRaWANEmulator() {
 
       addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s (drift-corrected)`);
     }
-  }, [devices, sensorStates, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
+
+    if (devicesToSchedule.length < devices.length) {
+      const skipped = devices.length - devicesToSchedule.length;
+      addLog('info', `⏭️ ${skipped} unselected sensor(s) skipped`);
+    }
+  }, [devices, sensorStates, selectedSensorIds, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
   const stopEmulation = useCallback(async () => {
     setIsRunning(false);
