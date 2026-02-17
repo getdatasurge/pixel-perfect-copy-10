@@ -1,4 +1,4 @@
-import { useEffect, useRef } from 'react';
+import { useEffect, useState } from 'react';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@/components/ui/dialog';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
@@ -15,14 +15,17 @@ interface QRCodeModalProps {
 }
 
 export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps) {
-  const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [qrImageUrl, setQrImageUrl] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!device || !open || !canvasRef.current) return;
+    if (!device || !open) {
+      setQrImageUrl(null);
+      return;
+    }
 
     const qrData = buildQRCodeData(device);
 
-    QRCode.toCanvas(canvasRef.current, qrData, {
+    QRCode.toDataURL(qrData, {
       width: 200,
       margin: 2,
       color: {
@@ -30,14 +33,18 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
         light: '#ffffff',
       },
       errorCorrectionLevel: 'M',
-    }).catch((err: Error) => {
-      console.error('Failed to generate QR code:', err);
-      toast({
-        title: 'QR Error',
-        description: 'Failed to generate QR code',
-        variant: 'destructive',
+    })
+      .then((url: string) => {
+        setQrImageUrl(url);
+      })
+      .catch((err: Error) => {
+        console.error('Failed to generate QR code:', err);
+        toast({
+          title: 'QR Error',
+          description: 'Failed to generate QR code',
+          variant: 'destructive',
+        });
       });
-    });
   }, [device, open]);
 
   if (!device) return null;
@@ -50,10 +57,10 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
   };
 
   const downloadQR = () => {
-    if (!canvasRef.current) return;
+    if (!qrImageUrl) return;
     const link = document.createElement('a');
     link.download = `${device.name.replace(/\s+/g, '-')}-qr.png`;
-    link.href = canvasRef.current.toDataURL('image/png');
+    link.href = qrImageUrl;
     link.click();
     toast({ title: 'Downloaded', description: 'QR code image saved' });
   };
@@ -70,7 +77,13 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
 
         <div className="flex flex-col items-center gap-4 py-4">
           <div className="bg-white p-4 rounded-lg shadow-inner">
-            <canvas ref={canvasRef} />
+            {qrImageUrl ? (
+              <img src={qrImageUrl} alt={`QR code for ${device.name}`} width={200} height={200} />
+            ) : (
+              <div className="w-[200px] h-[200px] flex items-center justify-center text-muted-foreground text-sm">
+                Generating...
+              </div>
+            )}
           </div>
         </div>
 
