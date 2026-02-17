@@ -1,25 +1,16 @@
 
-
-# Fix: QR Code Canvas Not Rendering
+# Fix: Duplicate `now` Variable in ttn-simulate
 
 ## Problem
-The source code correctly imports `qrcode` and calls `QRCode.toCanvas()`, but the QR code appears blank in the browser. Two issues:
-
-1. **CSS size conflict**: The canvas has `className="w-48 h-48"` (192x192px via CSS) while `QRCode.toCanvas` sets the canvas's intrinsic dimensions to 200x200. This mismatch can cause blank or distorted rendering in some browsers.
-2. **Possible stale build**: The preview may still be serving a cached version with the old placeholder code.
+`const now` is declared at both line 472 and line 579 in the same block scope, causing a TypeScript compilation error that prevents deployment.
 
 ## Solution
 
-**File: `src/components/emulator/QRCodeModal.tsx`**
+**File: `supabase/functions/ttn-simulate/index.ts`**
 
-**Line 73** -- Remove the fixed Tailwind size classes from the canvas element. Let the `qrcode` library control the canvas dimensions natively:
+Rename the second `now` on **line 579** to `dbNow`, and update all references to it in the dual-write block below:
 
-```
-Before:  <canvas ref={canvasRef} className="w-48 h-48" />
-After:   <canvas ref={canvasRef} />
-```
+- **Line 579**: `const now = new Date().toISOString();` becomes `const dbNow = new Date().toISOString();`
+- Update any subsequent uses of `now` after line 579 (e.g., `received_at: now`) to `received_at: dbNow`
 
-This ensures the `qrcode` library's `width: 200` option directly controls the canvas size without CSS interference.
-
-No other changes needed -- the rest of the implementation (import, toCanvas call, error handling) is already correct.
-
+After the fix, both `ttn-simulate` and `ttn-preflight` will be redeployed.
