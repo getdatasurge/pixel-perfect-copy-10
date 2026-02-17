@@ -16,6 +16,7 @@ interface SimulateUplinkRequest {
   cluster?: string;
   decodedPayload: Record<string, unknown>;
   fPort: number;
+  gatewayId?: string;
 }
 
 interface TTNSettings {
@@ -304,7 +305,7 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    const { org_id, selected_user_id, decodedPayload, fPort } = body;
+    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId } = body;
     let { deviceId } = body;
     // Capture applicationId from request body — the frontend sends the correct
     // value from the FrostGuard live pull which takes precedence over the
@@ -477,7 +478,7 @@ serve(async (req) => {
         rx_metadata: [
           {
             gateway_ids: {
-              gateway_id: "simulated-gateway",
+              gateway_id: gatewayId || "simulated-gateway",
             },
             rssi,
             channel_rssi: rssi,

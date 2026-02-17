@@ -152,11 +152,19 @@ export async function processTTNUplink(
     };
   }
 
+  // Field-presence detection: detect payload type from field names instead of
+  // fPort, since different manufacturers use different fPorts (Dragino: 2,
+  // Milesight: 85, Elsys: 5). Hoisted here so both telemetry + legacy writes
+  // can reference the resolved values.
+  const tempC = (decodedPayload.temperature ?? decodedPayload.TempC_SHT ?? decodedPayload.TempC_DS ?? decodedPayload.ext_temperature ?? decodedPayload.soil_temperature) as number | undefined;
+  const tempF = decodedPayload.temp_f as number | undefined ?? (tempC !== undefined ? tempC * 9 / 5 + 32 : undefined);
+  const humidity = (decodedPayload.humidity ?? decodedPayload.Hum_SHT) as number | undefined;
+  const doorStatus = (decodedPayload.door_status ?? decodedPayload.DOOR_OPEN_STATUS ?? decodedPayload.door ?? decodedPayload.open ?? decodedPayload.contact) as string | boolean | undefined;
+
   // Step 3: Update unit_telemetry if we have a unit_id
   if (unitId) {
     const now = new Date().toISOString();
 
-    // Build the telemetry update based on f_port
     const telemetryUpdate: Record<string, unknown> = {
       org_id: orgId,
       battery_pct: batteryPct,
@@ -166,32 +174,20 @@ export async function processTTNUplink(
       updated_at: now,
     };
 
-    // f_port 1 = temperature sensor
-    if (fPort === 1) {
-      const tempC = decodedPayload.temperature as number | undefined;
-      const tempF = decodedPayload.temp_f as number | undefined ?? (tempC !== undefined ? tempC * 9 / 5 + 32 : undefined);
-      const humidity = decodedPayload.humidity as number | undefined;
+    if (tempF !== undefined) telemetryUpdate.last_temp_f = tempF;
+    if (humidity !== undefined) telemetryUpdate.last_humidity = humidity;
 
-      if (tempF !== undefined) telemetryUpdate.last_temp_f = tempF;
-      if (humidity !== undefined) telemetryUpdate.last_humidity = humidity;
-    }
-
-    // f_port 2 = door sensor
-    if (fPort === 2) {
-      const doorStatus = (decodedPayload.door_status ?? decodedPayload.door ?? decodedPayload.open) as string | boolean | undefined;
-
-      if (doorStatus !== undefined) {
-        // Normalize door state
-        let doorState: 'open' | 'closed' = 'unknown' as never;
-        if (typeof doorStatus === 'boolean') {
-          doorState = doorStatus ? 'open' : 'closed';
-        } else if (typeof doorStatus === 'string') {
-          doorState = doorStatus.toLowerCase() === 'open' ? 'open' : 'closed';
-        }
-
-        telemetryUpdate.door_state = doorState;
-        telemetryUpdate.last_door_event_at = now;
+    if (doorStatus !== undefined) {
+      // Normalize door state
+      let doorState: 'open' | 'closed' = 'unknown' as never;
+      if (typeof doorStatus === 'boolean') {
+        doorState = doorStatus ? 'open' : 'closed';
+      } else if (typeof doorStatus === 'string') {
+        doorState = doorStatus.toLowerCase() === 'open' ? 'open' : 'closed';
       }
+
+      telemetryUpdate.door_state = doorState;
+      telemetryUpdate.last_door_event_at = now;
     }
 
     // Upsert into unit_telemetry
@@ -210,11 +206,12 @@ export async function processTTNUplink(
   }
 
   // Step 4: Also insert into legacy tables for backward compatibility
-  if (fPort === 1) {
+  // Use field-presence detection (same as telemetry above) instead of fPort gating
+  if (tempC !== undefined) {
     const sensorData = {
       device_serial: devEui,
-      temperature: decodedPayload.temperature as number | null,
-      humidity: decodedPayload.humidity as number | null,
+      temperature: tempC,
+      humidity: humidity ?? null,
       battery_level: batteryPct,
       signal_strength: rssiDbm,
       unit_id: unitId || (decodedPayload.unit_id as string | null),
@@ -228,10 +225,15 @@ export async function processTTNUplink(
     if (error) {
       log('warn', 'Failed to insert legacy sensor_readings', { error: error.message });
     }
-  } else if (fPort === 2) {
+  }
+
+  if (doorStatus !== undefined) {
+    const normalizedDoor = typeof doorStatus === 'boolean'
+      ? (doorStatus ? 'open' : 'closed')
+      : String(doorStatus);
     const doorData = {
       device_serial: devEui,
-      door_status: String(decodedPayload.door_status ?? decodedPayload.door ?? 'unknown'),
+      door_status: normalizedDoor,
       battery_level: batteryPct,
       signal_strength: rssiDbm,
       unit_id: unitId || (decodedPayload.unit_id as string | null),

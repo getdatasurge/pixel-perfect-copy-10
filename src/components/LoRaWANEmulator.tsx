@@ -530,6 +530,16 @@ export default function LoRaWANEmulator() {
     return gateways.find(g => g.id === device.gatewayId && g.isOnline);
   }, [gateways]);
 
+  /** Resolve f_port from device library when a model is assigned, else default to 2 */
+  const resolveDeviceFPort = useCallback((device: LoRaWANDevice): number => {
+    const state = sensorStates[device.id];
+    if (state?.libraryDeviceId) {
+      const libDev = getLibraryDevice(state.libraryDeviceId);
+      if (libDev) return libDev.default_fport;
+    }
+    return 2; // Dragino default
+  }, [sensorStates]);
+
   /**
    * Send uplink for a specific device using its per-device state
    * Each device sends ONLY its own independent payload - no bundling
@@ -558,14 +568,8 @@ export default function LoRaWANEmulator() {
     // like TempC_SHT, BatV, DOOR_OPEN_STATUS when a library model is assigned)
     const payload = buildDecodedPayload(sensorState, device.type);
 
-    // Use device library's default_fport when available, else legacy defaults
-    let fPort: number;
-    if (sensorState.libraryDeviceId) {
-      const libDev = getLibraryDevice(sensorState.libraryDeviceId);
-      fPort = libDev?.default_fport ?? (device.type === 'temperature' ? 1 : 2);
-    } else {
-      fPort = device.type === 'temperature' ? 1 : 2;
-    }
+    // Use device library's default_fport when available, else default to 2
+    const fPort = resolveDeviceFPort(device);
     const requestId = crypto.randomUUID().slice(0, 8);
 
     // Use canonical device_id format: sensor-{normalized_deveui}
@@ -615,6 +619,7 @@ export default function LoRaWANEmulator() {
             deviceId: ttnDeviceId,
             decodedPayload: payload,
             fPort,
+            gatewayId: gateway.id,
           },
         });
 
@@ -686,7 +691,7 @@ export default function LoRaWANEmulator() {
     }
 
     addTestResult(testResult);
-  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway]);
+  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway, resolveDeviceFPort]);
 
   const sendTempReading = useCallback(async () => {
     const device = getActiveDevice('temperature');
@@ -855,13 +860,14 @@ export default function LoRaWANEmulator() {
         // Use canonical device_id format: sensor-{normalized_deveui}
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
         const deviceId = `sensor-${normalizedDevEui}`;
-        
+        const fPort = resolveDeviceFPort(device);
+
         // Log request to debug terminal
         log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
           deviceId,
           devEui: device.devEui,
           applicationId: ttnConfig.applicationId,
-          fPort: 1,
+          fPort,
         });
 
         // ttn-simulate loads credentials from database - no header needed
@@ -872,7 +878,8 @@ export default function LoRaWANEmulator() {
             applicationId: ttnConfig.applicationId,
             deviceId,
             decodedPayload: payload,
-            fPort: 1,
+            fPort,
+            gatewayId: gateway.id,
           },
         });
 
@@ -1080,7 +1087,7 @@ export default function LoRaWANEmulator() {
     }
 
     addTestResult(testResult);
-  }, [tempState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway]);
+  }, [tempState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway, resolveDeviceFPort]);
 
   const sendDoorEvent = useCallback(async (status?: 'open' | 'closed') => {
     if (!doorState.enabled) return;
@@ -1116,12 +1123,15 @@ export default function LoRaWANEmulator() {
       site_id: webhookConfig.testSiteId || null,
     };
     
+    // Resolve fPort from device library
+    const fPort = resolveDeviceFPort(device);
+
     // DEBUG: Log full payload being sent for door events
     const debugRequestId = crypto.randomUUID();
     console.log('[DOOR_UPLINK_DEBUG]', JSON.stringify({
       request_id: debugRequestId,
       devEui: device.devEui,
-      fPort: 2,
+      fPort,
       door_status: doorStatus,
       payload,
       ttnEnabled: webhookConfig.ttnConfig?.enabled,
@@ -1140,26 +1150,26 @@ export default function LoRaWANEmulator() {
 
     try {
       const ttnConfig = webhookConfig.ttnConfig;
-      
+
       // Log route decision for debugging
       log('ttn-preflight', 'info', 'ROUTE_DECISION', {
         ttnEnabled: ttnConfig?.enabled,
         applicationId: ttnConfig?.applicationId,
         willUseTTNSimulate: !!(ttnConfig?.enabled && ttnConfig?.applicationId),
       });
-      
+
       // Route through TTN if enabled
       if (ttnConfig?.enabled && ttnConfig.applicationId) {
         // Use canonical device_id format: sensor-{normalized_deveui}
         const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
         const deviceId = `sensor-${normalizedDevEui}`;
-        
+
         // Log request to debug terminal
         log('ttn-preflight', 'info', 'TTN_SIMULATE_REQUEST', {
           deviceId,
           devEui: device.devEui,
           applicationId: ttnConfig.applicationId,
-          fPort: 2,
+          fPort,
         });
 
         // ttn-simulate loads credentials from database - no header needed
@@ -1170,7 +1180,8 @@ export default function LoRaWANEmulator() {
             applicationId: ttnConfig.applicationId,
             deviceId,
             decodedPayload: payload,
-            fPort: 2, // Door events on port 2
+            fPort,
+            gatewayId: gateway.id,
           },
         });
 
@@ -1314,7 +1325,7 @@ export default function LoRaWANEmulator() {
     }
 
     addTestResult(testResult);
-  }, [doorState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway]);
+  }, [doorState, webhookConfig, addLog, addTestResult, getActiveDevice, getActiveGateway, resolveDeviceFPort]);
 
   // Keep refs updated with latest callback versions for stable interval references
   useEffect(() => {
@@ -1372,7 +1383,7 @@ export default function LoRaWANEmulator() {
       unit_id: orgContext.unit_id,
     };
 
-    const fPort = 2;
+    const fPort = resolveDeviceFPort(device);
     const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
     const ttnDeviceId = `sensor-${normalizedDevEui}`;
 
@@ -1424,6 +1435,7 @@ export default function LoRaWANEmulator() {
             deviceId: ttnDeviceId,
             decodedPayload: payload,
             fPort,
+            gatewayId: gateway.id,
           },
         });
 
@@ -1484,7 +1496,7 @@ export default function LoRaWANEmulator() {
     }
 
     addTestResult(testResult);
-  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway]);
+  }, [devices, sensorStates, gateways, webhookConfig, addLog, addTestResult, updateSensorState, getActiveGateway, resolveDeviceFPort]);
 
   /**
    * Toggle door state for all selected door sensors
