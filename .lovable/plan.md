@@ -1,32 +1,25 @@
 
 
-# Fix: Replace Placeholder QR Code with Real Scannable QR Code
+# Fix: QR Code Canvas Not Rendering
 
 ## Problem
-The QR code modal shows a fake visual pattern (manual canvas drawing) instead of a real, scannable QR code. The `qrcode` library is already in `package.json` but the component never imports or uses it.
+The source code correctly imports `qrcode` and calls `QRCode.toCanvas()`, but the QR code appears blank in the browser. Two issues:
+
+1. **CSS size conflict**: The canvas has `className="w-48 h-48"` (192x192px via CSS) while `QRCode.toCanvas` sets the canvas's intrinsic dimensions to 200x200. This mismatch can cause blank or distorted rendering in some browsers.
+2. **Possible stale build**: The preview may still be serving a cached version with the old placeholder code.
 
 ## Solution
 
 **File: `src/components/emulator/QRCodeModal.tsx`**
 
-Replace the entire placeholder canvas drawing logic (lines 22-76) with the `qrcode` library's `toCanvas` method:
+**Line 73** -- Remove the fixed Tailwind size classes from the canvas element. Let the `qrcode` library control the canvas dimensions natively:
 
-1. Add `import QRCode from 'qrcode';` at the top
-2. Replace the `useEffect` body (lines 22-76) with:
-   ```typescript
-   const qrData = buildQRCodeData(device);
-   QRCode.toCanvas(canvasRef.current, qrData, {
-     width: 200,
-     margin: 2,
-     color: { dark: '#000000', light: '#ffffff' },
-     errorCorrectionLevel: 'M',
-   }).catch((err: Error) => {
-     console.error('Failed to generate QR code:', err);
-     toast({ title: 'QR Error', description: 'Failed to generate QR code', variant: 'destructive' });
-   });
-   ```
-3. Remove the placeholder disclaimer text (lines 111-113): "Note: This is a visual placeholder..."
+```
+Before:  <canvas ref={canvasRef} className="w-48 h-48" />
+After:   <canvas ref={canvasRef} />
+```
 
-## Scope
-Single file change: `src/components/emulator/QRCodeModal.tsx`. No new dependencies needed -- `qrcode` and `@types/qrcode` are already in `package.json`.
+This ensures the `qrcode` library's `width: 200` option directly controls the canvas size without CSS interference.
+
+No other changes needed -- the rest of the implementation (import, toCanvas call, error handling) is already correct.
 
