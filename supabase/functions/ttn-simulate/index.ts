@@ -13,6 +13,7 @@ interface SimulateUplinkRequest {
   selected_user_id?: string;
   applicationId?: string;
   deviceId: string;
+  devEui?: string;
   cluster?: string;
   decodedPayload: Record<string, unknown>;
   fPort: number;
@@ -306,7 +307,7 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId, gatewayEui } = body;
+    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId, gatewayEui, devEui: requestDevEui } = body;
     let { deviceId } = body;
     // Capture applicationId from request body — the frontend sends the correct
     // value from the FrostGuard live pull which takes precedence over the
@@ -479,9 +480,34 @@ serve(async (req) => {
       gatewayIds.eui = gatewayEui.toUpperCase();
     }
 
-    const simulatePayload = {
+    // Resolve dev_eui: prefer the value from the frontend (from FrostGuard sensor
+    // record), fall back to extracting from device_id (sensor-{hex} pattern).
+    // TTN's SimulateUplink API does NOT populate dev_eui in the forwarded webhook
+    // unless we explicitly include end_device_ids in the request body.
+    let resolvedDevEui = requestDevEui?.replace(/[:\s-]/g, '').toUpperCase();
+    if (!resolvedDevEui && deviceId) {
+      const match = deviceId.match(/^(?:sensor-|eui-)([0-9a-fA-F]+)$/);
+      if (match) resolvedDevEui = match[1].toUpperCase();
+    }
+
+    const simulatePayload: Record<string, unknown> = {
       downlinks: [],
+      // Include end_device_ids so TTN forwards dev_eui in the webhook event.
+      // Without this, simulated uplinks arrive at the webhook without dev_eui
+      // and FrostGuard can't identify the sensor.
+      ...(resolvedDevEui && {
+        end_device_ids: {
+          device_id: deviceId,
+          application_ids: { application_id: applicationId },
+          dev_eui: resolvedDevEui,
+          join_eui: "0000000000000000",
+          dev_addr: "260CFFFF",
+        },
+      }),
       uplink_message: {
+        // Dummy session_key_id to mimic a joined device — may trigger TTN to
+        // include full device identifiers in the forwarded webhook event.
+        session_key_id: "AAAAAAAAAAAAAAAAAAAAAA==",
         f_port: fPort,
         frm_payload: btoa(JSON.stringify(decodedPayload)),
         decoded_payload: decodedPayload,
