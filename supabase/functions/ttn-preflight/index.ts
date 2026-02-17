@@ -241,7 +241,7 @@ async function checkDeviceExists(
 ): Promise<{ exists: boolean; error?: string }> {
   try {
     const url = `https://${cluster}.cloud.thethings.network/api/v3/applications/${applicationId}/devices/${deviceId}`;
-    
+
     const response = await fetch(url, {
       method: 'GET',
       headers: {
@@ -250,6 +250,30 @@ async function checkDeviceExists(
     });
 
     if (response.status === 404) {
+      // Try eu1 Identity Server fallback for Community/Sandbox accounts
+      // TTN Community Edition hosts the Identity Server on eu1 regardless of
+      // the cluster used for NS/AS/JS, so device lookups on non-eu1 clusters
+      // return 404 even when the device is properly registered.
+      if (cluster !== 'eu1') {
+        console.log(`[preflight] Device ${deviceId} not found on ${cluster}, trying eu1 Identity Server`);
+        try {
+          const eu1Response = await fetch(
+            `https://eu1.cloud.thethings.network/api/v3/applications/${applicationId}/devices/${deviceId}`,
+            { method: 'GET', headers: { 'Authorization': `Bearer ${apiKey}` } }
+          );
+          if (eu1Response.ok || eu1Response.status === 403) {
+            await eu1Response.text();
+            console.log(`[preflight] Device ${deviceId} found on eu1 Identity Server`);
+            return { exists: true };
+          }
+          await eu1Response.text();
+        } catch (e) {
+          console.warn(`[preflight] eu1 fallback failed for device ${deviceId}:`, e);
+          // On eu1 fallback network error, assume might exist to not block
+          return { exists: true };
+        }
+      }
+
       return { exists: false };
     }
 

@@ -270,41 +270,65 @@ async function loadOrgSettings(orgId: string): Promise<TTNSettings | null> {
 
 // Check if device exists in TTN before simulating
 async function checkDeviceExists(
-  cluster: string, 
-  applicationId: string, 
-  deviceId: string, 
+  cluster: string,
+  applicationId: string,
+  deviceId: string,
   apiKey: string
 ): Promise<{ exists: boolean; error?: string; hint?: string }> {
   try {
     const checkUrl = `https://${cluster}.cloud.thethings.network/api/v3/applications/${applicationId}/devices/${deviceId}`;
     console.log('Preflight check - verifying device exists:', checkUrl);
-    
+
     const response = await fetch(checkUrl, {
       method: 'GET',
       headers: {
         'Authorization': `Bearer ${apiKey}`,
       },
     });
-    
+
     if (response.status === 404) {
-      return { 
-        exists: false, 
+      // Try eu1 Identity Server fallback for Community/Sandbox accounts
+      // TTN Community Edition hosts the Identity Server on eu1 regardless of
+      // the cluster used for NS/AS/JS, so device lookups on non-eu1 clusters
+      // return 404 even when the device is properly registered.
+      if (cluster !== 'eu1') {
+        console.log(`[checkDeviceExists] Device not found on ${cluster}, trying eu1 Identity Server fallback`);
+        try {
+          const eu1Response = await fetch(
+            `https://eu1.cloud.thethings.network/api/v3/applications/${applicationId}/devices/${deviceId}`,
+            { method: 'GET', headers: { 'Authorization': `Bearer ${apiKey}` } }
+          );
+          if (eu1Response.ok || eu1Response.status === 403) {
+            await eu1Response.text();
+            console.log(`[checkDeviceExists] Device found on eu1 Identity Server, proceeding with simulation`);
+            return { exists: true };
+          }
+          await eu1Response.text();
+        } catch (e) {
+          console.warn(`[checkDeviceExists] eu1 fallback failed:`, e);
+          // On eu1 fallback network error, proceed with simulation
+          return { exists: true };
+        }
+      }
+
+      return {
+        exists: false,
         error: `Device "${deviceId}" not provisioned in TTN application "${applicationId}". TTN will drop uplinks as "entity not found".`,
         hint: `Register the device in TTN Console first using the "Register in TTN" button, or create it manually with device_id: ${deviceId}`,
       };
     }
-    
+
     if (response.status === 403) {
       // Can't verify but might still work for simulation
       console.warn('Cannot verify device existence (403), proceeding with simulation');
       return { exists: true };
     }
-    
+
     if (!response.ok) {
       console.warn(`Device check returned ${response.status}, proceeding with simulation`);
       return { exists: true };
     }
-    
+
     console.log('Device exists in TTN, proceeding with simulation');
     return { exists: true };
   } catch (err) {
