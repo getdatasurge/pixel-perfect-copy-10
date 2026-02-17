@@ -157,6 +157,28 @@ function parseTTNError(status: number, responseText: string, applicationId: stri
   }
 }
 
+// Resolve temperature from decoded payload, checking canonical + Dragino field names.
+// Returns °C value or undefined if no temperature field is present.
+function resolveTemperature(payload: Record<string, unknown>): number | undefined {
+  for (const key of ['temperature', 'TempC_SHT', 'TempC_DS', 'ext_temperature', 'soil_temperature']) {
+    if (typeof payload[key] === 'number') return payload[key] as number;
+  }
+  return undefined;
+}
+
+// Resolve door status from decoded payload, checking canonical + Dragino field names.
+// Returns 'open' | 'closed' or undefined if no door field is present.
+function resolveDoorStatus(payload: Record<string, unknown>): string | undefined {
+  // String status fields
+  if (typeof payload.door_status === 'string') return payload.door_status;
+  if (typeof payload.DOOR_OPEN_STATUS === 'string') return payload.DOOR_OPEN_STATUS;
+  // Boolean fields
+  if (typeof payload.door_open === 'boolean') return payload.door_open ? 'open' : 'closed';
+  if (typeof payload.door === 'boolean') return payload.door ? 'open' : 'closed';
+  if (typeof payload.contact === 'boolean') return payload.contact ? 'open' : 'closed';
+  return undefined;
+}
+
 // Validate TTN configuration before making API call
 function validateConfig(applicationId: string, deviceId: string, cluster: string): string | null {
   if (!applicationId || applicationId.trim() === '') {
@@ -439,18 +461,26 @@ serve(async (req) => {
 
     console.log('Calling TTN API:', ttnUrl);
 
-    // Build the simulate uplink payload
+    // Build the simulate uplink payload.
+    // Send decoded_payload directly — TTN's simulate API passes it straight to
+    // webhooks WITHOUT running the payload formatter. This is the official
+    // testing mechanism and exactly what FrostGuard reads.
+    // Also include frm_payload (Base64-encoded JSON) for TTN Console log realism.
+    const rssi = (decodedPayload.signal_strength as number) ?? -70;
+
     const simulatePayload = {
       downlinks: [],
       uplink_message: {
         f_port: fPort,
+        frm_payload: btoa(JSON.stringify(decodedPayload)),
         decoded_payload: decodedPayload,
         rx_metadata: [
           {
             gateway_ids: {
               gateway_id: "simulated-gateway",
             },
-            rssi: decodedPayload.signal_strength ?? -70,
+            rssi,
+            channel_rssi: rssi,
             snr: 7.5,
           }
         ],
@@ -461,7 +491,7 @@ serve(async (req) => {
               spreading_factor: 7,
             }
           },
-          frequency: "868100000",
+          frequency: "904300000",
         },
       }
     };
@@ -581,6 +611,11 @@ serve(async (req) => {
     }
     
     // 2. Upsert unit_telemetry (real-time state) if we have a valid unit_id
+    // Detect payload type from field presence instead of hardcoded fPort values,
+    // since device library models use varying fPorts (85, 5, 6, etc.)
+    const hasTemperature = resolveTemperature(decodedPayload) !== undefined;
+    const hasDoor = resolveDoorStatus(decodedPayload) !== undefined;
+
     if (unitId && isUuid && org_id) {
       const telemetryUpdate: Record<string, unknown> = {
         unit_id: unitId,
@@ -590,80 +625,82 @@ serve(async (req) => {
         last_uplink_at: now,
         updated_at: now,
       };
-      
-      // fPort 1 = temperature sensor
-      if (fPort === 1) {
-        const tempC = decodedPayload.temperature as number | undefined;
-        if (tempC !== undefined) {
-          telemetryUpdate.last_temp_f = tempC * 9/5 + 32;
-        }
-        if (decodedPayload.humidity !== undefined) {
-          telemetryUpdate.last_humidity = decodedPayload.humidity;
+
+      // Temperature data — check canonical and Dragino field names
+      if (hasTemperature) {
+        const tempC = resolveTemperature(decodedPayload)!;
+        telemetryUpdate.last_temp_f = tempC * 9/5 + 32;
+        const humidity = (decodedPayload.humidity ?? decodedPayload.Hum_SHT) as number | undefined;
+        if (humidity !== undefined) {
+          telemetryUpdate.last_humidity = humidity;
         }
       }
-      
-      // fPort 2 = door sensor
-      if (fPort === 2) {
-        const doorStatus = decodedPayload.door_status as string;
-        telemetryUpdate.door_state = doorStatus === 'open' ? 'open' : 'closed';
+
+      // Door data — check canonical and Dragino field names
+      if (hasDoor) {
+        const doorStatus = resolveDoorStatus(decodedPayload)!;
+        telemetryUpdate.door_state = doorStatus;
         telemetryUpdate.last_door_event_at = now;
         console.log(`[ttn-simulate][${requestId}] Door event: ${doorStatus} for unit ${unitId}`);
       }
-      
+
       console.log(`[ttn-simulate][${requestId}] Upserting unit_telemetry:`, JSON.stringify(telemetryUpdate));
-      
+
       const { error: telemetryError } = await supabase
         .from('unit_telemetry')
         .upsert(telemetryUpdate, { onConflict: 'unit_id' });
-      
+
       if (telemetryError) {
         console.warn(`[ttn-simulate][${requestId}] Failed to upsert unit_telemetry:`, telemetryError.message);
       } else {
         console.log(`[ttn-simulate][${requestId}] unit_telemetry upserted for unit ${unitId}`);
       }
     }
-    
-    // 3. Insert into legacy door_events table for fPort 2
-    if (fPort === 2) {
+
+    // 3. Insert into legacy door_events table when payload contains door data
+    if (hasDoor) {
+      const doorStatus = resolveDoorStatus(decodedPayload)!;
       const doorEventRecord = {
         device_serial: devEui.toLowerCase(),
-        door_status: decodedPayload.door_status as string,
+        door_status: doorStatus,
         battery_level: (decodedPayload.battery_level as number) ?? null,
         signal_strength: (decodedPayload.signal_strength as number) ?? null,
         unit_id: unitId || null,
       };
-      
+
       console.log(`[ttn-simulate][${requestId}] Inserting door_event:`, JSON.stringify(doorEventRecord));
-      
+
       const { error: doorError } = await supabase
         .from('door_events')
         .insert(doorEventRecord);
-      
+
       if (doorError) {
         console.warn(`[ttn-simulate][${requestId}] Failed to insert door_event:`, doorError.message);
       } else {
         console.log(`[ttn-simulate][${requestId}] door_event inserted successfully`);
       }
     }
-    
-    // 4. Insert into legacy sensor_readings table for fPort 1
-    if (fPort === 1) {
+
+    // 4. Insert into legacy sensor_readings table when payload contains temperature data
+    if (hasTemperature) {
+      const tempC = resolveTemperature(decodedPayload)!;
+      const humidity = (decodedPayload.humidity ?? decodedPayload.Hum_SHT) as number | undefined;
       const readingRecord = {
         device_serial: devEui.toLowerCase(),
-        temperature: decodedPayload.temperature ?? null,
-        humidity: decodedPayload.humidity ?? null,
+        temperature: tempC,
+        humidity: humidity ?? null,
         battery_level: (decodedPayload.battery_level as number) ?? null,
         signal_strength: (decodedPayload.signal_strength as number) ?? null,
         unit_id: unitId || null,
         reading_type: 'simulated',
       };
-      
+
       console.log(`[ttn-simulate][${requestId}] Inserting sensor_reading:`, JSON.stringify(readingRecord));
-      
+
       const { error: readingError } = await supabase
         .from('sensor_readings')
         .insert(readingRecord);
-      
+
       if (readingError) {
         console.warn(`[ttn-simulate][${requestId}] Failed to insert sensor_reading:`, readingError.message);
       } else {
@@ -689,8 +726,8 @@ serve(async (req) => {
         db_writes: {
           sensor_uplinks: !uplinkError,
           unit_telemetry: unitId && isUuid ? true : 'skipped_no_uuid',
-          door_events: fPort === 2,
-          sensor_readings: fPort === 1,
+          door_events: hasDoor,
+          sensor_readings: hasTemperature,
         },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }

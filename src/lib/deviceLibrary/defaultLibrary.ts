@@ -210,8 +210,8 @@ export const defaultDeviceLibrary: DeviceLibrary = {
         },
       },
       examples: {
-        normal: { gps: { lat: 40.7128, lon: -74.0060 }, battery_level: 80 },
-        alarm: { gps: { lat: 0, lon: 0 }, battery_level: 10 },
+        normal: { gps_lat: 40.7128, gps_lon: -74.0060, battery_level: 80 },
+        alarm: { gps_lat: 0, gps_lon: 0, battery_level: 10 },
       },
     },
 

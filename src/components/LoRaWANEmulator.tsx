@@ -41,9 +41,8 @@ import {
   createGateway, 
   createDevice,
   buildTTNPayload,
-  buildTempPayload,
-  buildDoorPayload,
 } from '@/lib/ttn-payload';
+import { buildDecodedPayload } from '@/lib/freshtrackExport';
 import { assignDeviceToUnit, fetchOrgState, fetchOrgGateways, LocalGateway } from '@/lib/frostguardOrgSync';
 import { log } from '@/lib/debugLogger';
 import { logTTNSimulateEvent } from '@/lib/supportSnapshot';
@@ -64,6 +63,7 @@ import {
 } from '@/lib/emulatorSensorState';
 import { toCanonicalDoor, generateDoorTraceId, logDoorTrace } from '@/lib/doorStateCanonical';
 import { EmissionScheduler, createEmissionScheduler } from '@/lib/deviceLibrary/emissionScheduler';
+import { getDevice as getLibraryDevice } from '@/lib/deviceLibrary';
 
 interface LogEntry {
   id: string;
@@ -554,24 +554,19 @@ export default function LoRaWANEmulator() {
       return;
     }
 
-    // Build type-specific payload using per-device state
-    const orgContext = {
-      org_id: webhookConfig.testOrgId || null,
-      site_id: webhookConfig.testSiteId || null,
-      unit_id: webhookConfig.testUnitId || device.name,
-    };
-    
-    let payload: Record<string, unknown>;
+    // Build library-aware decoded payload (uses device library field names
+    // like TempC_SHT, BatV, DOOR_OPEN_STATUS when a library model is assigned)
+    const payload = buildDecodedPayload(sensorState, device.type);
+
+    // Use device library's default_fport when available, else legacy defaults
     let fPort: number;
-    const requestId = crypto.randomUUID().slice(0, 8);
-    
-    if (device.type === 'temperature') {
-      payload = buildTempPayload(sensorState, orgContext);
-      fPort = 1;
+    if (sensorState.libraryDeviceId) {
+      const libDev = getLibraryDevice(sensorState.libraryDeviceId);
+      fPort = libDev?.default_fport ?? (device.type === 'temperature' ? 1 : 2);
     } else {
-      payload = buildDoorPayload(sensorState, orgContext);
-      fPort = 2;
+      fPort = device.type === 'temperature' ? 1 : 2;
     }
+    const requestId = crypto.randomUUID().slice(0, 8);
 
     // Use canonical device_id format: sensor-{normalized_deveui}
     const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
@@ -1699,10 +1694,14 @@ export default function LoRaWANEmulator() {
     setIsRunning(true);
     addLog('info', '▶️ Emulation started');
 
+    // Only schedule selected sensors — unselected devices should not emit
+    const devicesToSchedule = devices.filter(d => selectedSensorIds.includes(d.id));
+
     // Per-device scheduling using EmissionScheduler for drift-corrected timing
     console.log('[EMULATOR_SCHEDULE] Initializing drift-corrected scheduler:', {
-      deviceCount: devices.length,
-      devices: devices.map(d => ({
+      selectedCount: devicesToSchedule.length,
+      totalDevices: devices.length,
+      devices: devicesToSchedule.map(d => ({
         id: d.id,
         name: d.name,
         type: d.type,
@@ -1716,8 +1715,8 @@ export default function LoRaWANEmulator() {
     }
     const scheduler = schedulerRef.current;
 
-    // Register each device with the scheduler
-    for (const device of devices) {
+    // Register only selected devices with the scheduler
+    for (const device of devicesToSchedule) {
       const sensorState = sensorStates[device.id];
       if (!sensorState) continue;
 
@@ -1738,7 +1737,12 @@ export default function LoRaWANEmulator() {
 
       addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s (drift-corrected)`);
     }
-  }, [devices, sensorStates, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
+
+    if (devicesToSchedule.length < devices.length) {
+      const skipped = devices.length - devicesToSchedule.length;
+      addLog('info', `⏭️ ${skipped} unselected sensor(s) skipped`);
+    }
+  }, [devices, sensorStates, selectedSensorIds, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
   const stopEmulation = useCallback(async () => {
     setIsRunning(false);
