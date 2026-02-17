@@ -3,7 +3,7 @@ import type { SupabaseClient } from "https://esm.sh/@supabase/supabase-js@2";
 export interface TTNUplinkPayload {
   end_device_ids: {
     device_id: string;
-    dev_eui: string;
+    dev_eui?: string;
     application_ids: {
       application_id: string;
     };
@@ -52,16 +52,35 @@ export async function processTTNUplink(
     application_id: payload.end_device_ids?.application_ids?.application_id,
   });
 
-  // Validate required fields
-  if (!payload.end_device_ids?.dev_eui) {
-    log('warn', 'Missing dev_eui in payload');
+  // Resolve dev_eui: use it directly if present, otherwise extract from device_id.
+  // TTN's SimulateUplink API omits dev_eui/join_eui/dev_addr from the forwarded
+  // webhook event, so we fall back to the device_id which follows the pattern
+  // "sensor-{hex}" or "eui-{hex}".
+  const endDeviceIds = payload.end_device_ids || {};
+  let resolvedDevEui = endDeviceIds.dev_eui;
+
+  if (!resolvedDevEui && endDeviceIds.device_id) {
+    const match = endDeviceIds.device_id.match(/^(?:sensor-|eui-)([0-9a-fA-F]+)$/);
+    if (match) {
+      resolvedDevEui = match[1].toUpperCase();
+      log('info', 'Extracted dev_eui from device_id (simulated uplink fallback)', {
+        device_id: endDeviceIds.device_id,
+        resolved_dev_eui: resolvedDevEui,
+      });
+    }
+  }
+
+  if (!resolvedDevEui) {
+    log('warn', 'Missing dev_eui in payload and could not extract from device_id', {
+      device_id: endDeviceIds.device_id,
+    });
     return {
       status: 400,
       body: { ok: false, error: 'Missing device EUI' },
     };
   }
 
-  const devEui = payload.end_device_ids.dev_eui.toUpperCase();
+  const devEui = resolvedDevEui.toUpperCase();
   const applicationId = payload.end_device_ids.application_ids?.application_id;
   const decodedPayload = payload.uplink_message?.decoded_payload || {};
   const fPort = payload.uplink_message?.f_port || 0;
