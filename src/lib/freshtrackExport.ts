@@ -608,11 +608,12 @@ export async function sendReadingsToFreshTrack(
 
       const modelInfo = getDeviceModelInfo(state);
 
-      // Core reading fields
+      // Core reading fields — temperature in Celsius to match LoRaWAN decoded payload
+      const tempC = Math.round(((state.tempF - 32) * 5 / 9) * 10) / 10;
       const reading: Record<string, unknown> = {
         unit_id: dev.unitId,
-        temperature: state.tempF,
-        temperature_unit: 'F',
+        temperature: tempC,
+        temperature_unit: 'C',
         source: 'simulator',
         device_serial: dev.devEui,
         device_model: modelInfo.model,

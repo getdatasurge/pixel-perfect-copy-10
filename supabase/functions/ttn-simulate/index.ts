@@ -726,8 +726,8 @@ serve(async (req) => {
         db_writes: {
           sensor_uplinks: !uplinkError,
           unit_telemetry: unitId && isUuid ? true : 'skipped_no_uuid',
-          door_events: fPort === 2,
-          sensor_readings: fPort === 1,
+          door_events: hasDoor,
+          sensor_readings: hasTemperature,
         },
       }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } }
