@@ -619,7 +619,8 @@ export default function LoRaWANEmulator() {
             deviceId: ttnDeviceId,
             decodedPayload: payload,
             fPort,
-            gatewayId: gateway.id,
+            gatewayId: gateway.ttnGatewayId || gateway.id,
+            gatewayEui: gateway.eui,
           },
         });
 
@@ -637,7 +638,7 @@ export default function LoRaWANEmulator() {
         testResult.webhookStatus = 'pending';
         testResult.dbStatus = 'pending';
         testResult.uplinkPath = 'ttn-simulate';
-        
+
         addLog('info', `DEVICE_UPLINK | ${device.name} | path=ttn-simulate | request_id=${requestId}`);
       } 
       // External webhook
@@ -879,7 +880,8 @@ export default function LoRaWANEmulator() {
             deviceId,
             decodedPayload: payload,
             fPort,
-            gatewayId: gateway.id,
+            gatewayId: gateway.ttnGatewayId || gateway.id,
+            gatewayEui: gateway.eui,
           },
         });
 
@@ -1181,7 +1183,8 @@ export default function LoRaWANEmulator() {
             deviceId,
             decodedPayload: payload,
             fPort,
-            gatewayId: gateway.id,
+            gatewayId: gateway.ttnGatewayId || gateway.id,
+            gatewayEui: gateway.eui,
           },
         });
 
@@ -1435,7 +1438,8 @@ export default function LoRaWANEmulator() {
             deviceId: ttnDeviceId,
             decodedPayload: payload,
             fPort,
-            gatewayId: gateway.id,
+            gatewayId: gateway.ttnGatewayId || gateway.id,
+            gatewayEui: gateway.eui,
           },
         });
 
