@@ -576,7 +576,7 @@ serve(async (req) => {
     
     // Extract dev_eui from device_id (sensor-XXXXXXXXXXXXXXXX)
     const devEui = deviceId.replace('sensor-', '').toUpperCase();
-    const now = new Date().toISOString();
+    const dbNow = new Date().toISOString();
     
     // Get unit_id from payload or lookup from lora_sensors
     let unitId = decodedPayload.unit_id as string | undefined;
@@ -606,7 +606,7 @@ serve(async (req) => {
       payload_json: decodedPayload,
       rssi_dbm: (decodedPayload.signal_strength as number) ?? -70,
       battery_pct: (decodedPayload.battery_level as number) ?? null,
-      received_at: now,
+      received_at: dbNow,
       unit_id: isUuid ? unitId : (unitId || null),
     };
     
