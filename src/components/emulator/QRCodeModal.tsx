@@ -70,7 +70,7 @@ export default function QRCodeModal({ device, open, onClose }: QRCodeModalProps)
 
         <div className="flex flex-col items-center gap-4 py-4">
           <div className="bg-white p-4 rounded-lg shadow-inner">
-            <canvas ref={canvasRef} className="w-48 h-48" />
+            <canvas ref={canvasRef} />
           </div>
         </div>
 
