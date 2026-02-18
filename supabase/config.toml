@@ -67,3 +67,6 @@ verify_jwt = false
 
 [functions.export-readings]
 verify_jwt = false
+
+[functions.ttn-provision-abp]
+verify_jwt = false
