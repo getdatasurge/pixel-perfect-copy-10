@@ -1699,39 +1699,6 @@ export default function LoRaWANEmulator() {
         return; // Don't start emulation if preflight fails
       }
 
-      // Provision each selected device as ABP so TTN populates dev_eui
-      // in simulated uplinks. ABP = pre-configured session, always "joined".
-      const devicesToProvision = devices.filter(d => selectedSensorIds.includes(d.id));
-      if (devicesToProvision.length > 0) {
-        addLog('info', `🔧 Activating ${devicesToProvision.length} device(s) as ABP...`);
-        for (const device of devicesToProvision) {
-          const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
-          const ttnDeviceId = `sensor-${normalizedDevEui}`;
-          try {
-            const { data, error } = await supabase.functions.invoke('ttn-provision-abp', {
-              body: {
-                deviceId: ttnDeviceId,
-                devEui: device.devEui,
-                applicationId: ttnConfig.applicationId,
-                cluster: ttnConfig.cluster || 'nam1',
-                deviceName: device.name,
-                selected_user_id: webhookConfig.selectedUserId,
-                org_id: webhookConfig.testOrgId,
-              },
-            });
-            if (error) {
-              addLog('error', `⚠️ ${device.name} ABP activation invoke error: ${error.message}`);
-            } else if (data?.success) {
-              addLog('info', `✅ ${device.name} activated as ABP (dev_addr=${data.devAddr})`);
-            } else {
-              addLog('error', `⚠️ ${device.name} ABP activation failed: ${data?.error || 'unknown'}`);
-            }
-          } catch (err: any) {
-            addLog('error', `⚠️ ${device.name} ABP activation error: ${err.message}`);
-          }
-        }
-        addLog('info', '🔧 ABP activation complete');
-      }
     }
 
     // Notify other tabs that this tab is starting emulation
