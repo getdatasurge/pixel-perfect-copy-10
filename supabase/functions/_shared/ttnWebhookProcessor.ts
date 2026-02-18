@@ -71,16 +71,12 @@ export async function processTTNUplink(
   }
 
   if (!resolvedDevEui) {
-    log('warn', 'Missing dev_eui in payload and could not extract from device_id', {
+    log('info', 'No dev_eui in uplink, will use ttn_device_id fallback', {
       device_id: endDeviceIds.device_id,
     });
-    return {
-      status: 400,
-      body: { ok: false, error: 'Missing device EUI' },
-    };
   }
 
-  const devEui = resolvedDevEui.toUpperCase();
+  let devEui = resolvedDevEui ? resolvedDevEui.toUpperCase() : null;
   const applicationId = payload.end_device_ids.application_ids?.application_id;
   const decodedPayload = payload.uplink_message?.decoded_payload || {};
   const fPort = payload.uplink_message?.f_port || 0;
@@ -99,22 +95,54 @@ export async function processTTNUplink(
   let unitId: string | null = null;
   let siteId: string | null = null;
 
-  const { data: sensorData, error: sensorError } = await supabase
-    .from('lora_sensors')
-    .select('id, org_id, site_id, unit_id, sensor_kind, status')
-    .eq('dev_eui', devEui)
-    .neq('status', 'disabled')
-    .limit(1)
-    .maybeSingle();
+  if (devEui) {
+    const { data: sensorData, error: sensorError } = await supabase
+      .from('lora_sensors')
+      .select('id, org_id, site_id, unit_id, sensor_kind, status')
+      .eq('dev_eui', devEui)
+      .neq('status', 'disabled')
+      .limit(1)
+      .maybeSingle();
 
-  if (sensorError) {
-    log('error', 'Error looking up sensor', { error: sensorError.message });
-  } else if (sensorData) {
-    sensor = sensorData as SensorRecord;
-    orgId = sensor.org_id;
-    unitId = sensor.unit_id;
-    siteId = sensor.site_id;
-    log('info', 'Found registered sensor', { sensor_id: sensor.id, org_id: orgId, unit_id: unitId });
+    if (sensorError) {
+      log('error', 'Error looking up sensor by dev_eui', { error: sensorError.message });
+    } else if (sensorData) {
+      sensor = sensorData as SensorRecord;
+      orgId = sensor.org_id;
+      unitId = sensor.unit_id;
+      siteId = sensor.site_id;
+      log('info', 'Found registered sensor by dev_eui', { sensor_id: sensor.id, org_id: orgId, unit_id: unitId });
+    }
+  }
+
+  // Fallback: look up by ttn_device_id when dev_eui is missing or dev_eui lookup found nothing
+  if (!sensor && endDeviceIds.device_id) {
+    const { data: sensorByDeviceId, error: deviceIdError } = await supabase
+      .from('lora_sensors')
+      .select('id, org_id, site_id, unit_id, sensor_kind, status, dev_eui')
+      .eq('ttn_device_id', endDeviceIds.device_id)
+      .neq('status', 'disabled')
+      .limit(1)
+      .maybeSingle();
+
+    if (deviceIdError) {
+      log('error', 'Error looking up sensor by ttn_device_id', { error: deviceIdError.message });
+    } else if (sensorByDeviceId) {
+      sensor = sensorByDeviceId as SensorRecord;
+      orgId = sensor.org_id;
+      unitId = sensor.unit_id;
+      siteId = sensor.site_id;
+      // Use the dev_eui from the sensor record if we didn't have one
+      if (!devEui && sensorByDeviceId.dev_eui) {
+        devEui = sensorByDeviceId.dev_eui;
+      }
+      log('info', 'Found sensor by ttn_device_id', {
+        sensor_id: sensor.id,
+        ttn_device_id: endDeviceIds.device_id,
+        org_id: orgId,
+        unit_id: unitId,
+      });
+    }
   }
 
   // Fallback: try to get org_id from application_id mapping in ttn_settings
