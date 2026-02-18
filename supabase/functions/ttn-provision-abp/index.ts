@@ -121,7 +121,7 @@ serve(async (req) => {
     // STEP 0: DELETE existing device (TTN won't allow OTAA→ABP in-place)
     // =============================================
     const deleteUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE existing device at ${deleteUrl}`);
+    console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE ${deleteUrl}`);
 
     try {
       const deleteResp = await fetch(deleteUrl, {
@@ -151,10 +151,11 @@ serve(async (req) => {
     }
 
     // =============================================
-    // STEP 1: Identity Server — CREATE device with supports_join: false
+    // STEP 1: Identity Server — PUT creates device (after DELETE above)
+    // TTN v3 uses PUT for both create and update on device-specific URLs
     // =============================================
-    const isUrl = `${baseUrl}/applications/${applicationId}/devices`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 1/3: Creating device on Identity Server at ${isUrl}`);
+    const isUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    console.log(`[ttn-provision-abp][${requestId}] Step 1/3: PUT to Identity Server at ${isUrl}`);
     const isPayload = {
       end_device: {
         ids: {
@@ -182,16 +183,11 @@ serve(async (req) => {
       },
     };
 
-    // POST to create (not PUT to update) since we deleted the device above
-    const isCreatePayload = {
-      end_device: isPayload.end_device,
-    };
-
     try {
       const isResp = await fetch(isUrl, {
-        method: 'POST',
+        method: 'PUT',
         headers: authHeaders,
-        body: JSON.stringify(isCreatePayload),
+        body: JSON.stringify(isPayload),
       });
       const isBody = await isResp.text();
       steps.is = { status: isResp.status, ok: isResp.ok, body: isBody.slice(0, 500) };
@@ -219,7 +215,7 @@ serve(async (req) => {
     // STEP 2: Network Server — Set session + MAC state
     // =============================================
     const nsUrl = `${baseUrl}/ns/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 2/3: Setting NS session at ${nsUrl}`);
+    console.log(`[ttn-provision-abp][${requestId}] Step 2/3: PUT ${nsUrl}`);
     const nsPayload = {
       end_device: {
         ids: {
@@ -298,7 +294,7 @@ serve(async (req) => {
     // STEP 3: Application Server — Set app session key
     // =============================================
     const asUrl = `${baseUrl}/as/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 3/3: Setting AS session at ${asUrl}`);
+    console.log(`[ttn-provision-abp][${requestId}] Step 3/3: PUT ${asUrl}`);
     const asPayload = {
       end_device: {
         ids: {
