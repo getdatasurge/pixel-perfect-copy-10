@@ -19,6 +19,7 @@ interface SimulateUplinkRequest {
   fPort: number;
   gatewayId?: string;
   gatewayEui?: string;
+  signalStrength?: number;
 }
 
 interface TTNSettings {
@@ -307,7 +308,7 @@ serve(async (req) => {
 
   try {
     const body: SimulateUplinkRequest = await req.json();
-    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId, gatewayEui, devEui: requestDevEui } = body;
+    const { org_id, selected_user_id, decodedPayload, fPort, gatewayId, gatewayEui, devEui: requestDevEui, signalStrength: requestSignalStrength } = body;
     let { deviceId } = body;
     // Capture applicationId from request body — the frontend sends the correct
     // value from the FrostGuard live pull which takes precedence over the
@@ -469,7 +470,8 @@ serve(async (req) => {
     // webhooks WITHOUT running the payload formatter. This is the official
     // testing mechanism and exactly what FrostGuard reads.
     // Also include frm_payload (Base64-encoded JSON) for TTN Console log realism.
-    const rssi = (decodedPayload.signal_strength as number) ?? -70;
+    // Use explicit signalStrength from request, fall back to decoded_payload, then default
+    const rssi = requestSignalStrength ?? (decodedPayload.signal_strength as number) ?? -70;
     const now = new Date().toISOString();
 
     // Build gateway_ids — include eui when the frontend provides it

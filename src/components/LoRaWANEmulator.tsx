@@ -622,6 +622,7 @@ export default function LoRaWANEmulator() {
             fPort,
             gatewayId: gateway.ttnGatewayId || gateway.id,
             gatewayEui: gateway.eui,
+            signalStrength: Math.round(sensorState.signalStrength),
           },
         });
 
@@ -717,17 +718,12 @@ export default function LoRaWANEmulator() {
     setCurrentTemp(temp);
     setTempState(prev => ({ ...prev, batteryLevel: battery }));
 
-    // Build payload with org context
+    // Build payload — only sensor telemetry, no metadata
+    const signalStrength = Math.round(signal);
     const payload = {
       temperature: Math.round(temp * 10) / 10,
       humidity: Math.round(humidity * 10) / 10,
       battery_level: Math.round(battery),
-      signal_strength: Math.round(signal),
-      unit_id: webhookConfig.testUnitId || device.name,
-      reading_type: 'scheduled',
-      // Multi-tenant context
-      org_id: webhookConfig.testOrgId || null,
-      site_id: webhookConfig.testSiteId || null,
     };
 
     let testResult: Omit<TestResult, 'id' | 'timestamp'> = {
@@ -884,6 +880,7 @@ export default function LoRaWANEmulator() {
             fPort,
             gatewayId: gateway.ttnGatewayId || gateway.id,
             gatewayEui: gateway.eui,
+            signalStrength,
           },
         });
 
@@ -1116,15 +1113,11 @@ export default function LoRaWANEmulator() {
 
     setDoorState(prev => ({ ...prev, batteryLevel: battery }));
 
-    // Build payload with org context
+    // Build payload — only sensor telemetry, no metadata
+    const signalStrength = Math.round(signal);
     const payload = {
       door_status: doorStatus,
       battery_level: Math.round(battery),
-      signal_strength: Math.round(signal),
-      unit_id: webhookConfig.testUnitId || device.name,
-      // Multi-tenant context
-      org_id: webhookConfig.testOrgId || null,
-      site_id: webhookConfig.testSiteId || null,
     };
     
     // Resolve fPort from device library
@@ -1188,6 +1181,7 @@ export default function LoRaWANEmulator() {
             fPort,
             gatewayId: gateway.ttnGatewayId || gateway.id,
             gatewayEui: gateway.eui,
+            signalStrength,
           },
         });
 
@@ -1379,14 +1373,11 @@ export default function LoRaWANEmulator() {
       unit_id: webhookConfig.testUnitId || device.name,
     };
 
+    const signalStrength = Math.round(sensorState.signalStrength);
     const payload: Record<string, unknown> = {
       door_status: canonical.door_status,
       door_open: canonical.door_open,
       battery_level: Math.round(sensorState.batteryPct),
-      signal_strength: Math.round(sensorState.signalStrength),
-      org_id: orgContext.org_id,
-      site_id: orgContext.site_id,
-      unit_id: orgContext.unit_id,
     };
 
     const fPort = resolveDeviceFPort(device);
@@ -1444,6 +1435,7 @@ export default function LoRaWANEmulator() {
             fPort,
             gatewayId: gateway.ttnGatewayId || gateway.id,
             gatewayEui: gateway.eui,
+            signalStrength,
           },
         });
 
@@ -1705,6 +1697,40 @@ export default function LoRaWANEmulator() {
           }
         }
         return; // Don't start emulation if preflight fails
+      }
+
+      // Provision each selected device as ABP so TTN populates dev_eui
+      // in simulated uplinks. ABP = pre-configured session, always "joined".
+      const devicesToProvision = devices.filter(d => selectedSensorIds.includes(d.id));
+      if (devicesToProvision.length > 0) {
+        addLog('info', `🔧 Activating ${devicesToProvision.length} device(s) as ABP...`);
+        for (const device of devicesToProvision) {
+          const normalizedDevEui = device.devEui.replace(/[:\s-]/g, '').toLowerCase();
+          const ttnDeviceId = `sensor-${normalizedDevEui}`;
+          try {
+            const { data, error } = await supabase.functions.invoke('ttn-provision-abp', {
+              body: {
+                deviceId: ttnDeviceId,
+                devEui: device.devEui,
+                applicationId: ttnConfig.applicationId,
+                cluster: ttnConfig.cluster || 'nam1',
+                deviceName: device.name,
+                selected_user_id: webhookConfig.selectedUserId,
+                org_id: webhookConfig.testOrgId,
+              },
+            });
+            if (error) {
+              addLog('error', `⚠️ ${device.name} ABP activation invoke error: ${error.message}`);
+            } else if (data?.success) {
+              addLog('info', `✅ ${device.name} activated as ABP (dev_addr=${data.devAddr})`);
+            } else {
+              addLog('error', `⚠️ ${device.name} ABP activation failed: ${data?.error || 'unknown'}`);
+            }
+          } catch (err: any) {
+            addLog('error', `⚠️ ${device.name} ABP activation error: ${err.message}`);
+          }
+        }
+        addLog('info', '🔧 ABP activation complete');
       }
     }
 
