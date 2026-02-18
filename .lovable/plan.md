@@ -1,13 +1,10 @@
 
 
-# Deploy Four Edge Functions
+# Deploy ttn-provision-abp
 
-Deploy the following functions to ensure all recent fixes are live:
+Deploy the `ttn-provision-abp` edge function to production. No code or config changes needed -- the function is already configured in `supabase/config.toml` with `verify_jwt = false`.
 
-1. **ttn-provision-abp** -- New ABP provisioning function with eu1 Identity Server routing
-2. **ttn-simulate** -- Payload structure fixes (dbNow variable rename, etc.)
-3. **ttn-preflight** -- AS endpoint and cluster fix
-4. **ttn-webhook** -- Shared webhook processor changes
+## Step
 
-All four are already configured in `supabase/config.toml` with `verify_jwt = false`. No code or config changes needed -- just deployment.
+1. **Deploy `ttn-provision-abp`** using the edge function deployment tool.
 
