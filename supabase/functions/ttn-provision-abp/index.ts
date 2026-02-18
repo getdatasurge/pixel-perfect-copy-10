@@ -25,20 +25,17 @@ interface StepResult {
 }
 
 /**
- * Re-create a TTN device as ABP (supports_join: false) with a pre-configured
- * session. TTN does not allow flipping OTAA→ABP in-place, so we DELETE first
- * then CREATE fresh.
+ * Set ABP session keys on an EXISTING TTN device (provisioned by FrostGuard).
  *
- * ABP devices have an "active session" from the moment they are configured,
- * which causes TTN's SimulateUplink to include dev_eui in the forwarded
- * webhook payload — fixing the issue where simulated uplinks are dropped
- * by FrostGuard due to missing dev_eui.
+ * The device MUST already exist on the Identity Server — FrostGuard creates it.
+ * We do NOT delete or touch IS. We ONLY write session info to NS and AS so TTN
+ * treats the device as having joined (ABP), which makes SimulateUplink include
+ * dev_eui in the forwarded webhook payload.
  *
- * Four TTN API calls:
- *   0. DELETE existing device (404 = OK, device didn't exist)
- *   1. Identity Server (IS): POST new device with supports_join: false
- *   2. Network Server (NS): PUT session (dev_addr, NwkSKey) + mac_state
- *   3. Application Server (AS): PUT session (dev_addr, AppSKey)
+ * Two TTN API calls:
+ *   0. Pre-check: GET device on IS to confirm it exists
+ *   1. Network Server (NS): PUT LoRaWAN config + session (dev_addr, NwkSKey) + mac_state
+ *   2. Application Server (AS): PUT session (dev_addr, AppSKey)
  */
 serve(async (req) => {
   const requestId = crypto.randomUUID().slice(0, 8);
@@ -49,7 +46,7 @@ serve(async (req) => {
 
   try {
     const body: ProvisionABPRequest = await req.json();
-    const { deviceId, devEui, applicationId, cluster: requestCluster, deviceName, selected_user_id, org_id } = body;
+    const { deviceId, devEui, applicationId, cluster: requestCluster, selected_user_id, org_id } = body;
 
     console.log(`[ttn-provision-abp][${requestId}] Request:`, { deviceId, devEui, applicationId, requestCluster });
 
@@ -106,6 +103,7 @@ serve(async (req) => {
     // NS and AS live on the regional cluster
     const clusterBaseUrl = `https://${cluster}.cloud.thethings.network/api/v3`;
     console.log(`[ttn-provision-abp][${requestId}] IS base URL: ${isBaseUrl} | NS/AS base URL: ${clusterBaseUrl}`);
+
     const authHeaders = {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
@@ -114,114 +112,57 @@ serve(async (req) => {
     const frequencyPlan = cluster === 'nam1' ? 'US_902_928_FSB_2' :
                           cluster === 'au1' ? 'AU_915_928_FSB_2' : 'EU_863_870_TTN';
 
-    const steps: { delete: StepResult; is: StepResult; ns: StepResult; as: StepResult } = {
-      delete: { status: 0, ok: false, body: '' },
-      is: { status: 0, ok: false, body: '' },
+    const steps: { preflight: StepResult; ns: StepResult; as: StepResult } = {
+      preflight: { status: 0, ok: false, body: '' },
       ns: { status: 0, ok: false, body: '' },
       as: { status: 0, ok: false, body: '' },
     };
 
     // =============================================
-    // STEP 0: DELETE existing device from IS (eu1), NS, and AS (cluster)
-    // TTN won't allow OTAA→ABP in-place. IS should cascade, but we
-    // explicitly delete from NS and AS as well to be safe.
+    // PRE-CHECK: Verify device exists on Identity Server (eu1)
+    // FrostGuard should have created it. If a previous run deleted it,
+    // the user needs to re-provision in FrostGuard first.
     // =============================================
-    const deleteUrls = [
-      { label: 'IS (eu1)', url: `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}` },
-      { label: 'NS', url: `${clusterBaseUrl}/ns/applications/${applicationId}/devices/${deviceId}` },
-      { label: 'AS', url: `${clusterBaseUrl}/as/applications/${applicationId}/devices/${deviceId}` },
-    ];
-
-    for (const { label, url } of deleteUrls) {
-      console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE ${label} ${url}`);
-      try {
-        const deleteResp = await fetch(url, {
-          method: 'DELETE',
-          headers: authHeaders,
-        });
-        const deleteBody = await deleteResp.text();
-        const deleteOk = deleteResp.ok || deleteResp.status === 404;
-        console.log(`[ttn-provision-abp][${requestId}] DELETE ${label}: ${deleteResp.status} ${deleteResp.status === 404 ? '(not found — OK)' : deleteBody.slice(0, 200)}`);
-
-        // Only track the IS delete as the authoritative result
-        if (label.startsWith('IS')) {
-          steps.delete = { status: deleteResp.status, ok: deleteOk, body: deleteBody.slice(0, 500) };
-        }
-      } catch (err) {
-        console.error(`[ttn-provision-abp][${requestId}] DELETE ${label} fetch error:`, err);
-        if (label.startsWith('IS')) {
-          steps.delete = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
-        }
-      }
-    }
-
-    if (!steps.delete.ok) {
-      return jsonResponse(200, {
-        success: false,
-        error: `Delete existing device failed (${steps.delete.status}): ${steps.delete.body}`,
-        hint: steps.delete.status === 403
-          ? 'API key lacks permission to delete devices. Ensure the key has full application rights.'
-          : undefined,
-        steps,
-        request_id: requestId,
-      });
-    }
-
-    // =============================================
-    // STEP 1: Identity Server (eu1) — Create device with identity + metadata ONLY
-    // IS does NOT handle LoRaWAN fields (supports_join, lorawan_version, etc.)
-    // Those belong on the NS (Step 2).
-    // =============================================
-    const isUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 1/3: PUT to Identity Server at ${isUrl}`);
-    const isPayload = {
-      end_device: {
-        ids: {
-          device_id: deviceId,
-          application_ids: { application_id: applicationId },
-        },
-        ...(deviceName && { name: deviceName }),
-      },
-      field_mask: {
-        paths: [
-          ...(deviceName ? ['name'] : []),
-        ],
-      },
-    };
+    const isCheckUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    console.log(`[ttn-provision-abp][${requestId}] Pre-check: GET ${isCheckUrl}`);
 
     try {
-      const isResp = await fetch(isUrl, {
-        method: 'PUT',
+      const checkResp = await fetch(isCheckUrl, {
+        method: 'GET',
         headers: authHeaders,
-        body: JSON.stringify(isPayload),
       });
-      const isBody = await isResp.text();
-      steps.is = { status: isResp.status, ok: isResp.ok, body: isBody.slice(0, 500) };
-      console.log(`[ttn-provision-abp][${requestId}] IS response: ${isResp.status} ${isBody.slice(0, 500)}`);
+      const checkBody = await checkResp.text();
+      steps.preflight = { status: checkResp.status, ok: checkResp.ok, body: checkBody.slice(0, 500) };
+      console.log(`[ttn-provision-abp][${requestId}] Pre-check response: ${checkResp.status} ${checkBody.slice(0, 300)}`);
     } catch (err) {
-      steps.is = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
-      console.error(`[ttn-provision-abp][${requestId}] IS fetch error:`, err);
+      steps.preflight = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
+      console.error(`[ttn-provision-abp][${requestId}] Pre-check fetch error:`, err);
     }
 
-    if (!steps.is.ok) {
+    if (!steps.preflight.ok) {
+      const isNotFound = steps.preflight.status === 404;
       return jsonResponse(200, {
         success: false,
-        error: `Identity Server create failed (${steps.is.status}): ${steps.is.body}`,
-        hint: steps.is.status === 403
-          ? 'API key lacks permission to create devices on Identity Server. Ensure the key has full application rights.'
-          : steps.is.status === 409
-          ? `Device "${deviceId}" already exists — the DELETE may not have propagated. Retry in a few seconds.`
+        error: isNotFound
+          ? `Device "${deviceId}" does not exist on TTN Identity Server. It may have been deleted by a previous provisioning attempt.`
+          : `Failed to verify device on Identity Server (${steps.preflight.status}): ${steps.preflight.body}`,
+        hint: isNotFound
+          ? 'Re-provision the device in FrostGuard first, then retry ABP session setup.'
+          : steps.preflight.status === 403
+          ? 'API key lacks permission to read devices on Identity Server.'
           : undefined,
         steps,
         request_id: requestId,
       });
     }
 
+    console.log(`[ttn-provision-abp][${requestId}] Device exists on IS. Proceeding to set session keys on NS and AS.`);
+
     // =============================================
-    // STEP 2: Network Server — Set session + MAC state
+    // STEP 1: Network Server — Set LoRaWAN config + session + MAC state
     // =============================================
     const nsUrl = `${clusterBaseUrl}/ns/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 2/3: PUT ${nsUrl}`);
+    console.log(`[ttn-provision-abp][${requestId}] Step 1/2: PUT ${nsUrl}`);
     const nsPayload = {
       end_device: {
         ids: {
@@ -245,25 +186,24 @@ serve(async (req) => {
           current_parameters: {
             adr_ack_delay_exponent: { value: 'ADR_ACK_DELAY_32' },
             adr_ack_limit_exponent: { value: 'ADR_ACK_LIMIT_64' },
-            rx1_delay: 'RX_DELAY_1',
+            rx1_delay: { value: 'RX_DELAY_1' },
           },
           desired_parameters: {
             adr_ack_delay_exponent: { value: 'ADR_ACK_DELAY_32' },
             adr_ack_limit_exponent: { value: 'ADR_ACK_LIMIT_64' },
-            rx1_delay: 'RX_DELAY_1',
+            rx1_delay: { value: 'RX_DELAY_1' },
           },
         },
       },
       field_mask: {
         paths: [
-          'session',
-          'mac_state',
           'supports_join',
           'multicast',
-          'ids.dev_eui',
           'lorawan_version',
           'lorawan_phy_version',
           'frequency_plan_id',
+          'session',
+          'mac_state',
         ],
       },
     };
@@ -283,7 +223,6 @@ serve(async (req) => {
     }
 
     if (!steps.ns.ok) {
-      // Check specifically for permission errors on NS
       const isPermError = steps.ns.status === 403 || steps.ns.status === 401;
       return jsonResponse(200, {
         success: false,
@@ -297,10 +236,10 @@ serve(async (req) => {
     }
 
     // =============================================
-    // STEP 3: Application Server — Set app session key
+    // STEP 2: Application Server — Set app session key
     // =============================================
     const asUrl = `${clusterBaseUrl}/as/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 3/3: PUT ${asUrl}`);
+    console.log(`[ttn-provision-abp][${requestId}] Step 2/2: PUT ${asUrl}`);
     const asPayload = {
       end_device: {
         ids: {
@@ -316,10 +255,7 @@ serve(async (req) => {
         },
       },
       field_mask: {
-        paths: [
-          'session',
-          'ids.dev_eui',
-        ],
+        paths: ['session'],
       },
     };
 
@@ -346,11 +282,12 @@ serve(async (req) => {
       });
     }
 
-    console.log(`[ttn-provision-abp][${requestId}] ABP provisioning complete for ${deviceId}`);
+    console.log(`[ttn-provision-abp][${requestId}] ABP session setup complete for ${deviceId} (dev_addr: ${devAddr})`);
     return jsonResponse(200, {
       success: true,
       deviceId,
       devAddr,
+      message: 'Session keys set on NS and AS. Device is now ABP-active.',
       steps,
       request_id: requestId,
     });
