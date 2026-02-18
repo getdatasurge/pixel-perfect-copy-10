@@ -1,19 +1,13 @@
 
 
-# Deploy ttn-provision-abp and ttn-simulate
+# Deploy Four Edge Functions
 
-## Issue
-`ttn-provision-abp` is not listed in `supabase/config.toml`, which means it lacks the `verify_jwt = false` configuration needed for deployment. Without this entry, the function will require JWT verification by default and reject unauthenticated calls.
+Deploy the following functions to ensure all recent fixes are live:
 
-## Steps
+1. **ttn-provision-abp** -- New ABP provisioning function with eu1 Identity Server routing
+2. **ttn-simulate** -- Payload structure fixes (dbNow variable rename, etc.)
+3. **ttn-preflight** -- AS endpoint and cluster fix
+4. **ttn-webhook** -- Shared webhook processor changes
 
-1. **Add `ttn-provision-abp` to `supabase/config.toml`**:
-   ```toml
-   [functions.ttn-provision-abp]
-   verify_jwt = false
-   ```
-
-2. **Deploy both functions**:
-   - `ttn-provision-abp`
-   - `ttn-simulate`
+All four are already configured in `supabase/config.toml` with `verify_jwt = false`. No code or config changes needed -- just deployment.
 
