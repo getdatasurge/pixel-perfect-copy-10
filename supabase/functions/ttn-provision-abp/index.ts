@@ -122,24 +122,37 @@ serve(async (req) => {
     };
 
     // =============================================
-    // STEP 0: DELETE existing device (TTN won't allow OTAA→ABP in-place)
+    // STEP 0: DELETE existing device from IS (eu1), NS, and AS (cluster)
+    // TTN won't allow OTAA→ABP in-place. IS should cascade, but we
+    // explicitly delete from NS and AS as well to be safe.
     // =============================================
-    const deleteUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
-    console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE ${deleteUrl}`);
+    const deleteUrls = [
+      { label: 'IS (eu1)', url: `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}` },
+      { label: 'NS', url: `${clusterBaseUrl}/ns/applications/${applicationId}/devices/${deviceId}` },
+      { label: 'AS', url: `${clusterBaseUrl}/as/applications/${applicationId}/devices/${deviceId}` },
+    ];
 
-    try {
-      const deleteResp = await fetch(deleteUrl, {
-        method: 'DELETE',
-        headers: authHeaders,
-      });
-      const deleteBody = await deleteResp.text();
-      // 200/204 = deleted, 404 = didn't exist (both fine)
-      const deleteOk = deleteResp.ok || deleteResp.status === 404;
-      steps.delete = { status: deleteResp.status, ok: deleteOk, body: deleteBody.slice(0, 500) };
-      console.log(`[ttn-provision-abp][${requestId}] DELETE response: ${deleteResp.status} ${deleteResp.status === 404 ? '(device did not exist — OK)' : deleteBody.slice(0, 200)}`);
-    } catch (err) {
-      steps.delete = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
-      console.error(`[ttn-provision-abp][${requestId}] DELETE fetch error:`, err);
+    for (const { label, url } of deleteUrls) {
+      console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE ${label} ${url}`);
+      try {
+        const deleteResp = await fetch(url, {
+          method: 'DELETE',
+          headers: authHeaders,
+        });
+        const deleteBody = await deleteResp.text();
+        const deleteOk = deleteResp.ok || deleteResp.status === 404;
+        console.log(`[ttn-provision-abp][${requestId}] DELETE ${label}: ${deleteResp.status} ${deleteResp.status === 404 ? '(not found — OK)' : deleteBody.slice(0, 200)}`);
+
+        // Only track the IS delete as the authoritative result
+        if (label.startsWith('IS')) {
+          steps.delete = { status: deleteResp.status, ok: deleteOk, body: deleteBody.slice(0, 500) };
+        }
+      } catch (err) {
+        console.error(`[ttn-provision-abp][${requestId}] DELETE ${label} fetch error:`, err);
+        if (label.startsWith('IS')) {
+          steps.delete = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
+        }
+      }
     }
 
     if (!steps.delete.ok) {
@@ -155,8 +168,9 @@ serve(async (req) => {
     }
 
     // =============================================
-    // STEP 1: Identity Server — PUT creates device (after DELETE above)
-    // TTN v3 uses PUT for both create and update on device-specific URLs
+    // STEP 1: Identity Server (eu1) — Create device with identity + metadata ONLY
+    // IS does NOT handle LoRaWAN fields (supports_join, lorawan_version, etc.)
+    // Those belong on the NS (Step 2).
     // =============================================
     const isUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
     console.log(`[ttn-provision-abp][${requestId}] Step 1/3: PUT to Identity Server at ${isUrl}`);
@@ -164,24 +178,12 @@ serve(async (req) => {
       end_device: {
         ids: {
           device_id: deviceId,
-          dev_eui: normalizedDevEui,
           application_ids: { application_id: applicationId },
         },
-        supports_join: false,
-        multicast: false,
-        lorawan_version: 'MAC_V1_0_3',
-        lorawan_phy_version: 'PHY_V1_0_3_REV_A',
-        frequency_plan_id: frequencyPlan,
         ...(deviceName && { name: deviceName }),
       },
       field_mask: {
         paths: [
-          'supports_join',
-          'multicast',
-          'ids.dev_eui',
-          'lorawan_version',
-          'lorawan_phy_version',
-          'frequency_plan_id',
           ...(deviceName ? ['name'] : []),
         ],
       },
