@@ -182,17 +182,17 @@ serve(async (req) => {
           },
         },
         mac_state: {
-          lorawan_version: 'MAC_V1_0_3',
           current_parameters: {
-            adr_ack_delay_exponent: { value: 'ADR_ACK_DELAY_32' },
-            adr_ack_limit_exponent: { value: 'ADR_ACK_LIMIT_64' },
-            rx1_delay: { value: 'RX_DELAY_1' },
+            adr_ack_delay_exponent: 'ADR_ACK_DELAY_32',
+            adr_ack_limit_exponent: 'ADR_ACK_LIMIT_64',
+            rx1_delay: 'RX_DELAY_1',
           },
           desired_parameters: {
-            adr_ack_delay_exponent: { value: 'ADR_ACK_DELAY_32' },
-            adr_ack_limit_exponent: { value: 'ADR_ACK_LIMIT_64' },
-            rx1_delay: { value: 'RX_DELAY_1' },
+            adr_ack_delay_exponent: 'ADR_ACK_DELAY_32',
+            adr_ack_limit_exponent: 'ADR_ACK_LIMIT_64',
+            rx1_delay: 'RX_DELAY_1',
           },
+          lorawan_version: 'MAC_V1_0_3',
         },
       },
       field_mask: {
