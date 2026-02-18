@@ -25,18 +25,20 @@ interface StepResult {
 }
 
 /**
- * Convert a TTN device from OTAA to ABP by setting supports_join: false
- * and injecting a pre-configured session with dummy keys.
+ * Re-create a TTN device as ABP (supports_join: false) with a pre-configured
+ * session. TTN does not allow flipping OTAA→ABP in-place, so we DELETE first
+ * then CREATE fresh.
  *
  * ABP devices have an "active session" from the moment they are configured,
  * which causes TTN's SimulateUplink to include dev_eui in the forwarded
  * webhook payload — fixing the issue where simulated uplinks are dropped
  * by FrostGuard due to missing dev_eui.
  *
- * Three TTN API calls:
- *   1. Identity Server (IS): Set supports_join: false
- *   2. Network Server (NS): Set session (dev_addr, NwkSKey) + mac_state
- *   3. Application Server (AS): Set session (dev_addr, AppSKey)
+ * Four TTN API calls:
+ *   0. DELETE existing device (404 = OK, device didn't exist)
+ *   1. Identity Server (IS): POST new device with supports_join: false
+ *   2. Network Server (NS): PUT session (dev_addr, NwkSKey) + mac_state
+ *   3. Application Server (AS): PUT session (dev_addr, AppSKey)
  */
 serve(async (req) => {
   const requestId = crypto.randomUUID().slice(0, 8);
@@ -108,17 +110,51 @@ serve(async (req) => {
     const frequencyPlan = cluster === 'nam1' ? 'US_902_928_FSB_2' :
                           cluster === 'au1' ? 'AU_915_928_FSB_2' : 'EU_863_870_TTN';
 
-    const steps: { is: StepResult; ns: StepResult; as: StepResult } = {
+    const steps: { delete: StepResult; is: StepResult; ns: StepResult; as: StepResult } = {
+      delete: { status: 0, ok: false, body: '' },
       is: { status: 0, ok: false, body: '' },
       ns: { status: 0, ok: false, body: '' },
       as: { status: 0, ok: false, body: '' },
     };
 
     // =============================================
-    // STEP 1: Identity Server — Set supports_join: false
+    // STEP 0: DELETE existing device (TTN won't allow OTAA→ABP in-place)
     // =============================================
-    console.log(`[ttn-provision-abp][${requestId}] Step 1/3: Updating Identity Server...`);
-    const isUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    const deleteUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE existing device at ${deleteUrl}`);
+
+    try {
+      const deleteResp = await fetch(deleteUrl, {
+        method: 'DELETE',
+        headers: authHeaders,
+      });
+      const deleteBody = await deleteResp.text();
+      // 200/204 = deleted, 404 = didn't exist (both fine)
+      const deleteOk = deleteResp.ok || deleteResp.status === 404;
+      steps.delete = { status: deleteResp.status, ok: deleteOk, body: deleteBody.slice(0, 500) };
+      console.log(`[ttn-provision-abp][${requestId}] DELETE response: ${deleteResp.status} ${deleteResp.status === 404 ? '(device did not exist — OK)' : deleteBody.slice(0, 200)}`);
+    } catch (err) {
+      steps.delete = { status: 0, ok: false, body: `Fetch error: ${(err as Error).message}` };
+      console.error(`[ttn-provision-abp][${requestId}] DELETE fetch error:`, err);
+    }
+
+    if (!steps.delete.ok) {
+      return jsonResponse(200, {
+        success: false,
+        error: `Delete existing device failed (${steps.delete.status}): ${steps.delete.body}`,
+        hint: steps.delete.status === 403
+          ? 'API key lacks permission to delete devices. Ensure the key has full application rights.'
+          : undefined,
+        steps,
+        request_id: requestId,
+      });
+    }
+
+    // =============================================
+    // STEP 1: Identity Server — CREATE device with supports_join: false
+    // =============================================
+    const isUrl = `${baseUrl}/applications/${applicationId}/devices`;
+    console.log(`[ttn-provision-abp][${requestId}] Step 1/3: Creating device on Identity Server at ${isUrl}`);
     const isPayload = {
       end_device: {
         ids: {
@@ -146,11 +182,16 @@ serve(async (req) => {
       },
     };
 
+    // POST to create (not PUT to update) since we deleted the device above
+    const isCreatePayload = {
+      end_device: isPayload.end_device,
+    };
+
     try {
       const isResp = await fetch(isUrl, {
-        method: 'PUT',
+        method: 'POST',
         headers: authHeaders,
-        body: JSON.stringify(isPayload),
+        body: JSON.stringify(isCreatePayload),
       });
       const isBody = await isResp.text();
       steps.is = { status: isResp.status, ok: isResp.ok, body: isBody.slice(0, 500) };
@@ -163,11 +204,11 @@ serve(async (req) => {
     if (!steps.is.ok) {
       return jsonResponse(200, {
         success: false,
-        error: `Identity Server update failed (${steps.is.status}): ${steps.is.body}`,
+        error: `Identity Server create failed (${steps.is.status}): ${steps.is.body}`,
         hint: steps.is.status === 403
-          ? 'API key lacks permission to update devices on Identity Server. Ensure the key has "Edit application devices" rights.'
-          : steps.is.status === 404
-          ? `Device "${deviceId}" not found in application "${applicationId}". Provision the device first using the Provisioning Wizard.`
+          ? 'API key lacks permission to create devices on Identity Server. Ensure the key has full application rights.'
+          : steps.is.status === 409
+          ? `Device "${deviceId}" already exists — the DELETE may not have propagated. Retry in a few seconds.`
           : undefined,
         steps,
         request_id: requestId,
@@ -177,8 +218,8 @@ serve(async (req) => {
     // =============================================
     // STEP 2: Network Server — Set session + MAC state
     // =============================================
-    console.log(`[ttn-provision-abp][${requestId}] Step 2/3: Updating Network Server...`);
     const nsUrl = `${baseUrl}/ns/applications/${applicationId}/devices/${deviceId}`;
+    console.log(`[ttn-provision-abp][${requestId}] Step 2/3: Setting NS session at ${nsUrl}`);
     const nsPayload = {
       end_device: {
         ids: {
@@ -256,8 +297,8 @@ serve(async (req) => {
     // =============================================
     // STEP 3: Application Server — Set app session key
     // =============================================
-    console.log(`[ttn-provision-abp][${requestId}] Step 3/3: Updating Application Server...`);
     const asUrl = `${baseUrl}/as/applications/${applicationId}/devices/${deviceId}`;
+    console.log(`[ttn-provision-abp][${requestId}] Step 3/3: Setting AS session at ${asUrl}`);
     const asPayload = {
       end_device: {
         ids: {
