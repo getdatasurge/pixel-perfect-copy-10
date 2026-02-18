@@ -101,7 +101,11 @@ serve(async (req) => {
     // These are arbitrary but valid — ABP doesn't use over-the-air key exchange
     const dummyKeyB64 = 'AQEBAQEBAQEBAQEBAQEBAQ==';
 
-    const baseUrl = `https://${cluster}.cloud.thethings.network/api/v3`;
+    // TTN Cloud: Identity Server ALWAYS lives on eu1, regardless of regional cluster
+    const isBaseUrl = 'https://eu1.cloud.thethings.network/api/v3';
+    // NS and AS live on the regional cluster
+    const clusterBaseUrl = `https://${cluster}.cloud.thethings.network/api/v3`;
+    console.log(`[ttn-provision-abp][${requestId}] IS base URL: ${isBaseUrl} | NS/AS base URL: ${clusterBaseUrl}`);
     const authHeaders = {
       'Authorization': `Bearer ${apiKey}`,
       'Content-Type': 'application/json',
@@ -120,7 +124,7 @@ serve(async (req) => {
     // =============================================
     // STEP 0: DELETE existing device (TTN won't allow OTAA→ABP in-place)
     // =============================================
-    const deleteUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    const deleteUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
     console.log(`[ttn-provision-abp][${requestId}] Step 0: DELETE ${deleteUrl}`);
 
     try {
@@ -154,7 +158,7 @@ serve(async (req) => {
     // STEP 1: Identity Server — PUT creates device (after DELETE above)
     // TTN v3 uses PUT for both create and update on device-specific URLs
     // =============================================
-    const isUrl = `${baseUrl}/applications/${applicationId}/devices/${deviceId}`;
+    const isUrl = `${isBaseUrl}/applications/${applicationId}/devices/${deviceId}`;
     console.log(`[ttn-provision-abp][${requestId}] Step 1/3: PUT to Identity Server at ${isUrl}`);
     const isPayload = {
       end_device: {
@@ -214,7 +218,7 @@ serve(async (req) => {
     // =============================================
     // STEP 2: Network Server — Set session + MAC state
     // =============================================
-    const nsUrl = `${baseUrl}/ns/applications/${applicationId}/devices/${deviceId}`;
+    const nsUrl = `${clusterBaseUrl}/ns/applications/${applicationId}/devices/${deviceId}`;
     console.log(`[ttn-provision-abp][${requestId}] Step 2/3: PUT ${nsUrl}`);
     const nsPayload = {
       end_device: {
@@ -293,7 +297,7 @@ serve(async (req) => {
     // =============================================
     // STEP 3: Application Server — Set app session key
     // =============================================
-    const asUrl = `${baseUrl}/as/applications/${applicationId}/devices/${deviceId}`;
+    const asUrl = `${clusterBaseUrl}/as/applications/${applicationId}/devices/${deviceId}`;
     console.log(`[ttn-provision-abp][${requestId}] Step 3/3: PUT ${asUrl}`);
     const asPayload = {
       end_device: {
