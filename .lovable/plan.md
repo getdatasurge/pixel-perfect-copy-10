@@ -1,16 +1,19 @@
 
-# Fix: Duplicate `now` Variable in ttn-simulate
 
-## Problem
-`const now` is declared at both line 472 and line 579 in the same block scope, causing a TypeScript compilation error that prevents deployment.
+# Deploy ttn-provision-abp and ttn-simulate
 
-## Solution
+## Issue
+`ttn-provision-abp` is not listed in `supabase/config.toml`, which means it lacks the `verify_jwt = false` configuration needed for deployment. Without this entry, the function will require JWT verification by default and reject unauthenticated calls.
 
-**File: `supabase/functions/ttn-simulate/index.ts`**
+## Steps
 
-Rename the second `now` on **line 579** to `dbNow`, and update all references to it in the dual-write block below:
+1. **Add `ttn-provision-abp` to `supabase/config.toml`**:
+   ```toml
+   [functions.ttn-provision-abp]
+   verify_jwt = false
+   ```
 
-- **Line 579**: `const now = new Date().toISOString();` becomes `const dbNow = new Date().toISOString();`
-- Update any subsequent uses of `now` after line 579 (e.g., `received_at: now`) to `received_at: dbNow`
+2. **Deploy both functions**:
+   - `ttn-provision-abp`
+   - `ttn-simulate`
 
-After the fix, both `ttn-simulate` and `ttn-preflight` will be redeployed.
