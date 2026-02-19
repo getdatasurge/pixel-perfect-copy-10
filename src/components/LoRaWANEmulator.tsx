@@ -22,7 +22,8 @@ import GatewayConfig from './emulator/GatewayConfig';
 import WebhookSettings from './emulator/WebhookSettings';
 import DeviceManager from './emulator/DeviceManager';
 import QRCodeModal from './emulator/QRCodeModal';
-import ScenarioPresets, { ScenarioConfig } from './emulator/ScenarioPresets';
+import ScenarioAlarmPanel from './emulator/ScenarioAlarmPanel';
+import type { ScenarioAlarmDef } from '@/lib/scenarioAlarmDefinitions';
 import SensorSelector from './emulator/SensorSelector';
 import TestContextConfig from './emulator/TestContextConfig';
 import TestDashboard from './emulator/TestDashboard';
@@ -108,7 +109,8 @@ export default function LoRaWANEmulator() {
   const [showProvisioningWizard, setShowProvisioningWizard] = useState(false);
   const [provisioningMode, setProvisioningMode] = useState<'devices' | 'gateways'>('devices');
   const [showCreateUnitModal, setShowCreateUnitModal] = useState(false);
-  
+  const [activeScenarioId, setActiveScenarioId] = useState<string | null>(null);
+
   // Emulator routing mode: 'ttn' routes through TTN API, 'local' uses direct DB ingest
   type EmulatorMode = 'ttn' | 'local';
   const [emulatorMode, setEmulatorMode] = useState<EmulatorMode>('ttn');
@@ -442,7 +444,7 @@ export default function LoRaWANEmulator() {
     saveSelectedSensorIds(selectedSensorIds);
   }, [selectedSensorIds]);
 
-  // Get sensor types map for ScenarioPresets
+  // Get sensor types map for scenario/alarm panel
   const sensorTypesMap = useMemo(() => {
     const map: Record<string, 'temperature' | 'door'> = {};
     for (const device of devices) {
@@ -1871,72 +1873,88 @@ export default function LoRaWANEmulator() {
     }
   }, [webhookConfig.testOrgId, webhookConfig.selectedUserId, sessionId, addLog]);
 
-  const applyScenario = useCallback((scenario: ScenarioConfig) => {
+  const applyScenarioAndEmit = useCallback((scenario: ScenarioAlarmDef) => {
     if (selectedSensorIds.length === 0) {
-      toast({ 
-        title: 'No sensors selected', 
+      toast({
+        title: 'No sensors selected',
         description: 'Select at least one sensor to apply a scenario',
-        variant: 'destructive' 
+        variant: 'destructive'
       });
       return;
     }
 
-    console.log('[SCENARIO_APPLY]', {
+    // Determine which sensors are affected by this scenario
+    let affectedSensorIds: string[];
+    switch (scenario.affectedSensorTypes) {
+      case 'temperature':
+        affectedSensorIds = getTempCompatibleSensors(selectedSensorIds, sensorStates);
+        break;
+      case 'door':
+        affectedSensorIds = getDoorCompatibleSensors(selectedSensorIds, sensorStates);
+        break;
+      case 'all':
+      default:
+        affectedSensorIds = [...selectedSensorIds];
+        break;
+    }
+
+    if (affectedSensorIds.length === 0) {
+      toast({
+        title: 'No compatible sensors',
+        description: `No ${scenario.affectedSensorTypes} sensors selected for this scenario`,
+        variant: 'destructive',
+      });
+      return;
+    }
+
+    console.log('[SCENARIO_ALARM_APPLY]', {
+      scenario_id: scenario.id,
       scenario_name: scenario.name,
-      selected_sensor_ids: selectedSensorIds,
+      severity: scenario.severity,
+      affected_sensor_types: scenario.affectedSensorTypes,
+      affected_sensor_ids: affectedSensorIds,
+      is_running: isRunning,
       timestamp: new Date().toISOString(),
     });
 
-    // Apply temperature settings to temp-compatible sensors
-    if (scenario.tempRange) {
-      const tempSensors = getTempCompatibleSensors(selectedSensorIds, sensorStates);
-      if (tempSensors.length > 0) {
-        updateMultipleSensors(tempSensors, {
-          minTempF: scenario.tempRange.min,
-          maxTempF: scenario.tempRange.max,
-          tempF: (scenario.tempRange.min + scenario.tempRange.max) / 2,
-          humidity: scenario.humidity ?? sensorStates[tempSensors[0]]?.humidity ?? 45,
-          batteryPct: scenario.batteryLevel ?? sensorStates[tempSensors[0]]?.batteryPct ?? 95,
-          signalStrength: scenario.signalStrength ?? sensorStates[tempSensors[0]]?.signalStrength ?? -65,
-        });
-      }
-      
-      // Also update global tempState for backward compatibility
+    // Apply sensor state overrides to ONLY affected sensors
+    updateMultipleSensors(affectedSensorIds, scenario.sensorStateOverrides);
+
+    // Backward-compat: sync global tempState if temperature overrides present
+    const overrides = scenario.sensorStateOverrides;
+    if (overrides.minTempF !== undefined || overrides.maxTempF !== undefined) {
       setTempState(prev => ({
         ...prev,
-        minTemp: scenario.tempRange!.min,
-        maxTemp: scenario.tempRange!.max,
-        humidity: scenario.humidity ?? prev.humidity,
-        batteryLevel: scenario.batteryLevel ?? prev.batteryLevel,
-        signalStrength: scenario.signalStrength ?? prev.signalStrength,
+        ...(overrides.minTempF !== undefined && { minTemp: overrides.minTempF }),
+        ...(overrides.maxTempF !== undefined && { maxTemp: overrides.maxTempF }),
+        ...(overrides.humidity !== undefined && { humidity: overrides.humidity }),
+        ...(overrides.batteryPct !== undefined && { batteryLevel: overrides.batteryPct }),
+        ...(overrides.signalStrength !== undefined && { signalStrength: overrides.signalStrength }),
       }));
     }
 
-    // Apply door settings to door-compatible sensors
-    if (scenario.doorBehavior === 'stuck-open') {
-      const doorSensors = getDoorCompatibleSensors(selectedSensorIds, sensorStates);
-      if (doorSensors.length > 0) {
-        updateMultipleSensors(doorSensors, {
-          doorOpen: true,
-          batteryPct: scenario.batteryLevel ?? sensorStates[doorSensors[0]]?.batteryPct ?? 90,
-          signalStrength: scenario.signalStrength ?? sensorStates[doorSensors[0]]?.signalStrength ?? -70,
-        });
-      }
-      
-      // Also update global doorState for backward compatibility
-      setDoorState(prev => ({ ...prev, doorOpen: true }));
+    // Backward-compat: sync global doorState if door overrides present
+    if (overrides.doorOpen !== undefined) {
+      setDoorState(prev => ({ ...prev, doorOpen: overrides.doorOpen! }));
     }
 
-    // Apply battery/signal to all selected sensors
-    if (scenario.batteryLevel !== undefined || scenario.signalStrength !== undefined) {
-      const updates: Partial<SensorState> = {};
-      if (scenario.batteryLevel !== undefined) updates.batteryPct = scenario.batteryLevel;
-      if (scenario.signalStrength !== undefined) updates.signalStrength = scenario.signalStrength;
-      updateMultipleSensors(selectedSensorIds, updates);
+    // Track active scenario
+    setActiveScenarioId(scenario.id);
+
+    addLog('info', `🎛️ Applied "${scenario.name}" to ${affectedSensorIds.length} sensor(s)`);
+
+    // Immediately trigger emission for each affected sensor (real-time execution)
+    for (const sensorId of affectedSensorIds) {
+      sendDeviceUplinkRef.current(sensorId);
     }
 
-    addLog('info', `🎛️ Applied "${scenario.name}" scenario to ${selectedSensorIds.length} sensor(s)`);
-  }, [selectedSensorIds, sensorStates, updateMultipleSensors, addLog]);
+    addLog('info', `⚡ Emitted ${affectedSensorIds.length} uplink(s) for "${scenario.name}"`);
+  }, [selectedSensorIds, sensorStates, isRunning, updateMultipleSensors, addLog]);
+
+  const clearActiveScenario = useCallback(() => {
+    setActiveScenarioId(null);
+    addLog('info', '🎛️ Scenario cleared — sensors returned to normal');
+  }, [addLog]);
 
   const tempDevice = getActiveDevice('temperature');
   const doorDevice = getActiveDevice('door');
@@ -2362,14 +2380,16 @@ export default function LoRaWANEmulator() {
               </Card>
             </div>
 
-            {/* Scenario Presets */}
+            {/* Scenarios & Alarms — clickable real-time execution */}
             <Card>
               <CardContent className="pt-6">
-                <ScenarioPresets 
-                  onApply={applyScenario} 
-                  disabled={isRunning}
+                <ScenarioAlarmPanel
+                  onApplyScenario={applyScenarioAndEmit}
                   selectedSensorIds={selectedSensorIds}
                   sensorTypes={sensorTypesMap}
+                  activeScenarioId={activeScenarioId}
+                  onClearScenario={clearActiveScenario}
+                  isRunning={isRunning}
                 />
               </CardContent>
             </Card>
