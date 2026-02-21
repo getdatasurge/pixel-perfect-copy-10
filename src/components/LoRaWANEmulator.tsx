@@ -10,10 +10,10 @@ import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { 
-  Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed, 
+import {
+  Thermometer, Droplets, Battery, Signal, DoorOpen, DoorClosed,
   Radio, Settings, Activity, FileText, Webhook, FlaskConical,
-  ClipboardList, Info, AlertTriangle, Upload
+  ClipboardList, Info, AlertTriangle, Upload, ShieldAlert
 } from 'lucide-react';
 import { supabase } from '@/integrations/supabase/client';
 import { toast } from '@/hooks/use-toast';
@@ -33,6 +33,7 @@ import UserSelectionGate, { STORAGE_KEY_USER_CONTEXT } from './emulator/UserSele
 import UserContextBar from './emulator/UserContextBar';
 import DebugTerminal from './emulator/DebugTerminal';
 import ExportPanel from './emulator/ExportPanel';
+import { AlarmScenarioRunner } from './admin/AlarmScenarioRunner';
 import { 
   GatewayConfig as GatewayConfigType, 
   LoRaWANDevice, 
@@ -2126,7 +2127,7 @@ export default function LoRaWANEmulator() {
           />
 
           <Tabs defaultValue="sensors" className="w-full">
-            <TabsList className="grid w-full grid-cols-8 mb-6">
+            <TabsList className="grid w-full grid-cols-9 mb-6">
               <TabsTrigger value="sensors" className="gap-2">
                 <Thermometer className="h-4 w-4" />
                 <span className="hidden sm:inline">Sensors</span>
@@ -2146,6 +2147,10 @@ export default function LoRaWANEmulator() {
               <TabsTrigger value="testing" className="gap-2">
                 <FlaskConical className="h-4 w-4" />
                 <span className="hidden sm:inline">Testing</span>
+              </TabsTrigger>
+              <TabsTrigger value="alarms" className="gap-2">
+                <ShieldAlert className="h-4 w-4" />
+                <span className="hidden sm:inline">Alarms</span>
               </TabsTrigger>
               <TabsTrigger value="monitor" className="gap-2">
                 <Activity className="h-4 w-4" />
@@ -2506,6 +2511,11 @@ export default function LoRaWANEmulator() {
                 />
               </div>
             </div>
+          </TabsContent>
+
+          {/* Alarms Tab - Alarm Scenario Runner */}
+          <TabsContent value="alarms">
+            <AlarmScenarioRunner organizationId={webhookConfig.testOrgId || null} />
           </TabsContent>
 
           {/* Monitor Tab - Database-Driven Telemetry */}
