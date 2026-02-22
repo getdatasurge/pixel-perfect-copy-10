@@ -22,10 +22,9 @@ CREATE TABLE IF NOT EXISTS alarm_test_scenarios (
 -- Enable RLS
 ALTER TABLE alarm_test_scenarios ENABLE ROW LEVEL SECURITY;
 
--- Allow authenticated users to read scenarios
+-- Allow all users (including anon) to read scenarios
 CREATE POLICY "Anyone can read alarm test scenarios"
   ON alarm_test_scenarios FOR SELECT
-  TO authenticated
   USING (true);
 
 -- ════════════════════════════════════════════════════════════
