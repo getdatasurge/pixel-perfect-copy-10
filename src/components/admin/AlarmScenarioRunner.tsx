@@ -58,6 +58,7 @@ import {
   ThumbsDown,
   Eye,
 } from "lucide-react";
+import type { GatewayConfig, TTNConfig } from "@/lib/ttn-payload";
 import {
   loadScenarios,
   runScenario,
@@ -71,6 +72,7 @@ import {
   type ScenarioRunProgress,
   type ScenarioResult,
   type RunOptions,
+  type ScenarioTTNContext,
 } from "@/lib/alarmScenarios";
 
 // ─── Supporting types ──────────────────────────────────────────────────────
@@ -82,19 +84,32 @@ interface Unit {
   area: { name: string; site: { name: string } };
 }
 
+interface SensorInfo {
+  devEui: string;
+  deviceId: string;
+}
+
 interface AlarmScenarioRunnerProps {
   organizationId: string | null;
+  selectedUserId?: string | null;
+  ttnConfig?: TTNConfig | null;
+  gateway?: GatewayConfig | null;
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────
 
 export function AlarmScenarioRunner({
   organizationId,
+  selectedUserId,
+  ttnConfig,
+  gateway,
 }: AlarmScenarioRunnerProps) {
   // Data state
   const [scenarios, setScenarios] = useState<AlarmScenario[]>([]);
   const [units, setUnits] = useState<Unit[]>([]);
   const [isLoading, setIsLoading] = useState(false);
+  // Sensor info for the currently selected unit
+  const [unitSensor, setUnitSensor] = useState<SensorInfo | null>(null);
 
   // Filter state
   const [selectedTier, setSelectedTier] = useState<string>("all");
@@ -181,6 +196,51 @@ export function AlarmScenarioRunner({
     loadUnits();
   }, [loadUnits]);
 
+  // Look up the sensor assigned to the selected unit
+  useEffect(() => {
+    if (!selectedUnit) {
+      setUnitSensor(null);
+      return;
+    }
+    (async () => {
+      const { data } = await supabase
+        .from("lora_sensors")
+        .select("dev_eui")
+        .eq("unit_id", selectedUnit)
+        .limit(1)
+        .maybeSingle();
+
+      if (data?.dev_eui) {
+        const normalised = data.dev_eui.replace(/[:\s-]/g, "").toLowerCase();
+        setUnitSensor({
+          devEui: data.dev_eui,
+          deviceId: `sensor-${normalised}`,
+        });
+      } else {
+        setUnitSensor(null);
+      }
+    })();
+  }, [selectedUnit]);
+
+  // Build TTN context from props + unit sensor lookup
+  const ttnContext: ScenarioTTNContext | undefined =
+    organizationId &&
+    selectedUserId &&
+    ttnConfig?.enabled &&
+    ttnConfig.applicationId &&
+    gateway &&
+    unitSensor
+      ? {
+          orgId: organizationId,
+          selectedUserId,
+          applicationId: ttnConfig.applicationId,
+          gatewayId: gateway.ttnGatewayId || gateway.id,
+          gatewayEui: gateway.eui,
+          devEui: unitSensor.devEui,
+          deviceId: unitSensor.deviceId,
+        }
+      : undefined;
+
   // ─── Run a single scenario then show confirmation ───────────────────────
 
   const sendScenario = async (
@@ -197,7 +257,7 @@ export function AlarmScenarioRunner({
       scenario.scenario_id,
       selectedUnit,
       (p) => setProgress(p),
-      options
+      { ...options, ttnContext }
     );
 
     setRunningScenarioId(null);
@@ -330,6 +390,7 @@ export function AlarmScenarioRunner({
 
   const quickCount = scenarios.filter(isQuickScenario).length;
   const isAnyRunning = runningScenarioId !== null || awaitingConfirmation !== null;
+  const isTTNReady = !!ttnContext;
 
   // ─── Icon helpers ──────────────────────────────────────────────────────
 
@@ -436,7 +497,7 @@ export function AlarmScenarioRunner({
               variant="default"
               size="sm"
               className="gap-2"
-              disabled={!selectedUnit || isAnyRunning || isBatchMode || quickCount === 0}
+              disabled={!selectedUnit || !isTTNReady || isAnyRunning || isBatchMode || quickCount === 0}
               onClick={handleRunAllQuick}
             >
               <Zap className="w-4 h-4" />
@@ -456,6 +517,22 @@ export function AlarmScenarioRunner({
               </Button>
             )}
           </div>
+
+          {/* ── TTN / sensor readiness warning ─────────────────────── */}
+          {selectedUnit && !isTTNReady && (
+            <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-3 text-sm flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+              <div className="space-y-1">
+                {!selectedUserId && <p>No user selected — go to the User tab.</p>}
+                {!ttnConfig?.enabled && <p>TTN is not enabled — configure TTN in Webhook Settings.</p>}
+                {!ttnConfig?.applicationId && ttnConfig?.enabled && <p>TTN Application ID missing.</p>}
+                {!gateway && <p>No gateway configured.</p>}
+                {selectedUnit && !unitSensor && (
+                  <p>No sensor assigned to this unit. Assign a sensor in Device Manager.</p>
+                )}
+              </div>
+            </div>
+          )}
 
           {/* ── Batch progress ───────────────────────────────────────── */}
           {isBatchMode && (
@@ -764,7 +841,7 @@ export function AlarmScenarioRunner({
                                     variant="ghost"
                                     className="h-7 w-7 p-0"
                                     title="Run turbo (skip delays)"
-                                    disabled={!selectedUnit || isAnyRunning}
+                                    disabled={!selectedUnit || !isTTNReady || isAnyRunning}
                                     onClick={() =>
                                       handleRunScenario(
                                         scenario.scenario_id,
@@ -784,7 +861,7 @@ export function AlarmScenarioRunner({
                                     variant="ghost"
                                     className="h-7 w-7 p-0"
                                     title={`Run normal (${formatMs(duration)} real time)`}
-                                    disabled={!selectedUnit || isAnyRunning}
+                                    disabled={!selectedUnit || !isTTNReady || isAnyRunning}
                                     onClick={() =>
                                       handleRunScenario(scenario.scenario_id)
                                     }

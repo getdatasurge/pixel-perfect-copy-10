@@ -33,6 +33,19 @@ export interface PayloadStep {
   _rx_metadata?: { rssi: number; snr: number };
 }
 
+/** TTN context required to route scenario payloads through the already-deployed ttn-simulate edge function. */
+export interface ScenarioTTNContext {
+  orgId: string;
+  selectedUserId: string;
+  applicationId: string;
+  gatewayId: string;
+  gatewayEui: string;
+  /** Sensor details for the target unit. Looked up when the unit is selected. */
+  devEui: string;
+  /** TTN device ID in canonical format: sensor-{normalised_deveui} */
+  deviceId: string;
+}
+
 export interface AlarmScenario {
   id: string;
   scenario_id: string;
@@ -81,6 +94,8 @@ export interface RunOptions {
   turboDelayMs?: number;
   /** AbortSignal to cancel a running scenario */
   signal?: AbortSignal;
+  /** TTN context for routing payloads through the deployed ttn-simulate function */
+  ttnContext?: ScenarioTTNContext;
 }
 
 // ─── Quick-testable classification ─────────────────────────────────────────
@@ -268,7 +283,21 @@ export async function runScenario(
     turbo = false,
     turboDelayMs = 500,
     signal,
+    ttnContext,
   } = options;
+
+  if (!ttnContext) {
+    return {
+      scenario_id: scenarioId,
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      payloads_sent: 0,
+      status: "failed",
+      error: "TTN context missing — select a user and ensure TTN is configured",
+      alarm_verified: null,
+      steps: [],
+    };
+  }
 
   const scenario = await loadScenarioById(scenarioId);
   if (!scenario) {
@@ -329,62 +358,37 @@ export async function runScenario(
     });
 
     try {
-      // Extract temperature (convert C to F for simulator)
-      const tempC =
-        (step.decoded_payload.TempC_SHT as number) ??
-        (step.decoded_payload.temperature as number) ??
-        undefined;
-      const tempF = tempC !== undefined ? (tempC * 9) / 5 + 32 : undefined;
+      // Send through the already-deployed ttn-simulate edge function
+      // (same path the regular emulator uses)
+      const signalStrength = step._rx_metadata?.rssi ?? -70;
 
-      const humidity =
-        (step.decoded_payload.Hum_SHT as number) ??
-        (step.decoded_payload.humidity as number) ??
-        undefined;
-
-      // Build the simulator body
-      const body: Record<string, unknown> = {
-        action: "inject",
-        unit_id: unitId,
-        temperature: tempF,
-        humidity: humidity,
-      };
-
-      // Door sensor fields (LDS02)
-      if (step.decoded_payload.DOOR_OPEN_STATUS !== undefined) {
-        body.door_open = step.decoded_payload.DOOR_OPEN_STATUS === 1;
-        body.door_open_times = step.decoded_payload.DOOR_OPEN_TIMES;
-        body.door_open_duration = step.decoded_payload.LAST_DOOR_OPEN_DURATION;
-      }
-
-      // Battery voltage (Dragino BatV)
-      if (step.decoded_payload.BatV !== undefined) {
-        body.battery_voltage = step.decoded_payload.BatV;
-      }
-      // Battery percentage (Milesight)
-      if (step.decoded_payload.battery !== undefined) {
-        body.battery_percentage = step.decoded_payload.battery;
-      }
-      // Battery mV (Elsys vdd)
-      if (step.decoded_payload.vdd !== undefined) {
-        body.battery_voltage = (step.decoded_payload.vdd as number) / 1000;
-      }
-
-      // Signal quality metadata (T5-SIGNAL-POOR)
-      if (step._rx_metadata) {
-        body.rx_metadata = step._rx_metadata;
-      }
-
-      const { error: invokeError } = await supabase.functions.invoke(
-        "sensor-simulator",
-        { body }
+      const { data, error: invokeError } = await supabase.functions.invoke(
+        "ttn-simulate",
+        {
+          body: {
+            org_id: ttnContext.orgId,
+            selected_user_id: ttnContext.selectedUserId,
+            applicationId: ttnContext.applicationId,
+            deviceId: ttnContext.deviceId,
+            devEui: ttnContext.devEui,
+            decodedPayload: step.decoded_payload,
+            fPort: step.f_port,
+            gatewayId: ttnContext.gatewayId,
+            gatewayEui: ttnContext.gatewayEui,
+            signalStrength,
+          },
+        }
       );
+
+      // ttn-simulate returns 200 with { success: false } on TTN API errors
+      const ttnError = invokeError?.message ?? (data && !data.success ? (data.error || "TTN simulate error") : undefined);
 
       steps.push({
         step: i + 1,
         description: step.description,
         sent_at: new Date().toISOString(),
-        success: !invokeError,
-        error: invokeError?.message,
+        success: !ttnError,
+        error: ttnError,
       });
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
