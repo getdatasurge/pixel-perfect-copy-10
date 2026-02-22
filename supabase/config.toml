@@ -70,3 +70,6 @@ verify_jwt = false
 
 [functions.ttn-provision-abp]
 verify_jwt = false
+
+[functions.sensor-simulator]
+verify_jwt = false
