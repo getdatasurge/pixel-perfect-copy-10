@@ -1,16 +1,19 @@
 /**
  * AlarmScenarioRunner — Admin UI for browsing, running, and batch-testing alarm scenarios.
  *
+ * Flow: The emulator sends sensor data through TTN, then waits for the user
+ * to check the FrostGuard app and manually confirm whether the expected alert
+ * appeared. The emulator has NO visibility into the main application.
+ *
  * Features:
- * - Browse all 36 scenarios from alarm_test_scenarios table
+ * - Browse all scenarios from alarm_test_scenarios table
  * - Filter by tier (T1-T5), equipment type, severity
  * - View payload sequence timeline for each scenario
  * - Run individual scenarios: Normal mode (real delays) or Turbo mode (skip delays)
- * - "Run All Quick" batch: auto-runs all instant scenarios sequentially in turbo
- * - Alarm verification: checks alarm_events after each run
- * - Progress tracking for individual and batch runs
- * - Session result history with pass/fail/verified status
- * - Cancellable batch runs via AbortController
+ * - Manual Pass/Fail confirmation after each scenario
+ * - "Run All Quick" batch: runs scenarios one at a time, pausing for confirmation
+ * - Session result history
+ * - Cancellable batch runs
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
@@ -51,13 +54,13 @@ import {
   Square,
   SkipForward,
   FlaskConical,
-  ShieldCheck,
-  ShieldX,
+  ThumbsUp,
+  ThumbsDown,
+  Eye,
 } from "lucide-react";
 import {
   loadScenarios,
   runScenario,
-  runAllQuick,
   isQuickScenario,
   getScenarioSpeed,
   getScenarioDuration,
@@ -67,8 +70,6 @@ import {
   type AlarmScenario,
   type ScenarioRunProgress,
   type ScenarioResult,
-  type BatchRunProgress,
-  type BatchResult,
   type RunOptions,
 } from "@/lib/alarmScenarios";
 
@@ -103,12 +104,18 @@ export function AlarmScenarioRunner({
   // Individual run state
   const [runningScenarioId, setRunningScenarioId] = useState<string | null>(null);
   const [progress, setProgress] = useState<ScenarioRunProgress | null>(null);
-  const [lastResult, setLastResult] = useState<ScenarioResult | null>(null);
 
-  // Batch run state
-  const [isBatchRunning, setIsBatchRunning] = useState(false);
-  const [batchProgress, setBatchProgress] = useState<BatchRunProgress | null>(null);
-  const [batchResult, setBatchResult] = useState<BatchResult | null>(null);
+  // Awaiting user confirmation after payloads sent
+  const [awaitingConfirmation, setAwaitingConfirmation] = useState<{
+    scenario: AlarmScenario;
+    result: ScenarioResult;
+  } | null>(null);
+
+  // Batch run state: queue-based so we can pause for confirmation between each
+  const [isBatchMode, setIsBatchMode] = useState(false);
+  const [batchQueue, setBatchQueue] = useState<AlarmScenario[]>([]);
+  const [batchResults, setBatchResults] = useState<ScenarioResult[]>([]);
+  const [batchTotal, setBatchTotal] = useState(0);
   const abortControllerRef = useRef<AbortController | null>(null);
 
   // Session result history (scenario_id -> last result)
@@ -174,65 +181,134 @@ export function AlarmScenarioRunner({
     loadUnits();
   }, [loadUnits]);
 
-  // ─── Individual run handler ────────────────────────────────────────────
+  // ─── Run a single scenario then show confirmation ───────────────────────
 
-  const handleRunScenario = async (
-    scenarioId: string,
+  const sendScenario = async (
+    scenario: AlarmScenario,
     options: RunOptions = {}
   ) => {
     if (!selectedUnit) return;
 
-    setRunningScenarioId(scenarioId);
+    setRunningScenarioId(scenario.scenario_id);
     setProgress(null);
-    setLastResult(null);
+    setAwaitingConfirmation(null);
 
     const result = await runScenario(
-      scenarioId,
+      scenario.scenario_id,
       selectedUnit,
       (p) => setProgress(p),
       options
     );
 
-    setLastResult(result);
-    setResultHistory((prev) => new Map(prev).set(scenarioId, result));
     setRunningScenarioId(null);
     setProgress(null);
+
+    if (result.status === "failed") {
+      // Send failed — record immediately, no confirmation needed
+      setResultHistory((prev) =>
+        new Map(prev).set(scenario.scenario_id, result)
+      );
+      if (isBatchMode) advanceBatch(result);
+    } else {
+      // Payloads sent — wait for user to confirm they saw the alert
+      setAwaitingConfirmation({ scenario, result });
+    }
   };
 
-  // ─── Batch run handler ─────────────────────────────────────────────────
+  const handleRunScenario = (
+    scenarioId: string,
+    options: RunOptions = {}
+  ) => {
+    const scenario = scenarios.find((s) => s.scenario_id === scenarioId);
+    if (!scenario) return;
+    sendScenario(scenario, options);
+  };
 
-  const handleRunAllQuick = async () => {
+  // ─── User confirms pass/fail ───────────────────────────────────────────
+
+  const handleConfirm = (passed: boolean) => {
+    if (!awaitingConfirmation) return;
+
+    const { scenario, result } = awaitingConfirmation;
+    const finalResult: ScenarioResult = {
+      ...result,
+      completed_at: new Date().toISOString(),
+      status: passed ? "passed" : "failed",
+      alarm_verified: passed,
+      error: passed ? undefined : "User confirmed: alert not seen in FrostGuard app",
+    };
+
+    setResultHistory((prev) =>
+      new Map(prev).set(scenario.scenario_id, finalResult)
+    );
+    setAwaitingConfirmation(null);
+
+    if (isBatchMode) {
+      advanceBatch(finalResult);
+    }
+  };
+
+  // ─── Batch run (queue-based, pauses for confirmation) ──────────────────
+
+  const handleRunAllQuick = () => {
     if (!selectedUnit) return;
 
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+    const quickScenarios = scenarios.filter(isQuickScenario);
+    if (quickScenarios.length === 0) return;
 
-    setIsBatchRunning(true);
-    setBatchProgress(null);
-    setBatchResult(null);
+    setIsBatchMode(true);
+    setBatchResults([]);
+    setBatchTotal(quickScenarios.length);
+    setBatchQueue(quickScenarios.slice(1));
     setResultHistory(new Map());
 
-    const result = await runAllQuick(
-      selectedUnit,
-      scenarios,
-      (p) => setBatchProgress(p),
-      controller.signal
-    );
+    // Start with the first scenario
+    sendScenario(quickScenarios[0], { turbo: true });
+  };
 
-    // Populate result history from batch
-    const newHistory = new Map<string, ScenarioResult>();
-    for (const r of result.results) {
-      newHistory.set(r.scenario_id, r);
-    }
-    setResultHistory(newHistory);
+  const advanceBatch = (completedResult: ScenarioResult) => {
+    setBatchResults((prev) => {
+      const updated = [...prev, completedResult];
 
-    setBatchResult(result);
-    setIsBatchRunning(false);
-    abortControllerRef.current = null;
+      // Check if we're done
+      setBatchQueue((queue) => {
+        if (queue.length === 0) {
+          // All done
+          setIsBatchMode(false);
+          return [];
+        }
+
+        // Run the next scenario
+        const [next, ...rest] = queue;
+        setTimeout(() => sendScenario(next, { turbo: true }), 500);
+        return rest;
+      });
+
+      return updated;
+    });
   };
 
   const handleCancelBatch = () => {
     abortControllerRef.current?.abort();
+    // Mark remaining queue as skipped
+    const skippedResults: ScenarioResult[] = batchQueue.map((s) => ({
+      scenario_id: s.scenario_id,
+      started_at: new Date().toISOString(),
+      completed_at: new Date().toISOString(),
+      payloads_sent: 0,
+      status: "skipped" as const,
+      error: "Batch cancelled",
+      alarm_verified: null,
+      steps: [],
+    }));
+    setBatchResults((prev) => [...prev, ...skippedResults]);
+    for (const r of skippedResults) {
+      setResultHistory((prev) => new Map(prev).set(r.scenario_id, r));
+    }
+    setBatchQueue([]);
+    setIsBatchMode(false);
+    setAwaitingConfirmation(null);
+    setRunningScenarioId(null);
   };
 
   // ─── Expand toggle ─────────────────────────────────────────────────────
@@ -253,7 +329,7 @@ export function AlarmScenarioRunner({
   );
 
   const quickCount = scenarios.filter(isQuickScenario).length;
-  const isAnyRunning = runningScenarioId !== null || isBatchRunning;
+  const isAnyRunning = runningScenarioId !== null || awaitingConfirmation !== null;
 
   // ─── Icon helpers ──────────────────────────────────────────────────────
 
@@ -270,11 +346,11 @@ export function AlarmScenarioRunner({
 
   const getResultIcon = (result: ScenarioResult) => {
     switch (result.status) {
-      case "passed":    return <ShieldCheck className="w-4 h-4 text-green-500" />;
-      case "failed":    return <ShieldX className="w-4 h-4 text-red-500" />;
-      case "completed": return <CheckCircle2 className="w-4 h-4 text-blue-500" />;
-      case "skipped":   return <SkipForward className="w-4 h-4 text-muted-foreground" />;
-      default:          return <XCircle className="w-4 h-4 text-muted-foreground" />;
+      case "passed":                return <CheckCircle2 className="w-4 h-4 text-green-500" />;
+      case "failed":                return <XCircle className="w-4 h-4 text-red-500" />;
+      case "awaiting_confirmation": return <Eye className="w-4 h-4 text-amber-500" />;
+      case "skipped":               return <SkipForward className="w-4 h-4 text-muted-foreground" />;
+      default:                      return <XCircle className="w-4 h-4 text-muted-foreground" />;
     }
   };
 
@@ -360,7 +436,7 @@ export function AlarmScenarioRunner({
               variant="default"
               size="sm"
               className="gap-2"
-              disabled={!selectedUnit || isAnyRunning || quickCount === 0}
+              disabled={!selectedUnit || isAnyRunning || isBatchMode || quickCount === 0}
               onClick={handleRunAllQuick}
             >
               <Zap className="w-4 h-4" />
@@ -368,7 +444,7 @@ export function AlarmScenarioRunner({
             </Button>
 
             {/* Cancel button */}
-            {isBatchRunning && (
+            {isBatchMode && (
               <Button
                 variant="destructive"
                 size="sm"
@@ -382,45 +458,26 @@ export function AlarmScenarioRunner({
           </div>
 
           {/* ── Batch progress ───────────────────────────────────────── */}
-          {isBatchRunning && batchProgress && (
+          {isBatchMode && (
             <div className="bg-blue-500/10 border border-blue-500/30 rounded-lg p-4 space-y-2">
               <div className="flex items-center justify-between text-sm">
                 <span className="flex items-center gap-2">
-                  <Loader2 className="w-4 h-4 animate-spin text-blue-500" />
-                  <span>Running:</span>
-                  <code className="font-mono text-xs bg-blue-500/10 px-1.5 py-0.5 rounded">
-                    {batchProgress.current_scenario}
-                  </code>
+                  <Zap className="w-4 h-4 text-blue-500" />
+                  <span>Batch Run</span>
                 </span>
                 <span className="text-muted-foreground tabular-nums">
-                  {batchProgress.scenario_index + 1} /{" "}
-                  {batchProgress.total_scenarios}
+                  {batchResults.length} / {batchTotal} confirmed
                 </span>
               </div>
               <Progress
-                value={
-                  ((batchProgress.scenario_index +
-                    (batchProgress.scenario_progress
-                      ? batchProgress.scenario_progress.step /
-                        batchProgress.scenario_progress.total
-                      : 0)) /
-                    batchProgress.total_scenarios) *
-                  100
-                }
+                value={(batchResults.length / batchTotal) * 100}
                 className="h-2"
               />
-              {batchProgress.scenario_progress && (
-                <p className="text-xs text-muted-foreground">
-                  Step {batchProgress.scenario_progress.step}/
-                  {batchProgress.scenario_progress.total}:{" "}
-                  {batchProgress.scenario_progress.description}
-                </p>
-              )}
             </div>
           )}
 
-          {/* ── Batch results summary ────────────────────────────────── */}
-          {batchResult && (
+          {/* ── Batch results summary (shown when batch is done) ──── */}
+          {!isBatchMode && batchResults.length > 0 && (
             <div className="border rounded-lg p-4 space-y-3">
               <div className="flex items-center gap-3 flex-wrap">
                 <h3 className="text-sm font-semibold">Batch Results</h3>
@@ -429,36 +486,28 @@ export function AlarmScenarioRunner({
                   className="gap-1 border-green-500/50 text-green-600"
                 >
                   <CheckCircle2 className="w-3 h-3" />
-                  {batchResult.passed} passed
+                  {batchResults.filter((r) => r.status === "passed").length} passed
                 </Badge>
-                {batchResult.failed > 0 && (
+                {batchResults.filter((r) => r.status === "failed").length > 0 && (
                   <Badge
                     variant="outline"
                     className="gap-1 border-red-500/50 text-red-500"
                   >
                     <XCircle className="w-3 h-3" />
-                    {batchResult.failed} failed
+                    {batchResults.filter((r) => r.status === "failed").length} failed
                   </Badge>
                 )}
-                {batchResult.skipped > 0 && (
+                {batchResults.filter((r) => r.status === "skipped").length > 0 && (
                   <Badge variant="outline" className="gap-1">
                     <SkipForward className="w-3 h-3" />
-                    {batchResult.skipped} skipped
+                    {batchResults.filter((r) => r.status === "skipped").length} skipped
                   </Badge>
                 )}
-                <span className="text-xs text-muted-foreground ml-auto tabular-nums">
-                  {Math.round(
-                    (new Date(batchResult.completed_at).getTime() -
-                      new Date(batchResult.started_at).getTime()) /
-                      1000
-                  )}
-                  s total
-                </span>
               </div>
 
               {/* Per-scenario rows */}
               <div className="space-y-0.5 max-h-[300px] overflow-y-auto">
-                {batchResult.results.map((r) => (
+                {batchResults.map((r) => (
                   <div
                     key={r.scenario_id}
                     className="flex items-center gap-2 text-xs py-1.5 px-2 rounded hover:bg-muted/50"
@@ -471,22 +520,10 @@ export function AlarmScenarioRunner({
                       {r.payloads_sent} sent
                     </span>
                     {r.alarm_verified === true && (
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] gap-0.5 border-green-500/50 text-green-600 py-0"
-                      >
-                        <ShieldCheck className="w-2.5 h-2.5" />
-                        verified
-                      </Badge>
+                      <span className="text-green-600 text-xs">confirmed</span>
                     )}
                     {r.alarm_verified === false && (
-                      <Badge
-                        variant="outline"
-                        className="text-[10px] gap-0.5 border-red-500/50 text-red-500 py-0"
-                      >
-                        <ShieldX className="w-2.5 h-2.5" />
-                        no alarm
-                      </Badge>
+                      <span className="text-red-500 text-xs">not seen</span>
                     )}
                     {r.error && (
                       <span className="text-red-400 truncate max-w-[180px]">
@@ -499,7 +536,7 @@ export function AlarmScenarioRunner({
             </div>
           )}
 
-          {/* ── Individual run progress ──────────────────────────────── */}
+          {/* ── Sending progress ────────────────────────────────────── */}
           {progress && runningScenarioId && (
             <div className="bg-accent/10 rounded-lg p-3 space-y-1.5">
               <div className="flex items-center gap-2 text-sm">
@@ -519,88 +556,89 @@ export function AlarmScenarioRunner({
             </div>
           )}
 
-          {/* ── Individual last result ───────────────────────────────── */}
-          {lastResult && !isBatchRunning && (
-            <div
-              className={`border rounded-lg p-3 space-y-2 ${
-                lastResult.status === "passed"
-                  ? "border-green-500/30 bg-green-500/5"
-                  : lastResult.status === "failed"
-                    ? "border-red-500/30 bg-red-500/5"
-                    : "border-blue-500/30 bg-blue-500/5"
-              }`}
-            >
-              <div className="flex items-center gap-2 text-sm">
-                {getResultIcon(lastResult)}
-                <code className="font-mono text-xs">
-                  {lastResult.scenario_id}
-                </code>
-                <Badge
-                  variant={
-                    lastResult.status === "passed"
-                      ? "outline"
-                      : lastResult.status === "failed"
-                        ? "destructive"
-                        : "secondary"
-                  }
-                  className="text-xs"
-                >
-                  {lastResult.status}
-                </Badge>
-                <span className="text-xs text-muted-foreground ml-auto tabular-nums">
-                  {lastResult.payloads_sent} sent ·{" "}
-                  {Math.round(
-                    (new Date(lastResult.completed_at).getTime() -
-                      new Date(lastResult.started_at).getTime()) /
-                      1000
-                  )}
-                  s
-                </span>
-              </div>
-              {lastResult.alarm_verified !== null && (
-                <div className="flex items-center gap-2 text-xs">
-                  {lastResult.alarm_verified ? (
-                    <>
-                      <ShieldCheck className="w-3 h-3 text-green-500" />
-                      <span className="text-green-600">
-                        Alarm verified: {lastResult.alarm_event?.alarm_type} (
-                        {lastResult.alarm_event?.severity})
-                      </span>
-                    </>
-                  ) : (
-                    <>
-                      <ShieldX className="w-3 h-3 text-red-500" />
-                      <span className="text-red-500">
-                        Expected alarm not found in alarm_events
-                      </span>
-                    </>
-                  )}
-                </div>
-              )}
-              {lastResult.error && (
-                <p className="text-xs text-red-500">{lastResult.error}</p>
-              )}
-              <div className="space-y-0.5">
-                {lastResult.steps.map((step) => (
-                  <div
-                    key={step.step}
-                    className="flex items-center gap-2 text-xs"
-                  >
-                    {step.success ? (
-                      <CheckCircle2 className="w-3 h-3 text-green-500" />
-                    ) : (
-                      <XCircle className="w-3 h-3 text-red-500" />
-                    )}
-                    <span className="text-muted-foreground">
-                      Step {step.step}: {step.description}
-                    </span>
-                    {step.error && (
-                      <span className="text-red-400 text-xs">
-                        — {step.error}
-                      </span>
-                    )}
+          {/* ── Awaiting user confirmation ────────────────────────────── */}
+          {awaitingConfirmation && (
+            <div className="border-2 border-amber-500/50 bg-amber-500/5 rounded-lg p-4 space-y-4">
+              <div className="flex items-start gap-3">
+                <Eye className="w-5 h-5 text-amber-500 flex-shrink-0 mt-0.5" />
+                <div className="flex-1 space-y-3">
+                  <div>
+                    <p className="font-medium text-sm">
+                      Check FrostGuard App Now
+                    </p>
+                    <p className="text-xs text-muted-foreground mt-1">
+                      {awaitingConfirmation.result.payloads_sent} payload(s) sent
+                      for <code className="font-mono bg-muted px-1 rounded">{awaitingConfirmation.scenario.scenario_id}</code>.
+                      Check the FrostGuard application and confirm whether you see the expected alert.
+                    </p>
                   </div>
-                ))}
+
+                  {/* What to look for */}
+                  <div className="bg-background border rounded-lg p-3 space-y-2">
+                    <p className="text-xs font-medium">Expected Alert:</p>
+                    <div className="flex gap-3 flex-wrap text-xs">
+                      <span>
+                        Type: <strong>{awaitingConfirmation.scenario.expected_alarm_type}</strong>
+                      </span>
+                      <span>
+                        Severity:{" "}
+                        <Badge
+                          variant={getSeverityVariant(awaitingConfirmation.scenario.expected_severity)}
+                          className="text-xs ml-1"
+                        >
+                          {awaitingConfirmation.scenario.expected_severity}
+                        </Badge>
+                      </span>
+                      <span>
+                        Equipment: <strong>{awaitingConfirmation.scenario.equipment_type}</strong>
+                      </span>
+                    </div>
+                    <p className="text-xs text-muted-foreground">
+                      {awaitingConfirmation.scenario.description}
+                    </p>
+
+                    {/* Show which sensors were involved */}
+                    {(() => {
+                      const sensors = new Set(
+                        awaitingConfirmation.scenario.payload_sequence
+                          .filter((s) => s._sensor)
+                          .map((s) => s._sensor!)
+                      );
+                      if (sensors.size <= 1) return null;
+                      return (
+                        <div className="flex items-center gap-1.5 pt-1">
+                          <span className="text-xs text-muted-foreground">Sensors involved:</span>
+                          {[...sensors].map((s) => (
+                            <Badge key={s} variant="secondary" className="text-[10px] py-0">
+                              {s}
+                            </Badge>
+                          ))}
+                        </div>
+                      );
+                    })()}
+                  </div>
+
+                  {/* Pass / Fail buttons */}
+                  <div className="flex gap-3">
+                    <Button
+                      size="sm"
+                      className="gap-2 bg-green-600 hover:bg-green-700 text-white"
+                      onClick={() => handleConfirm(true)}
+                    >
+                      <ThumbsUp className="w-4 h-4" />
+                      Yes, I see the alert
+                    </Button>
+                    <Button
+                      size="sm"
+                      variant="destructive"
+                      className="gap-2"
+                      onClick={() => handleConfirm(false)}
+                    >
+                      <ThumbsDown className="w-4 h-4" />
+                      No, alert not visible
+                    </Button>
+                  </div>
+                </div>
               </div>
             </div>
           )}
@@ -861,28 +899,16 @@ export function AlarmScenarioRunner({
                                           Last run: {prevResult.status}
                                         </span>
                                         <span className="text-muted-foreground tabular-nums">
-                                          {prevResult.payloads_sent} sent ·{" "}
-                                          {Math.round(
-                                            (new Date(
-                                              prevResult.completed_at
-                                            ).getTime() -
-                                              new Date(
-                                                prevResult.started_at
-                                              ).getTime()) /
-                                              1000
-                                          )}
-                                          s
+                                          {prevResult.payloads_sent} sent
                                         </span>
-                                        {prevResult.alarm_verified ===
-                                          true && (
+                                        {prevResult.alarm_verified === true && (
                                           <span className="text-green-600 ml-auto">
-                                            Alarm verified ✓
+                                            User confirmed alert visible
                                           </span>
                                         )}
-                                        {prevResult.alarm_verified ===
-                                          false && (
+                                        {prevResult.alarm_verified === false && (
                                           <span className="text-red-500 ml-auto">
-                                            Alarm not found ✗
+                                            User confirmed alert not seen
                                           </span>
                                         )}
                                       </div>
