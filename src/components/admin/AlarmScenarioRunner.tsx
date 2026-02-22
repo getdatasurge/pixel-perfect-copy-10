@@ -58,7 +58,7 @@ import {
   ThumbsDown,
   Eye,
 } from "lucide-react";
-import type { GatewayConfig, TTNConfig } from "@/lib/ttn-payload";
+import type { GatewayConfig, TTNConfig, LoRaWANDevice } from "@/lib/ttn-payload";
 import {
   loadScenarios,
   runScenario,
@@ -94,6 +94,7 @@ interface AlarmScenarioRunnerProps {
   selectedUserId?: string | null;
   ttnConfig?: TTNConfig | null;
   gateway?: GatewayConfig | null;
+  devices?: LoRaWANDevice[];
 }
 
 // ─── Component ─────────────────────────────────────────────────────────────
@@ -103,6 +104,7 @@ export function AlarmScenarioRunner({
   selectedUserId,
   ttnConfig,
   gateway,
+  devices = [],
 }: AlarmScenarioRunnerProps) {
   // Data state
   const [scenarios, setScenarios] = useState<AlarmScenario[]>([]);
@@ -196,31 +198,25 @@ export function AlarmScenarioRunner({
     loadUnits();
   }, [loadUnits]);
 
-  // Look up the sensor assigned to the selected unit
+  // Look up the sensor assigned to the selected unit from in-memory devices
+  // (assignments live in FrostGuard and are synced to the devices array,
+  //  not reliably reflected in the local lora_sensors table)
   useEffect(() => {
     if (!selectedUnit) {
       setUnitSensor(null);
       return;
     }
-    (async () => {
-      const { data } = await supabase
-        .from("lora_sensors")
-        .select("dev_eui")
-        .eq("unit_id", selectedUnit)
-        .limit(1)
-        .maybeSingle();
-
-      if (data?.dev_eui) {
-        const normalised = data.dev_eui.replace(/[:\s-]/g, "").toLowerCase();
-        setUnitSensor({
-          devEui: data.dev_eui,
-          deviceId: `sensor-${normalised}`,
-        });
-      } else {
-        setUnitSensor(null);
-      }
-    })();
-  }, [selectedUnit]);
+    const device = devices.find((d) => d.unitId === selectedUnit);
+    if (device?.devEui) {
+      const normalised = device.devEui.replace(/[:\s-]/g, "").toLowerCase();
+      setUnitSensor({
+        devEui: device.devEui,
+        deviceId: `sensor-${normalised}`,
+      });
+    } else {
+      setUnitSensor(null);
+    }
+  }, [selectedUnit, devices]);
 
   // Build TTN context from props + unit sensor lookup
   const ttnContext: ScenarioTTNContext | undefined =
