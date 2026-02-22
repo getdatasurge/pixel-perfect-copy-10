@@ -14,6 +14,51 @@ export type Database = {
   }
   public: {
     Tables: {
+      alarm_test_scenarios: {
+        Row: {
+          created_at: string | null
+          description: string | null
+          equipment_type: string
+          expected_alarm_type: string | null
+          expected_severity: string | null
+          id: string
+          name: string
+          payload_sequence: Json
+          scenario_id: string
+          sensor_model: string
+          tags: string[] | null
+          tier: string
+        }
+        Insert: {
+          created_at?: string | null
+          description?: string | null
+          equipment_type: string
+          expected_alarm_type?: string | null
+          expected_severity?: string | null
+          id?: string
+          name: string
+          payload_sequence: Json
+          scenario_id: string
+          sensor_model: string
+          tags?: string[] | null
+          tier: string
+        }
+        Update: {
+          created_at?: string | null
+          description?: string | null
+          equipment_type?: string
+          expected_alarm_type?: string | null
+          expected_severity?: string | null
+          id?: string
+          name?: string
+          payload_sequence?: Json
+          scenario_id?: string
+          sensor_model?: string
+          tags?: string[] | null
+          tier?: string
+        }
+        Relationships: []
+      }
       door_events: {
         Row: {
           battery_level: number | null
