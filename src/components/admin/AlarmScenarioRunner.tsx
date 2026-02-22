@@ -14,7 +14,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from "react";
-import { supabase } from "@/integrations/supabase/client";
+import { fetchOrgState, type OrgStateUnit } from "@/lib/frostguardOrgSync";
 import { Button } from "@/components/ui/button";
 import {
   Card,
@@ -74,12 +74,7 @@ import {
 
 // ─── Supporting types ──────────────────────────────────────────────────────
 
-interface Unit {
-  id: string;
-  name: string;
-  unit_type: string;
-  area: { name: string; site: { name: string } };
-}
+type Unit = OrgStateUnit;
 
 interface AlarmScenarioRunnerProps {
   organizationId: string | null;
@@ -134,36 +129,16 @@ export function AlarmScenarioRunner({
   const loadUnits = useCallback(async () => {
     if (!organizationId) return;
 
-    const { data: areasData } = await supabase
-      .from("areas")
-      .select("id, site:sites!inner(organization_id)")
-      .eq("is_active", true)
-      .eq("sites.organization_id", organizationId);
-
-    const areaIds = (areasData || []).map((a: any) => a.id);
-    if (areaIds.length === 0) return;
-
-    const { data } = await supabase
-      .from("units")
-      .select(
-        "id, name, unit_type, area:areas!inner(name, site:sites!inner(name))"
-      )
-      .in("area_id", areaIds)
-      .eq("is_active", true)
-      .is("deleted_at", null)
-      .order("name");
-
-    setUnits(
-      (data || []).map((u: any) => ({
-        id: u.id,
-        name: u.name,
-        unit_type: u.unit_type,
-        area: {
-          name: u.area?.name || "",
-          site: { name: u.area?.site?.name || "" },
-        },
-      }))
-    );
+    try {
+      const result = await fetchOrgState(organizationId);
+      if (result.ok && result.data?.units) {
+        setUnits(result.data.units);
+      } else {
+        console.error("[AlarmScenarioRunner] Failed to load units:", result.error);
+      }
+    } catch (error) {
+      console.error("[AlarmScenarioRunner] Error loading units:", error);
+    }
   }, [organizationId]);
 
   useEffect(() => {
@@ -347,8 +322,7 @@ export function AlarmScenarioRunner({
                 <SelectContent>
                   {units.map((u) => (
                     <SelectItem key={u.id} value={u.id}>
-                      {u.area.site.name} › {u.area.name} › {u.name} (
-                      {u.unit_type})
+                      {u.name}
                     </SelectItem>
                   ))}
                 </SelectContent>
