@@ -2520,6 +2520,7 @@ export default function LoRaWANEmulator() {
               selectedUserId={webhookConfig.selectedUserId || null}
               ttnConfig={webhookConfig.ttnConfig || null}
               gateway={gateways[0] || null}
+              devices={devices}
             />
           </TabsContent>
 
