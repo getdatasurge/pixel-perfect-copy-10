@@ -1,16 +1,20 @@
 /**
- * Alarm Test Scenarios — loader, runner, batch testing, and verification
+ * Alarm Test Scenarios — loader, runner, and batch testing
  *
  * Fetches predefined alarm scenarios from the alarm_test_scenarios table
  * and runs them by sending sequential uplinks through the sensor-simulator
- * edge function, then triggers evaluate-alarms for alarm pipeline testing.
+ * edge function.
  *
- * Enhanced features:
+ * Verification is manual: the emulator has no visibility into the main
+ * FrostGuard application. After payloads are sent, the user checks the
+ * FrostGuard app for the expected alert and confirms pass/fail.
+ *
+ * Features:
  *   - Load/filter scenarios from DB
  *   - Run individual scenarios with real-time progress
  *   - "Turbo" mode: skip inter-step delays for rapid testing
- *   - Batch "Run All Quick": auto-runs all non-time-dependent scenarios
- *   - Alarm verification: checks alarm_events for expected alarm after run
+ *   - Batch "Run All Quick": runs all non-time-dependent scenarios
+ *   - Manual pass/fail confirmation by user
  *   - Cancellable runs via AbortSignal
  */
 
@@ -47,7 +51,7 @@ export interface ScenarioRunProgress {
   step: number;
   total: number;
   description: string;
-  status: "sending" | "waiting" | "evaluating" | "verifying" | "done";
+  status: "sending" | "waiting" | "done";
 }
 
 export interface ScenarioResult {
@@ -55,17 +59,10 @@ export interface ScenarioResult {
   started_at: string;
   completed_at: string;
   payloads_sent: number;
-  status: "passed" | "failed" | "timeout" | "completed" | "skipped";
+  status: "passed" | "failed" | "timeout" | "awaiting_confirmation" | "skipped";
   error?: string;
-  /** Whether the expected alarm was found in alarm_events after running */
+  /** User-confirmed: true = user saw the alert, false = user did not, null = not yet confirmed */
   alarm_verified: boolean | null;
-  /** The alarm_event row if found */
-  alarm_event?: {
-    id: string;
-    alarm_type: string;
-    severity: string;
-    created_at: string;
-  };
   steps: {
     step: number;
     description: string;
@@ -75,24 +72,6 @@ export interface ScenarioResult {
   }[];
 }
 
-export interface BatchRunProgress {
-  current_scenario: string;
-  scenario_index: number;
-  total_scenarios: number;
-  scenario_progress?: ScenarioRunProgress;
-  status: "running" | "completed" | "cancelled";
-}
-
-export interface BatchResult {
-  started_at: string;
-  completed_at: string;
-  total: number;
-  passed: number;
-  failed: number;
-  skipped: number;
-  results: ScenarioResult[];
-}
-
 // ─── Run Options ────────────────────────────────────────────────────────────
 
 export interface RunOptions {
@@ -100,8 +79,6 @@ export interface RunOptions {
   turbo?: boolean;
   /** Minimum delay between steps even in turbo mode (ms). Default: 500 */
   turboDelayMs?: number;
-  /** Verify the expected alarm was created after running. Default: true */
-  verify?: boolean;
   /** AbortSignal to cancel a running scenario */
   signal?: AbortSignal;
 }
@@ -290,7 +267,6 @@ export async function runScenario(
   const {
     turbo = false,
     turboDelayMs = 500,
-    verify = true,
     signal,
   } = options;
 
@@ -440,44 +416,6 @@ export async function runScenario(
     });
   }
 
-  // Trigger alarm evaluation
-  onProgress?.({
-    step: payloads.length,
-    total: payloads.length,
-    description: "Evaluating alarms...",
-    status: "evaluating",
-  });
-
-  try {
-    await supabase.functions.invoke("process-unit-states");
-  } catch {
-    console.warn("[alarmScenarios] process-unit-states invocation failed");
-  }
-
-  // Verify the expected alarm was created
-  let alarm_verified: boolean | null = null;
-  let alarm_event: ScenarioResult["alarm_event"] = undefined;
-
-  if (verify && scenario.expected_alarm_type) {
-    onProgress?.({
-      step: payloads.length,
-      total: payloads.length,
-      description: "Verifying alarm result...",
-      status: "verifying",
-    });
-
-    await sleep(turbo ? 1500 : 2500, signal);
-
-    const verification = await verifyAlarmResult(
-      unitId,
-      scenario.expected_alarm_type,
-      scenario.expected_severity,
-      startedAt
-    );
-    alarm_verified = verification.found;
-    alarm_event = verification.event;
-  }
-
   const failedSteps = steps.filter((s) => !s.success);
   const allStepsOk = failedSteps.length === 0;
 
@@ -486,145 +424,12 @@ export async function runScenario(
     started_at: startedAt,
     completed_at: new Date().toISOString(),
     payloads_sent: steps.filter((s) => s.success).length,
-    status: allStepsOk
-      ? alarm_verified === true
-        ? "passed"
-        : alarm_verified === false
-          ? "failed"
-          : "completed"
-      : "failed",
+    status: allStepsOk ? "awaiting_confirmation" as const : "failed" as const,
     error: !allStepsOk
       ? `${failedSteps.length} step(s) failed`
-      : alarm_verified === false
-        ? `Expected alarm "${scenario.expected_alarm_type}" (${scenario.expected_severity}) not found`
-        : undefined,
-    alarm_verified,
-    alarm_event,
+      : undefined,
+    alarm_verified: null,
     steps,
-  };
-}
-
-// ─── Alarm Verification ────────────────────────────────────────────────────
-
-async function verifyAlarmResult(
-  unitId: string,
-  expectedAlarmType: string,
-  expectedSeverity: string,
-  afterTimestamp: string
-): Promise<{ found: boolean; event?: ScenarioResult["alarm_event"] }> {
-  try {
-    const db = supabase as any;
-    const { data, error } = await db
-      .from("alarm_events")
-      .select("id, alarm_type, severity, created_at")
-      .eq("unit_id", unitId)
-      .eq("alarm_type", expectedAlarmType)
-      .eq("severity", expectedSeverity)
-      .gte("created_at", afterTimestamp)
-      .order("created_at", { ascending: false })
-      .limit(1)
-      .maybeSingle();
-
-    if (error) {
-      console.warn("[alarmScenarios] Alarm verification failed:", error);
-      return { found: false };
-    }
-
-    if (data) {
-      return {
-        found: true,
-        event: {
-          id: data.id,
-          alarm_type: data.alarm_type,
-          severity: data.severity,
-          created_at: data.created_at,
-        },
-      };
-    }
-
-    return { found: false };
-  } catch {
-    return { found: false };
-  }
-}
-
-// ─── Batch Runner ──────────────────────────────────────────────────────────
-
-/**
- * Run all "quick" scenarios sequentially in turbo mode.
- */
-export async function runAllQuick(
-  unitId: string,
-  scenarios: AlarmScenario[],
-  onProgress?: (progress: BatchRunProgress) => void,
-  signal?: AbortSignal
-): Promise<BatchResult> {
-  const quickScenarios = scenarios.filter(isQuickScenario);
-  const startedAt = new Date().toISOString();
-  const results: ScenarioResult[] = [];
-
-  for (let i = 0; i < quickScenarios.length; i++) {
-    if (signal?.aborted) {
-      for (let j = i; j < quickScenarios.length; j++) {
-        results.push({
-          scenario_id: quickScenarios[j].scenario_id,
-          started_at: new Date().toISOString(),
-          completed_at: new Date().toISOString(),
-          payloads_sent: 0,
-          status: "skipped",
-          error: "Batch cancelled",
-          alarm_verified: null,
-          steps: [],
-        });
-      }
-      break;
-    }
-
-    const scenario = quickScenarios[i];
-
-    onProgress?.({
-      current_scenario: scenario.scenario_id,
-      scenario_index: i,
-      total_scenarios: quickScenarios.length,
-      status: "running",
-    });
-
-    const result = await runScenario(
-      scenario.scenario_id,
-      unitId,
-      (scenarioProgress) => {
-        onProgress?.({
-          current_scenario: scenario.scenario_id,
-          scenario_index: i,
-          total_scenarios: quickScenarios.length,
-          scenario_progress: scenarioProgress,
-          status: "running",
-        });
-      },
-      { turbo: true, verify: true, signal }
-    );
-
-    results.push(result);
-
-    // Brief cooldown between scenarios
-    await sleep(1000, signal);
-  }
-
-  onProgress?.({
-    current_scenario: "",
-    scenario_index: quickScenarios.length,
-    total_scenarios: quickScenarios.length,
-    status: "completed",
-  });
-
-  return {
-    started_at: startedAt,
-    completed_at: new Date().toISOString(),
-    total: quickScenarios.length,
-    passed: results.filter((r) => r.status === "passed").length,
-    failed: results.filter((r) => r.status === "failed").length,
-    skipped: results.filter((r) => r.status === "skipped").length,
-    results,
   };
 }
 
