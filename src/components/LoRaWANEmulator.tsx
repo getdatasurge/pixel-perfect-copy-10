@@ -2515,7 +2515,12 @@ export default function LoRaWANEmulator() {
 
           {/* Alarms Tab - Alarm Scenario Runner */}
           <TabsContent value="alarms">
-            <AlarmScenarioRunner organizationId={webhookConfig.testOrgId || null} />
+            <AlarmScenarioRunner
+              organizationId={webhookConfig.testOrgId || null}
+              selectedUserId={webhookConfig.selectedUserId || null}
+              ttnConfig={webhookConfig.ttnConfig || null}
+              gateway={gateways[0] || null}
+            />
           </TabsContent>
 
           {/* Monitor Tab - Database-Driven Telemetry */}
