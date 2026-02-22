@@ -1790,7 +1790,8 @@ export default function LoRaWANEmulator() {
     addLog('info', '⏹️ Emulation stopped');
   }, [addLog, webhookConfig.testOrgId, sessionId]);
 
-  // Cleanup intervals and release lock on unmount
+  // Re-register beforeunload listener when running state changes
+  // (needs fresh closure over isRunning to decide whether to release lock)
   useEffect(() => {
     const handleUnload = () => {
       // Use sendBeacon for reliable delivery on tab close
@@ -1804,17 +1805,22 @@ export default function LoRaWANEmulator() {
 
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
-      // Stop the scheduler
+    };
+  }, [isRunning, webhookConfig.testOrgId, sessionId]);
+
+  // Cleanup scheduler and intervals on unmount only
+  // (must NOT run when isRunning changes — that would kill the scheduler
+  //  right after startEmulation sets isRunning=true)
+  useEffect(() => {
+    return () => {
       schedulerRef.current?.stopAll();
-      // Clear legacy per-device intervals
       deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
       deviceIntervalsRef.current.clear();
-      // Clear legacy intervals
       if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
       if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
       if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
     };
-  }, [isRunning, webhookConfig.testOrgId, sessionId]);
+  }, []);
 
   // Cross-tab synchronization: stop emulation if another tab starts
   useEffect(() => {
