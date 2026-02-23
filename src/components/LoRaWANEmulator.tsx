@@ -1780,7 +1780,10 @@ export default function LoRaWANEmulator() {
     if (!isRunning) return;
 
     const pending = pendingScheduleRef.current;
-    if (!pending || pending.length === 0) return;
+    if (!pending || pending.length === 0) {
+      console.warn('[SCHEDULER_LIFECYCLE] isRunning=true but no pending devices — skipping scheduler start');
+      return;
+    }
     pendingScheduleRef.current = null;
 
     if (!schedulerRef.current) {
@@ -1788,12 +1791,14 @@ export default function LoRaWANEmulator() {
     }
     const scheduler = schedulerRef.current;
 
+    console.log('%c[SCHEDULER_LIFECYCLE] Starting scheduler with', 'color: lime; font-weight: bold;', pending.length, 'devices');
+
     for (const deviceInfo of pending) {
       scheduler.startDevice(
         deviceInfo.id,
         deviceInfo.intervalSec,
         (deviceId) => {
-          console.log('[SCHEDULER_TICK]', {
+          console.log('%c[SCHEDULER_TICK]', 'color: cyan;', {
             deviceId,
             deviceName: deviceInfo.name,
             kind: deviceInfo.type,
@@ -1807,10 +1812,11 @@ export default function LoRaWANEmulator() {
       addLog('info', `⏱️ ${deviceInfo.name} scheduled every ${deviceInfo.intervalSec}s (drift-corrected)`);
     }
 
-    console.log('[EMULATOR_SCHEDULE] Scheduler started with', pending.length, 'devices');
+    console.log('%c[SCHEDULER_LIFECYCLE] Scheduler started with', 'color: lime; font-weight: bold;', pending.length, 'devices — next tick in', pending[0]?.intervalSec, 'seconds');
 
     // Cleanup: stop the scheduler when isRunning becomes false or on unmount
     return () => {
+      console.log('%c[SCHEDULER_LIFECYCLE] Cleanup: stopping scheduler', 'color: red; font-weight: bold;');
       scheduler.stopAll();
       deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
       deviceIntervalsRef.current.clear();
