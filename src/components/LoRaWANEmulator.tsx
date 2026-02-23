@@ -148,6 +148,12 @@ export default function LoRaWANEmulator() {
   
   // Emission scheduler for drift-corrected per-device scheduling
   const schedulerRef = useRef<EmissionScheduler | null>(null);
+
+  // Pending schedule data — set by startEmulation, consumed by the scheduler lifecycle effect.
+  // This decouples "user clicked Start" from "scheduler starts" so the scheduler
+  // boots inside a useEffect (after React has rendered), avoiding race conditions
+  // where effect cleanups kill freshly-created timeouts.
+  const pendingScheduleRef = useRef<Array<{ id: string; name: string; type: string; intervalSec: number }> | null>(null);
   
   // Per-device interval refs for independent uplink scheduling (deprecated, kept for cleanup)
   const deviceIntervalsRef = useRef<Map<string, NodeJS.Timeout>>(new Map());
@@ -1707,57 +1713,31 @@ export default function LoRaWANEmulator() {
     // Notify other tabs that this tab is starting emulation
     broadcastChannelRef.current?.postMessage({ type: 'EMULATOR_STARTED' });
 
-    setIsRunning(true);
-    addLog('info', '▶️ Emulation started');
-
-    // Only schedule selected sensors — unselected devices should not emit
+    // Prepare which devices to schedule — the scheduler lifecycle effect reads this
     const devicesToSchedule = devices.filter(d => selectedSensorIds.includes(d.id));
+    pendingScheduleRef.current = devicesToSchedule.map(d => ({
+      id: d.id,
+      name: d.name,
+      type: d.type,
+      intervalSec: sensorStates[d.id]?.intervalSec || 60,
+    }));
 
-    // Per-device scheduling using EmissionScheduler for drift-corrected timing
-    console.log('[EMULATOR_SCHEDULE] Initializing drift-corrected scheduler:', {
+    console.log('[EMULATOR_SCHEDULE] Preparing drift-corrected scheduler:', {
       selectedCount: devicesToSchedule.length,
       totalDevices: devices.length,
-      devices: devicesToSchedule.map(d => ({
-        id: d.id,
-        name: d.name,
-        type: d.type,
-        intervalSec: sensorStates[d.id]?.intervalSec || 60,
-      })),
+      devices: pendingScheduleRef.current,
     });
-
-    // Create scheduler if needed
-    if (!schedulerRef.current) {
-      schedulerRef.current = createEmissionScheduler();
-    }
-    const scheduler = schedulerRef.current;
-
-    // Register only selected devices with the scheduler
-    for (const device of devicesToSchedule) {
-      const sensorState = sensorStates[device.id];
-      if (!sensorState) continue;
-
-      scheduler.startDevice(
-        device.id,
-        sensorState.intervalSec,
-        (deviceId) => {
-          console.log('[SCHEDULER_TICK]', {
-            deviceId,
-            deviceName: device.name,
-            kind: device.type,
-            timestamp: new Date().toISOString(),
-          });
-          sendDeviceUplinkRef.current(deviceId);
-        },
-        { emitImmediately: true }
-      );
-
-      addLog('info', `⏱️ ${device.name} scheduled every ${sensorState.intervalSec}s (drift-corrected)`);
-    }
 
     if (devicesToSchedule.length < devices.length) {
       const skipped = devices.length - devicesToSchedule.length;
       addLog('info', `⏭️ ${skipped} unselected sensor(s) skipped`);
     }
+
+    // Setting isRunning triggers the scheduler lifecycle effect (below),
+    // which reads pendingScheduleRef and starts the scheduler INSIDE a
+    // useEffect — after React has finished rendering and running cleanups.
+    setIsRunning(true);
+    addLog('info', '▶️ Emulation started');
   }, [devices, sensorStates, selectedSensorIds, sendDeviceUplink, addLog, webhookConfig, runPreflightCheck, sessionId]);
 
   const stopEmulation = useCallback(async () => {
@@ -1790,11 +1770,61 @@ export default function LoRaWANEmulator() {
     addLog('info', '⏹️ Emulation stopped');
   }, [addLog, webhookConfig.testOrgId, sessionId]);
 
+  // ─── Scheduler lifecycle effect ──────────────────────────────────────────
+  // The scheduler is started INSIDE this effect (not in startEmulation) so
+  // that it only boots after React has finished rendering and running any
+  // cleanups from the previous render.  This eliminates the race condition
+  // where setIsRunning(true) triggers a re-render whose effect cleanup
+  // would kill freshly-created scheduler timeouts.
+  useEffect(() => {
+    if (!isRunning) return;
+
+    const pending = pendingScheduleRef.current;
+    if (!pending || pending.length === 0) return;
+    pendingScheduleRef.current = null;
+
+    if (!schedulerRef.current) {
+      schedulerRef.current = createEmissionScheduler();
+    }
+    const scheduler = schedulerRef.current;
+
+    for (const deviceInfo of pending) {
+      scheduler.startDevice(
+        deviceInfo.id,
+        deviceInfo.intervalSec,
+        (deviceId) => {
+          console.log('[SCHEDULER_TICK]', {
+            deviceId,
+            deviceName: deviceInfo.name,
+            kind: deviceInfo.type,
+            timestamp: new Date().toISOString(),
+          });
+          sendDeviceUplinkRef.current(deviceId);
+        },
+        { emitImmediately: true }
+      );
+
+      addLog('info', `⏱️ ${deviceInfo.name} scheduled every ${deviceInfo.intervalSec}s (drift-corrected)`);
+    }
+
+    console.log('[EMULATOR_SCHEDULE] Scheduler started with', pending.length, 'devices');
+
+    // Cleanup: stop the scheduler when isRunning becomes false or on unmount
+    return () => {
+      scheduler.stopAll();
+      deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
+      deviceIntervalsRef.current.clear();
+      if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
+      if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
+      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
+      console.log('[EMULATOR_SCHEDULE] Scheduler stopped by effect cleanup');
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isRunning]);
+
   // Re-register beforeunload listener when running state changes
-  // (needs fresh closure over isRunning to decide whether to release lock)
   useEffect(() => {
     const handleUnload = () => {
-      // Use sendBeacon for reliable delivery on tab close
       const orgId = webhookConfig.testOrgId;
       if (isRunning && orgId) {
         releaseEmulatorLockBeacon(orgId, sessionId);
@@ -1802,25 +1832,10 @@ export default function LoRaWANEmulator() {
     };
 
     window.addEventListener('beforeunload', handleUnload);
-
     return () => {
       window.removeEventListener('beforeunload', handleUnload);
     };
   }, [isRunning, webhookConfig.testOrgId, sessionId]);
-
-  // Cleanup scheduler and intervals on unmount only
-  // (must NOT run when isRunning changes — that would kill the scheduler
-  //  right after startEmulation sets isRunning=true)
-  useEffect(() => {
-    return () => {
-      schedulerRef.current?.stopAll();
-      deviceIntervalsRef.current.forEach(interval => clearInterval(interval));
-      deviceIntervalsRef.current.clear();
-      if (tempIntervalRef.current) clearInterval(tempIntervalRef.current);
-      if (doorIntervalRef.current) clearInterval(doorIntervalRef.current);
-      if (heartbeatIntervalRef.current) clearInterval(heartbeatIntervalRef.current);
-    };
-  }, []);
 
   // Cross-tab synchronization: stop emulation if another tab starts
   useEffect(() => {
